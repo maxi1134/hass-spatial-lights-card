@@ -780,6 +780,17 @@ Glow walls can also be configured in the visual editor's **Glow Walls** section.
 >   show_walls: always
 > ```
 
+#### Placing lights
+
+The same full-size editor also places lights: **Positions → Open editor**, or
+switch to **Lights** in its header. Drag a light to move it, tap one to see
+which entity it is, hold `Alt` to ignore the grid. Walls stay visible as
+reference, because placing a light means placing it relative to a room.
+
+Selecting a light in the editor's **Entities** list also highlights it on the
+plan in gold — on a plan with twenty lights, a list row tells you nothing about
+where it is.
+
 #### Doors — walls that open
 
 Give a wall an `entity` and it only blocks light in one state, so an open door

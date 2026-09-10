@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.18.0 (fork-maxi1134)';
+  static BUILD = 'v1.19.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -3087,6 +3087,7 @@ class SpatialLightColorCard extends HTMLElement {
     }
     this._syncOverlayState();
     this.updateLights();
+    this._applyEditorHighlight();
     this._refreshEntityIcons();
     requestAnimationFrame(() => this._updateSeparatorVisibility());
     // The canvas ResizeObserver registered above fires on initial observation
@@ -3449,6 +3450,18 @@ class SpatialLightColorCard extends HTMLElement {
       .canvas.has-selection .light.off:not(.selected) {
         --light-desat: brightness(0.45) saturate(0.5); --light-dim: 0.45;
       }
+
+      /* The light whose row is open in the editor's entity list. Deliberately
+         a different colour from selection, so "this is the one you are looking
+         at in the list" never reads as "this is selected". */
+      .light.editor-highlight { z-index: 6; }
+      .light.editor-highlight::before {
+        box-shadow:
+          0 0 0 3px rgba(255,214,92,0.95),
+          0 0 0 7px rgba(255,214,92,0.35),
+          0 0 22px rgba(255,214,92,0.55) !important;
+      }
+      .light.editor-highlight .light-label { opacity: 1; }
 
       .light.preset-highlight::before {
         box-shadow: 0 0 0 2.5px rgba(255,255,255,0.7), 0 0 16px rgba(255,255,255,0.35) !important;
@@ -4000,6 +4013,14 @@ class SpatialLightColorCard extends HTMLElement {
         font-weight: 600; cursor: pointer;
       }
       .wall-editor-btn:hover { background: rgba(255,255,255,0.2); }
+      .wall-editor-modes { display: flex; gap: 0; border-radius: 8px; overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.22); }
+      .wall-editor-mode {
+        border: 0; background: transparent; color: rgba(255,255,255,0.7);
+        padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      }
+      .wall-editor-mode.active { background: rgba(255,255,255,0.22); color: #fff; }
+      .wall-editor-mode:hover { color: #fff; }
       /* The stage carries the plan and sets the aspect ratio; sizing by BOTH
          max-width and max-height lets aspect-ratio pick whichever fits, so a
          wide plan fills the width and a tall one fills the height. */
@@ -4523,8 +4544,12 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <dialog class="wall-editor-overlay" id="wallEditorOverlay">
         <div class="wall-editor-head">
-          <div class="wall-editor-title">Draw walls</div>
+          <div class="wall-editor-title">${this._wallEditorMode === 'lights' ? 'Place lights' : 'Draw walls'}</div>
           <div class="wall-editor-count" id="wallEditorCount"></div>
+          <div class="wall-editor-modes">
+            <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? '' : ' active'}" id="wallModeWalls">Walls</button>
+            <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? ' active' : ''}" id="wallModeLights">Lights</button>
+          </div>
           <button class="wall-editor-btn" id="wallEditorDone">Done</button>
         </div>
         <div class="wall-editor-stage" id="wallEditorStage"
@@ -4532,13 +4557,13 @@ class SpatialLightColorCard extends HTMLElement {
           <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
-        <div class="wall-editor-hint">
-          Drag to draw &mdash; starting on a corner attaches to it exactly &middot;
-          <kbd>Esc</kbd> ends a run &middot;
-          <kbd>Shift</kbd>-drag a corner or a wall to move it &middot;
-          long-press a wall to delete &middot;
-          <kbd>Alt</kbd> ignores snapping
-        </div>
+        <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
+          ? 'Drag a light to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping'
+          : 'Drag to draw &mdash; starting on a corner attaches to it exactly &middot; '
+            + '<kbd>Esc</kbd> ends a run &middot; '
+            + '<kbd>Shift</kbd>-drag a corner or a wall to move it &middot; '
+            + 'right-click or long-press a wall to delete &middot; '
+            + '<kbd>Alt</kbd> ignores snapping'}</div>
       </dialog>
     `;
   }
@@ -4594,10 +4619,14 @@ class SpatialLightColorCard extends HTMLElement {
       this._drawFieldWalls(ctx, rect);
     }
 
-    // Light positions, so walls can be placed relative to what they occlude.
+    // Light handles. In walls mode these are just reference points so walls
+    // can be placed relative to what they occlude; in lights mode they are the
+    // thing being dragged, so they get grabbable size and a name.
+    const lightsMode = this._wallEditorMode === 'lights';
     const dpr2 = cv.width / rect.width;
     ctx.setTransform(dpr2, 0, 0, dpr2, 0, 0);
     ctx.save();
+    const radius = lightsMode ? 11 : 7;
     for (const id of this._config.entities) {
       const pos = this._config.positions[id];
       if (!pos) continue;
@@ -4607,19 +4636,50 @@ class SpatialLightColorCard extends HTMLElement {
       const cy = pos.y / 100 * rect.height;
       let rgb = this._parseColorToRGB(this._resolveEntityColor(id, !!isOn, st ? st.attributes : {}));
       if (!rgb) rgb = { r: 255, g: 165, b: 0 };
+
+      const isPicked = lightsMode && this._lightStageSelected === id;
+      const isListed = this._editorHighlightEntity === id;
+
+      if (isPicked || isListed) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 7, 0, Math.PI * 2);
+        ctx.fillStyle = isListed ? 'rgba(255,214,92,0.30)' : 'rgba(255,255,255,0.22)';
+        ctx.fill();
+      }
+
       ctx.beginPath();
-      ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${isOn ? 0.95 : 0.35})`;
       ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.lineWidth = (isPicked || isListed) ? 3 : 2;
+      ctx.strokeStyle = isListed ? 'rgba(255,214,92,0.95)'
+        : (isPicked ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.75)');
       ctx.stroke();
+
+      if (lightsMode) {
+        const label = this._generateLabel ? this._generateLabel(id) : id;
+        ctx.font = '600 11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const text = String(label || id);
+        const w = ctx.measureText(text).width;
+        const ly = cy + radius + 5;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(cx - w / 2 - 4, ly - 2, w + 8, 15);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, cx, ly);
+      }
     }
     ctx.restore();
 
-    const count = (this._wallList() || []).length;
     if (this._els.wallCount) {
-      this._els.wallCount.textContent = count === 1 ? '1 wall' : `${count} walls`;
+      if (lightsMode) {
+        const n = (this._config.entities || []).length;
+        this._els.wallCount.textContent = n === 1 ? '1 light' : `${n} lights`;
+      } else {
+        const count = (this._wallList() || []).length;
+        this._els.wallCount.textContent = count === 1 ? '1 wall' : `${count} walls`;
+      }
     }
   }
 
@@ -4990,6 +5050,7 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._wallEditMode === active && (!active || this._wallEditorId === d.editorId)) return;
         this._wallEditMode = active;
         this._wallEditorId = active ? (d.editorId || null) : null;
+        this._wallEditorMode = (d.mode === 'lights') ? 'lights' : 'walls';
         // Wall mode and position-editing are mutually exclusive; enforce it
         // card-side too, since a dropped event would otherwise leave the card
         // in both, where the wall branch wins and light dragging silently
@@ -5006,6 +5067,20 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._hass && this._config && this._config.entities) this._renderAll();
       };
       window.addEventListener('spatial-card-wall-mode', this._boundWallModeChange);
+
+      // The editor's entity list tells the preview which row is open, so the
+      // matching light can be picked out on the plan. On a plan with twenty
+      // lights, reading a list row tells you nothing about WHERE it is.
+      if (this._boundHighlightEntity) window.removeEventListener('spatial-card-highlight-entity', this._boundHighlightEntity);
+      this._boundHighlightEntity = (e) => {
+        if (!this._isInsideEditorPreview()) return;
+        const next = (e.detail && e.detail.entity) || null;
+        if (this._editorHighlightEntity === next) return;
+        this._editorHighlightEntity = next;
+        this._applyEditorHighlight();
+        this._requestWallEditorDraw();
+      };
+      window.addEventListener('spatial-card-highlight-entity', this._boundHighlightEntity);
 
       if (this._isInsideEditorPreview()) {
         // The preview card is recreated by HA on config changes; ask any
@@ -5090,6 +5165,9 @@ class SpatialLightColorCard extends HTMLElement {
       window.removeEventListener('spatial-card-edit-mode', this._boundEditModeChange);
       if (this._boundWallModeChange) {
         window.removeEventListener('spatial-card-wall-mode', this._boundWallModeChange);
+      }
+      if (this._boundHighlightEntity) {
+        window.removeEventListener('spatial-card-highlight-entity', this._boundHighlightEntity);
       }
       this._boundEditModeChange = null;
     }
@@ -5234,6 +5312,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._els.wallStage) {
       const stage = this._els.wallStage;
       stage.addEventListener('pointerdown', (e) => {
+        if (this._wallEditorMode === 'lights') { this._onLightStagePointerDown(e); return; }
         if (this._wallDrawState) { e.preventDefault(); return; }
         // Right-click deletes. Handled on pointerdown rather than contextmenu
         // because only pointerdown carries BOTH pointerType and button, so
@@ -5248,10 +5327,14 @@ class SpatialLightColorCard extends HTMLElement {
         this._onWallPointerDown(e);
       });
       stage.addEventListener('pointermove', (e) => {
+        if (this._wallEditorMode === 'lights') { this._onLightStagePointerMove(e); return; }
         if (this._wallDrawState) this._onWallPointerMove(e);
         else this._trackWallHover(e);
       });
-      stage.addEventListener('pointerup', (e) => this._onWallPointerUp(e));
+      stage.addEventListener('pointerup', (e) => {
+        if (this._wallEditorMode === 'lights') { this._onLightStagePointerUp(e); return; }
+        this._onWallPointerUp(e);
+      });
       stage.addEventListener('pointercancel', () => this._cancelActiveInteractions());
       // Android raises contextmenu from the same hold as delete-a-wall.
       stage.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -5281,6 +5364,22 @@ class SpatialLightColorCard extends HTMLElement {
           this._exitWallMode();
         });
       }
+
+      const setMode = (mode) => {
+        if (this._wallEditorMode === mode) return;
+        this._wallEditorMode = mode;
+        this._wallSelectedIndex = null;
+        SpatialLightColorCard._wallEditorSelection = null;
+        this._lightStageSelected = null;
+        this._wallDrawState = null;
+        this._draftWalls = null;
+        this._wallChainAnchor = null;
+        if (this._hass && this._config && this._config.entities) this._renderAll();
+      };
+      const mw = this.shadowRoot.getElementById('wallModeWalls');
+      if (mw) mw.addEventListener('click', () => setMode('walls'));
+      const ml = this.shadowRoot.getElementById('wallModeLights');
+      if (ml) ml.addEventListener('click', () => setMode('lights'));
 
       const done = this.shadowRoot.getElementById('wallEditorDone');
       if (done) {
@@ -9127,6 +9226,8 @@ class SpatialLightColorCard extends HTMLElement {
     // user is actively placing them; 'never' not at all (edit mode still
     // shows them, or drawing would be blind).
     if (!drawing && mode !== 'always') return;
+    // In lights mode walls are context rather than the subject, but they must
+    // still be visible -- placing a light means placing it relative to a room.
 
     const walls = this._draftWalls || this._config.glow_walls || [];
     if (!walls.length) return;
@@ -9163,7 +9264,7 @@ class SpatialLightColorCard extends HTMLElement {
       ctx.globalAlpha = 1;
     }
 
-    if (drawing && typeof this._wallSelectedIndex === 'number') {
+    if (drawing && this._wallEditorMode !== 'lights' && typeof this._wallSelectedIndex === 'number') {
       const sel = walls[this._wallSelectedIndex];
       if (sel) {
         ctx.save();
@@ -9178,7 +9279,7 @@ class SpatialLightColorCard extends HTMLElement {
       }
     }
 
-    if (drawing) {
+    if (drawing && this._wallEditorMode !== 'lights') {
       // Endpoint handles, so the user can see what is grabbable.
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.strokeStyle = 'rgba(60,110,170,0.9)';
@@ -9461,6 +9562,101 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * Which light is under a point on the big stage, by nearest centre within a
+   * generous radius. Lights are canvas handles here rather than DOM markers,
+   * so hit testing is ours to do.
+   */
+  _hitTestLightOnStage(pt, rect) {
+    const TOL = 18;
+    let best = null, bestD = TOL * TOL;
+    for (const id of (this._config.entities || [])) {
+      const pos = this._config.positions[id];
+      if (!pos) continue;
+      const dx = (pos.x - pt.x) / 100 * rect.width;
+      const dy = (pos.y - pt.y) / 100 * rect.height;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = id; }
+    }
+    return best;
+  }
+
+  _onLightStagePointerDown(e) {
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return;
+    e.preventDefault();
+    try { this._wallSurface()?.setPointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
+    const id = this._hitTestLightOnStage(pt, pt.rect);
+    this._lightStageSelected = id || null;
+    this._lightStageDrag = id
+      ? { id, pointerId: e.pointerId, moved: false,
+          grab: { x: pt.x, y: pt.y },
+          orig: { x: this._config.positions[id].x, y: this._config.positions[id].y } }
+      : null;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  _onLightStagePointerMove(e) {
+    const st = this._lightStageDrag;
+    if (!st || e.pointerId !== st.pointerId) return;
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return;
+    e.preventDefault();
+    st.moved = true;
+    let x = st.orig.x + (pt.x - st.grab.x);
+    let y = st.orig.y + (pt.y - st.grab.y);
+    if (!e.altKey) {
+      // The same pixel grid the in-card drag snaps to, so a light placed here
+      // lands where it would there.
+      const g = this._gridSize || 25;
+      if (g > 0) {
+        x = Math.round(x / 100 * pt.rect.width / g) * g / pt.rect.width * 100;
+        y = Math.round(y / 100 * pt.rect.height / g) * g / pt.rect.height * 100;
+      }
+    }
+    this._config.positions[st.id] = {
+      x: Math.max(0, Math.min(100, x)),
+      y: Math.max(0, Math.min(100, y)),
+    };
+    // Positions feed the field's emitter, so its caches are stale.
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
+    this._requestWallEditorDraw();
+    this._requestLightFieldDraw();
+    this._syncWallInspector();
+  }
+
+  _onLightStagePointerUp(e) {
+    const st = this._lightStageDrag;
+    this._lightStageDrag = null;
+    try { this._wallSurface()?.releasePointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
+    if (!st || !st.moved) return;
+    e.preventDefault();
+    // Reuse the channel the editor already listens on for repositioning.
+    if (typeof window !== 'undefined' && this._wallEditorId) {
+      window.dispatchEvent(new CustomEvent('spatial-card-positions-changed', {
+        detail: {
+          editorId: this._wallEditorId,
+          positions: JSON.parse(JSON.stringify(this._config.positions)),
+          canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
+        },
+      }));
+    }
+    this._requestWallEditorDraw();
+  }
+
+  /** Mark the light the editor's list has open, and clear any previous one. */
+  _applyEditorHighlight() {
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('.light.editor-highlight')
+      .forEach((el) => el.classList.remove('editor-highlight'));
+    const id = this._editorHighlightEntity;
+    if (!id) return;
+    const el = this.shadowRoot.querySelector(`.light[data-entity="${String(id).replace(/"/g, '')}"]`);
+    if (el) el.classList.add('editor-highlight');
+  }
+
+  /**
    * Delete the wall under a mouse right-click.
    *
    * Mouse only, deliberately: touch has no right button, and the contextmenu
@@ -9509,6 +9705,33 @@ class SpatialLightColorCard extends HTMLElement {
   _syncWallInspector() {
     const host = this._els && this._els.wallInspector;
     if (!host) return;
+
+    if (this._wallEditorMode === 'lights') {
+      const id = this._lightStageSelected;
+      if (!id) {
+        host.innerHTML = '<div class="wi-hint">Drag a light to move it &middot; tap one to identify it</div>';
+        return;
+      }
+      const pos = this._config.positions[id] || { x: 50, y: 50 };
+      const st = this._hass && this._hass.states[id];
+      const name = (st && st.attributes && st.attributes.friendly_name) || id;
+      host.innerHTML = `
+        <div class="wi-row">
+          <span class="wi-title">${this._escapeHtml(name)}</span>
+          <span class="wi-coords">${this._escapeHtml(id)} &middot; ${pos.x.toFixed(1)}%, ${pos.y.toFixed(1)}%</span>
+          <button class="wi-btn" id="wiClose">&times;</button>
+        </div>`;
+      const close = host.querySelector('#wiClose');
+      if (close) {
+        close.addEventListener('click', () => {
+          this._lightStageSelected = null;
+          this._syncWallInspector();
+          this._requestWallEditorDraw();
+        });
+      }
+      return;
+    }
+
     const walls = this._wallList();
     const idx = this._wallSelectedIndex;
     const w = (typeof idx === 'number') ? walls[idx] : null;
@@ -10569,6 +10792,9 @@ class SpatialLightColorCardEditor extends HTMLElement {
       window.removeEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
       this._boundWallModeEcho = null;
     }
+    window.dispatchEvent(new CustomEvent('spatial-card-highlight-entity', {
+      detail: { editorId: this._editorId, entity: null },
+    }));
     this._positionHistory = [];
     this._positionRedoStack = [];
     if (this._editPositionsActive) {
@@ -11975,8 +12201,15 @@ class SpatialLightColorCardEditor extends HTMLElement {
           <div class="section-body">
             <div class="option-row">
               <div>
-                <div class="label">Edit Positions</div>
-                <div class="sublabel">Drag entities on the card preview to reposition</div>
+                <div class="label">Place lights on the plan</div>
+                <div class="sublabel">Opens the same full-size editor the walls use, with the plan at nearly the whole viewport &mdash; far easier than dragging in this preview pane. Drag a light to move it; tap one to identify it.</div>
+              </div>
+              <button class="wall-draw-open-btn" id="cfgLightPlaceOpen">Open editor</button>
+            </div>
+            <div class="option-row">
+              <div>
+                <div class="label">Edit Positions (in preview)</div>
+                <div class="sublabel">Drag entities on the small card preview instead</div>
               </div>
               <ha-switch id="cfgEditPositions"></ha-switch>
             </div>
@@ -13022,6 +13255,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
       root.querySelectorAll('.entity-item').forEach(item => {
         item.classList.toggle('expanded', item.dataset.entity === this._expandedEntity);
       });
+      // Point the preview at the same light, so opening a row shows you WHERE
+      // on the plan it is.
+      window.dispatchEvent(new CustomEvent('spatial-card-highlight-entity', {
+        detail: { editorId: this._editorId, entity: this._expandedEntity },
+      }));
     };
     root.querySelectorAll('.entity-main').forEach(main => {
       main.addEventListener('click', (e) => {
@@ -13923,11 +14161,29 @@ class SpatialLightColorCardEditor extends HTMLElement {
           }));
         }
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
-          detail: { editorId: this._editorId, active: this._wallDrawActive },
+          detail: { editorId: this._editorId, active: this._wallDrawActive, mode: 'walls' },
         }));
         this._render();
       });
     }
+    const lightPlaceBtn = root.getElementById('cfgLightPlaceOpen');
+    if (lightPlaceBtn) {
+      lightPlaceBtn.addEventListener('click', () => {
+        this._wallDrawActive = true;
+        if (this._editPositionsActive) {
+          // Both claim the canvas; the modal supersedes in-preview dragging.
+          this._editPositionsActive = false;
+          window.dispatchEvent(new CustomEvent('spatial-card-edit-mode', {
+            detail: { editorId: this._editorId, active: false },
+          }));
+        }
+        window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+          detail: { editorId: this._editorId, active: true, mode: 'lights' },
+        }));
+        this._render();
+      });
+    }
+
     const clearWallsBtn = root.getElementById('clearWallsBtn');
     if (clearWallsBtn) {
       clearWallsBtn.addEventListener('click', () => {
