@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.14.0 (fork-maxi1134)';
+  static BUILD = 'v1.15.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -9095,6 +9095,9 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** Snap cascade: other endpoints, then 45-degree angles, then the grid. */
   _snapWallPoint(pt, rect, anchor, skipIndex, disable) {
+    // skipIndex may be a single index or a Set of them (every wall meeting at
+    // a dragged corner), otherwise the corner snaps onto its own endpoints.
+    const skip = (i) => (skipIndex instanceof Set ? skipIndex.has(i) : i === skipIndex);
     let x = pt.x, y = pt.y;
     if (disable) return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
 
@@ -9104,7 +9107,7 @@ class SpatialLightColorCard extends HTMLElement {
     const tolPx = 11;
     let best = null, bestD = tolPx * tolPx;
     for (let i = 0; i < walls.length; i++) {
-      if (i === skipIndex) continue;
+      if (skip(i)) continue;
       const w = walls[i];
       for (const [ex, ey] of [[w.x1, w.y1], [w.x2, w.y2]]) {
         const ddx = (ex - x) / 100 * rect.width;
@@ -9197,8 +9200,17 @@ class SpatialLightColorCard extends HTMLElement {
 
     if (wantsEdit && hit && hit.kind === 'endpoint') {
       const w0 = this._draftWalls[hit.index];
+      // A corner is shared: every wall endpoint sitting on it moves together,
+      // or dragging the corner of a traced room tears it open and leaves a gap
+      // for light to leak through.
+      const joints = this._wallJointsAt(
+        hit.end === 1 ? { x: w0.x1, y: w0.y1 } : { x: w0.x2, y: w0.y2 },
+        pt.rect
+      );
       this._wallDrawState = {
         mode: 'endpoint', index: hit.index, end: hit.end, pointerId: e.pointerId, moved: false,
+        joints,
+        skip: new Set(joints.map((j) => j.index)),
         orig: { x1: w0.x1, y1: w0.y1, x2: w0.x2, y2: w0.y2 },
       };
     } else if (wantsEdit && hit && hit.kind === 'body') {
@@ -9262,6 +9274,32 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * Every wall endpoint coincident with a point, as {index, end, orig}.
+   *
+   * Tolerance is in screen pixels so it behaves the same whatever the plan's
+   * aspect ratio, and it is generous enough to catch corners that were snapped
+   * together by a rounded config value rather than being bit-identical.
+   */
+  _wallJointsAt(point, rect) {
+    const TOL = 1.2;
+    const out = [];
+    const walls = this._draftWalls || this._wallList();
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      for (const end of [1, 2]) {
+        const x = end === 1 ? w.x1 : w.x2;
+        const y = end === 1 ? w.y1 : w.y2;
+        const dx = (x - point.x) / 100 * rect.width;
+        const dy = (y - point.y) / 100 * rect.height;
+        if (dx * dx + dy * dy <= TOL * TOL) {
+          out.push({ index: i, end, orig: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 } });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * Long-press-to-delete. `draftIndex` is the pending draw stroke to discard
    * first, for when the hold happened during a draw rather than a Shift-drag.
    */
@@ -9296,9 +9334,16 @@ class SpatialLightColorCard extends HTMLElement {
       const p = this._snapWallPoint(pt, pt.rect, st.anchor, st.index, e.altKey);
       w.x2 = p.x; w.y2 = p.y;
     } else if (st.mode === 'endpoint') {
+      // Angle-snap against this wall's OTHER end; skip every wall in the joint
+      // so the corner cannot snap to itself.
       const anchor = st.end === 1 ? { x: w.x2, y: w.y2 } : { x: w.x1, y: w.y1 };
-      const p = this._snapWallPoint(pt, pt.rect, anchor, st.index, e.altKey);
-      if (st.end === 1) { w.x1 = p.x; w.y1 = p.y; } else { w.x2 = p.x; w.y2 = p.y; }
+      const p = this._snapWallPoint(pt, pt.rect, anchor, st.skip || st.index, e.altKey);
+      const joints = st.joints && st.joints.length ? st.joints : [{ index: st.index, end: st.end }];
+      for (const j of joints) {
+        const jw = this._draftWalls[j.index];
+        if (!jw) continue;
+        if (j.end === 1) { jw.x1 = p.x; jw.y1 = p.y; } else { jw.x2 = p.x; jw.y2 = p.y; }
+      }
     } else if (st.mode === 'body') {
       const dx = pt.x - st.grab.x;
       const dy = pt.y - st.grab.y;
@@ -9345,17 +9390,35 @@ class SpatialLightColorCard extends HTMLElement {
       e.preventDefault();
       return true;
     } else {
-      this._commitWalls({
-        op: 'update',
-        src: w._src, part: w._part,
-        // `from` is what this wall looked like BEFORE the drag. _src is null
-        // for anything drawn in the current session (it is only assigned when
-        // a saved config comes back through _normalizeGlowWalls), so the
-        // editor needs a way to identify the entry that does not depend on an
-        // index it cannot know yet.
-        from: st.orig || null,
-        wall: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
-      });
+      // `from` is what a wall looked like BEFORE the drag. _src is null for
+      // anything drawn in the current session (it is only assigned when a
+      // saved config comes back through _normalizeGlowWalls), so the editor
+      // needs a way to identify the entry that does not depend on an index it
+      // cannot know yet.
+      const joints = (st.mode === 'endpoint' && st.joints && st.joints.length > 1)
+        ? st.joints : null;
+      if (joints) {
+        // Dragging a shared corner moves every wall meeting there. One batched
+        // delta, so the editor writes history once and fires one
+        // config-changed instead of one per wall.
+        const items = [];
+        for (const j of joints) {
+          const jw = this._draftWalls[j.index];
+          if (!jw) continue;
+          items.push({
+            src: jw._src, part: jw._part, from: j.orig,
+            wall: { x1: jw.x1, y1: jw.y1, x2: jw.x2, y2: jw.y2 },
+          });
+        }
+        this._commitWalls({ op: 'update-many', items });
+      } else {
+        this._commitWalls({
+          op: 'update',
+          src: w._src, part: w._part,
+          from: st.orig || null,
+          wall: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
+        });
+      }
     }
     e.preventDefault();
     return true;
@@ -10290,6 +10353,20 @@ class SpatialLightColorCardEditor extends HTMLElement {
       return;
     }
 
+    if (d.op === 'update-many' && Array.isArray(d.items)) {
+      // A shared corner was dragged. Resolve each item's index at the moment
+      // it is applied, because exploding a box mid-batch shifts every later
+      // index; matching on geometry is immune to that.
+      let changed = 0;
+      for (const item of d.items) {
+        if (this._applyOneWallUpdate(walls, item)) changed += 1;
+      }
+      if (!changed) { this._wallHistory.pop(); return; }
+      this._fireConfigChanged();
+      this._render();
+      return;
+    }
+
     // Resolve WHICH raw entry this delta refers to.
     //
     // _src is null for anything drawn in the current session — it is only
@@ -10343,6 +10420,47 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     this._fireConfigChanged();
     this._render();
+  }
+
+  /**
+   * Resolve one wall update against the raw config and write it.
+   *
+   * Shared by the single-wall and shared-corner paths so index resolution and
+   * box/polyline explosion behave identically in both. Returns whether
+   * anything was written.
+   */
+  _applyOneWallUpdate(walls, item) {
+    let idx = -1;
+    const src = item.src;
+    if (typeof src === 'number' && src >= 0 && src < walls.length
+        && this._wallMatches(walls[src], item.from, item.part)) {
+      idx = src;
+    } else if (item.from) {
+      idx = walls.findIndex((w) => this._wallMatches(w, item.from, item.part));
+    } else if (typeof src === 'number' && src >= 0 && src < walls.length) {
+      idx = src;
+    }
+    if (idx < 0) return false;
+
+    const raw = walls[idx];
+    const isComposite = raw && !Array.isArray(raw) && typeof raw === 'object'
+      && ((raw.width != null && raw.height != null) || Array.isArray(raw.points));
+    const next = {
+      x1: this._round2(item.wall.x1), y1: this._round2(item.wall.y1),
+      x2: this._round2(item.wall.x2), y2: this._round2(item.wall.y2),
+    };
+
+    if (isComposite) {
+      const parts = this._explodeWall(raw);
+      if (!parts.length) return false;
+      const partIdx = parts.findIndex((pp) => String(pp.part) === String(item.part));
+      const segs = parts.map((pp) => pp.seg);
+      if (partIdx >= 0) segs[partIdx] = next;
+      walls.splice(idx, 1, ...segs);
+      return true;
+    }
+    walls[idx] = next;
+    return true;
   }
 
   /**

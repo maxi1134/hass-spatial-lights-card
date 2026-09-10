@@ -796,7 +796,7 @@ HA's editor preview pane is far too small to trace a floor plan in. **Done**
 |---------|--------|
 | Drag | Draw a wall. Starting on an existing corner **attaches to it exactly**, so a run joins with no gap |
 | `Esc` | End the run (the next drag starts a fresh wall) |
-| **`Shift`**-drag a corner | Move that corner |
+| **`Shift`**-drag a corner | Move that corner &mdash; **every wall meeting there moves with it**, so a traced room stays closed |
 | **`Shift`**-drag a wall's body | Move the whole wall |
 | Long-press a wall, or hover + `Delete` | Remove it |
 | Hold `Alt` | Ignore snapping |
