@@ -3871,12 +3871,31 @@ class SpatialLightColorCard extends HTMLElement {
       .modal-close:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
       /* Large color wheel overlay */
-      /* ---------- Full-size wall editor ---------- */
+      /* ---------- Full-size wall editor ----------
+         A <dialog> opened with showModal(), NOT a position:fixed div. Home
+         Assistant's edit-card dialog animates with a transform, and a
+         transformed (or filtered, or contain:paint) ancestor becomes the
+         containing block for fixed descendants -- which pinned this overlay to
+         the size of the little preview card, exactly the thing it exists to
+         escape. Top-layer elements ignore ancestor containing blocks,
+         overflow and stacking entirely. */
       .wall-editor-overlay {
-        position: fixed; inset: 0; background: rgba(0,0,0,0.9); backdrop-filter: blur(10px);
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        z-index: 1000; padding: 14px; gap: 12px;
+        border: 0; margin: 0; padding: 14px;
+        max-width: none; max-height: none;
+        width: 100vw; height: 100vh;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.9); backdrop-filter: blur(10px);
+        color: #fff;
+        box-sizing: border-box;
+        overflow: hidden;
       }
+      /* Closed state is the UA's display:none; only style the open one, or the
+         overlay would render even while shut. */
+      .wall-editor-overlay[open] {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 12px;
+      }
+      .wall-editor-overlay::backdrop { background: rgba(0,0,0,0.6); }
       .wall-editor-head {
         display: flex; align-items: center; gap: 14px; width: 100%;
         max-width: 1400px; padding: 0 4px;
@@ -4378,7 +4397,7 @@ class SpatialLightColorCard extends HTMLElement {
         + (bg.rendering ? `image-rendering:${bg.rendering};` : '')
       : '';
     return `
-      <div class="wall-editor-overlay" id="wallEditorOverlay">
+      <dialog class="wall-editor-overlay" id="wallEditorOverlay">
         <div class="wall-editor-head">
           <div class="wall-editor-title">Draw walls</div>
           <div class="wall-editor-count" id="wallEditorCount"></div>
@@ -4395,7 +4414,7 @@ class SpatialLightColorCard extends HTMLElement {
           long-press a wall to delete &middot;
           <kbd>Alt</kbd> ignores snapping
         </div>
-      </div>
+      </dialog>
     `;
   }
 
@@ -4477,6 +4496,26 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._els.wallCount) {
       this._els.wallCount.textContent = count === 1 ? '1 wall' : `${count} walls`;
     }
+  }
+
+  /**
+   * Leave wall mode entirely. Broadcasting active:false keeps the editor's own
+   * switch from disagreeing with the card about whether drawing is armed.
+   */
+  _exitWallMode() {
+    if (!this._wallEditMode) return;
+    this._wallEditMode = false;
+    this._wallEditorId = null;
+    this._wallChainAnchor = null;
+    this._wallDrawState = null;
+    this._draftWalls = null;
+    if (this._wallHoldTimer) { clearTimeout(this._wallHoldTimer); this._wallHoldTimer = null; }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+        detail: { editorId: null, active: false },
+      }));
+    }
+    if (this._hass && this._config && this._config.entities) this._renderAll();
   }
 
   _requestWallEditorDraw() {
@@ -4908,6 +4947,9 @@ class SpatialLightColorCard extends HTMLElement {
       this._els.wallCanvas.width = 0;
       this._els.wallCanvas.height = 0;
     }
+    if (this._els && this._els.wallOverlay && this._els.wallOverlay.open) {
+      try { this._els.wallOverlay.close(); } catch (_) { /* already gone */ }
+    }
     if (this._wallHoldTimer) {
       clearTimeout(this._wallHoldTimer);
       this._wallHoldTimer = null;
@@ -5005,22 +5047,40 @@ class SpatialLightColorCard extends HTMLElement {
         this._wallStageObserver = new ResizeObserver(() => this._requestWallEditorDraw());
         this._wallStageObserver.observe(stage);
       }
+      // Promote to the top layer. Also makes everything behind it inert, so
+      // the tiny preview underneath cannot steal the gesture.
+      const overlay = this._els.wallOverlay;
+      if (overlay) {
+        if (typeof overlay.showModal === 'function') {
+          if (!overlay.open) {
+            try { overlay.showModal(); } catch (_) { /* already open */ }
+          }
+        } else {
+          // No <dialog> support: fall back to the plain layered overlay, which
+          // still works wherever no ancestor creates a containing block.
+          overlay.setAttribute('open', '');
+        }
+        // Escape reaches the dialog before the card's key handler. The first
+        // one should end the run in progress, not close the editor.
+        overlay.addEventListener('cancel', (ev) => {
+          if (this._wallChainAnchor || this._wallDrawState) {
+            ev.preventDefault();
+            this._wallChainAnchor = null;
+            this._wallDrawState = null;
+            this._draftWalls = null;
+            this._invalidateWallGeometry();
+          }
+        });
+        overlay.addEventListener('close', () => this._exitWallMode());
+      }
+
       const done = this.shadowRoot.getElementById('wallEditorDone');
       if (done) {
         done.addEventListener('click', () => {
-          // Closing the editor leaves wall mode entirely, so the editor's own
-          // switch and the card cannot disagree about whether it is armed.
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
-              detail: { editorId: this._wallEditorId, active: false },
-            }));
-          }
-          this._wallEditMode = false;
-          this._wallEditorId = null;
-          this._wallChainAnchor = null;
-          this._wallDrawState = null;
-          this._draftWalls = null;
-          if (this._hass && this._config && this._config.entities) this._renderAll();
+          const ov = this._els.wallOverlay;
+          // Closing fires 'close', which calls _exitWallMode.
+          if (ov && ov.open && typeof ov.close === 'function') ov.close();
+          else this._exitWallMode();
         });
       }
       this._requestWallEditorDraw();
