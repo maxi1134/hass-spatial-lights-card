@@ -1674,6 +1674,20 @@ class SpatialLightColorCard extends HTMLElement {
    */
   _onCanvasGeometryChanged() {
     this._repositionLabels && this._repositionLabels();
+    // The canvas box just changed, so everything measured against the old one
+    // is stale: the field's backing store carries an inline CSS size from the
+    // previous rect, and the occluders were converted to pixels against it.
+    //
+    // Missing this is what made the first paint look wrong until you touched
+    // something: the plan image loads asynchronously, gives the canvas its
+    // aspect ratio, and the field kept drawing at the pre-aspect size until
+    // the next updateLights -- so clicking a light appeared to "snap" it into
+    // place. Percent glow sizes make this matter more, not less, since their
+    // pixel value is derived from this rect too.
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
+    this._requestLightFieldDraw();
+    this._requestWallEditorDraw();
   }
 
   _canvasBackgroundStyle() {
@@ -8300,12 +8314,10 @@ class SpatialLightColorCard extends HTMLElement {
       cv.width = w;
       cv.height = h;
     }
-    // The overlay canvas is sized by CSS; only the in-card layer needs its
-    // CSS box pinned to the measured rect.
-    if (!cv.dataset.cssSized) {
-      cv.style.width = `${rect.width}px`;
-      cv.style.height = `${rect.height}px`;
-    }
+    // Both canvases are laid out by CSS (inset:0 / 100%), so the CSS box is
+    // never pinned to a measured rect here. Pinning it meant a canvas sized
+    // before the plan image landed kept the old box and no longer filled its
+    // container.
     return dpr;
   }
 
@@ -10410,7 +10422,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
       .card-config {
         display: grid; grid-template-columns: minmax(0, 1fr);
         gap: 16px; align-items: start;
+        max-width: 100%;
       }
+      /* Grid items default to min-width:auto, so one long unbreakable token
+         (an entity_id) can push a track wider than its own minmax(0, 1fr)
+         track and overflow the panel sideways. Belt to the track's braces. */
+      .card-config > * { min-width: 0; }
+      .card-config code,
+      .card-config .entity-id { overflow-wrap: anywhere; }
 
       /* Widen the dialog and the settings flow into columns instead of every
          field stretching to twice its useful width. Each section keeps its own
@@ -11174,8 +11193,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const glowWalls = Array.isArray(config.glow_walls) ? config.glow_walls : [];
     // Reuse the card's normalizer so the form always shows real effective
     // values rather than blanks for anything the user has not set yet.
+    // Reuse the card's normalizer against a bare prototype instance, NOT an
+    // ad-hoc object: the normalizer delegates to sibling prototype methods
+    // (_normalizeGlowLength), and a hand-rolled `this` throws the moment one
+    // of them is added.
     const lfCfg = SpatialLightColorCard.prototype._normalizeLightField.call(
-      { _config: config }, config.light_field);
+      Object.create(SpatialLightColorCard.prototype), config.light_field);
     const alSwitches = SpatialLightColorCard.findAdaptiveSwitches(this._hass);
 
     // Save section collapsed state before re-render
