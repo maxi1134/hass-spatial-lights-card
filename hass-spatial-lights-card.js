@@ -4332,9 +4332,11 @@ class SpatialLightColorCard extends HTMLElement {
           <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
         <div class="wall-editor-hint">
-          Drag to draw &middot; press the same corner to continue the run &middot;
-          <kbd>Esc</kbd> ends a run &middot; drag an endpoint or a wall to move it &middot;
-          long-press a wall to delete &middot; hold <kbd>Alt</kbd> to ignore snapping
+          Drag to draw &mdash; starting on a corner attaches to it exactly &middot;
+          <kbd>Esc</kbd> ends a run &middot;
+          <kbd>Shift</kbd>-drag a corner or a wall to move it &middot;
+          long-press a wall to delete &middot;
+          <kbd>Alt</kbd> ignores snapping
         </div>
       </div>
     `;
@@ -8950,8 +8952,11 @@ class SpatialLightColorCard extends HTMLElement {
     const next = hit ? hit.index : null;
     if (next !== this._wallHoverIndex) {
       this._wallHoverIndex = next;
-      if (this._els.canvas) {
-        this._els.canvas.style.cursor = hit
+      const surface = this._wallSurface();
+      if (surface) {
+        // Only Shift turns a wall into something draggable, so only then
+        // should the cursor promise that.
+        surface.style.cursor = (hit && e.shiftKey)
           ? (hit.kind === 'endpoint' ? 'grab' : 'move')
           : 'crosshair';
       }
@@ -8972,60 +8977,100 @@ class SpatialLightColorCard extends HTMLElement {
     // means one config write per wall, not one per frame.
     this._draftWalls = this._wallList().map(w => ({ ...w }));
 
-    // Continuing a chain takes precedence over grabbing an endpoint. The
-    // previous stroke left the pen resting on its far corner, so pressing
-    // there means "keep drawing from here" — without this the second leg of
-    // every traced room silently drags the first leg's endpoint instead.
-    // It applies only to the chain anchor, so every OTHER endpoint stays
-    // draggable, and Escape drops the anchor to make this one draggable too.
-    const anchor = this._wallChainAnchor;
-    let chaining = false;
-    if (anchor) {
-      const dx = (anchor.x - pt.x) / 100 * pt.rect.width;
-      const dy = (anchor.y - pt.y) / 100 * pt.rect.height;
-      chaining = (dx * dx + dy * dy) <= 14 * 14;
-    }
+    // MODIFIER POLICY: no modifier DRAWS, Shift MODIFIES existing geometry.
+    //
+    // The other way round made the commonest action — running a new wall out
+    // of a corner you just drew — the hardest one, because pressing the corner
+    // grabbed its handle and dragged the corner instead of starting a line
+    // from it. Drawing is what you do dozens of times while tracing a plan;
+    // adjusting a corner is occasional, so it is the one that takes a key.
+    const wantsEdit = e.shiftKey;
+    const hit = this._hitTestWall(pt, pt.rect);
 
-    const hit = chaining ? null : this._hitTestWall(pt, pt.rect);
-
-    if (chaining) {
-      this._draftWalls.push({ x1: anchor.x, y1: anchor.y, x2: anchor.x, y2: anchor.y, _src: null, _part: null });
-      this._wallDrawState = {
-        mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
-        anchor: { x: anchor.x, y: anchor.y },
-      };
-    } else if (hit && hit.kind === 'endpoint') {
+    if (wantsEdit && hit && hit.kind === 'endpoint') {
       const w0 = this._draftWalls[hit.index];
       this._wallDrawState = {
         mode: 'endpoint', index: hit.index, end: hit.end, pointerId: e.pointerId, moved: false,
         orig: { x1: w0.x1, y1: w0.y1, x2: w0.x2, y2: w0.y2 },
       };
-    } else if (hit && hit.kind === 'body') {
+    } else if (wantsEdit && hit && hit.kind === 'body') {
       const w = this._draftWalls[hit.index];
       this._wallDrawState = {
         mode: 'body', index: hit.index, pointerId: e.pointerId, moved: false,
         grab: { x: pt.x, y: pt.y }, orig: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
       };
-      // Long-press on a wall body deletes it — the editor is routinely used
-      // on a tablet, where a keyboard-only delete makes a mis-drawn wall
-      // impossible to remove from the plan.
-      this._wallHoldTimer = setTimeout(() => {
-        this._wallHoldTimer = null;
-        if (!this._wallDrawState || this._wallDrawState.moved) return;
-        this._deleteWallAt(hit.index);
-        this._wallDrawState = null;
-      }, 500);
+      this._armWallHoldDelete(hit.index, null);
     } else {
-      const start = this._snapWallPoint(pt, pt.rect, this._wallChainAnchor || null, -1, e.altKey);
+      // Draw. The start point latches onto an existing corner when there is
+      // one under the pointer, so a new wall begins exactly where the old one
+      // ends — no gap for light to leak through, and no nudging the corner
+      // it attaches to.
+      const start = this._wallStartPoint(pt, e.altKey);
       this._draftWalls.push({ x1: start.x, y1: start.y, x2: start.x, y2: start.y, _src: null, _part: null });
       this._wallDrawState = {
         mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
         anchor: start,
       };
+      // Touch has no Shift, so a stationary hold on an existing wall must
+      // still delete it. The pending draft stroke is discarded first.
+      if (hit) this._armWallHoldDelete(hit.index, this._draftWalls.length - 1);
     }
     this._invalidateWallGeometry();
     e.preventDefault();
     return true;
+  }
+
+  /**
+   * Where a new wall should begin: an exact existing corner when the pointer
+   * is on one, otherwise the ordinary snapped point.
+   *
+   * Latching exactly, rather than leaning on the snap cascade's tolerance,
+   * matters because an unclosed corner is invisible while drawing and obvious
+   * later, when light leaks through the hairline gap.
+   */
+  _wallStartPoint(pt, disableSnap) {
+    const TOL = 15;
+    const near = (a) => {
+      const dx = (a.x - pt.x) / 100 * pt.rect.width;
+      const dy = (a.y - pt.y) / 100 * pt.rect.height;
+      return dx * dx + dy * dy <= TOL * TOL;
+    };
+    // The corner the previous stroke left the pen on wins, so a traced run
+    // keeps flowing even where several corners sit close together.
+    if (this._wallChainAnchor && near(this._wallChainAnchor)) {
+      return { x: this._wallChainAnchor.x, y: this._wallChainAnchor.y };
+    }
+    let best = null, bestD = TOL * TOL;
+    for (const w of this._wallList()) {
+      for (const pair of [[w.x1, w.y1], [w.x2, w.y2]]) {
+        const dx = (pair[0] - pt.x) / 100 * pt.rect.width;
+        const dy = (pair[1] - pt.y) / 100 * pt.rect.height;
+        const d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = { x: pair[0], y: pair[1] }; }
+      }
+    }
+    if (best) return best;
+    return this._snapWallPoint(pt, pt.rect, this._wallChainAnchor || null, -1, disableSnap);
+  }
+
+  /**
+   * Long-press-to-delete. `draftIndex` is the pending draw stroke to discard
+   * first, for when the hold happened during a draw rather than a Shift-drag.
+   */
+  _armWallHoldDelete(wallIndex, draftIndex) {
+    if (this._wallHoldTimer) clearTimeout(this._wallHoldTimer);
+    this._wallHoldTimer = setTimeout(() => {
+      this._wallHoldTimer = null;
+      const st = this._wallDrawState;
+      if (!st || st.moved) return;
+      // The draft stroke sits at the END of the list, so removing it cannot
+      // shift the index of the pre-existing wall being deleted.
+      if (draftIndex != null && this._draftWalls && draftIndex < this._draftWalls.length) {
+        this._draftWalls.splice(draftIndex, 1);
+      }
+      this._wallDrawState = null;
+      this._deleteWallAt(wallIndex);
+    }, 500);
   }
 
   _onWallPointerMove(e) {
@@ -11815,7 +11860,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <div class="option-row">
               <div>
                 <div class="label">Draw walls on the plan</div>
-                <div class="sublabel">Drag on the preview to draw. Releasing continues the next wall from that corner &mdash; Esc ends the run. Drag an endpoint or a wall to move it; long-press or select + Delete removes one. Hold Alt to ignore snapping.</div>
+                <div class="sublabel">Opens a full-size editor. Drag to draw; starting on an existing corner attaches to it exactly, so runs join without gaps. <b>Shift</b>-drag a corner or a wall to move it. Long-press a wall (or hover + Delete) removes it. Esc ends a run, Alt ignores snapping.</div>
               </div>
               <ha-switch id="cfgWallDrawMode" ${this._wallDrawActive ? 'checked' : ''}></ha-switch>
             </div>

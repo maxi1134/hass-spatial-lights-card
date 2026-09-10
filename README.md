@@ -764,14 +764,18 @@ preview pane is far too small to trace a floor plan in. **Done** (or a second
 
 | Gesture | Result |
 |---------|--------|
-| Drag on empty canvas | Draw a wall |
-| Release, then press at the same corner | Continue the run from there — trace a room in one gesture |
+| Drag | Draw a wall. Starting on an existing corner **attaches to it exactly**, so a run joins with no gap |
 | `Esc` | End the run (the next drag starts a fresh wall) |
-| Drag an endpoint | Move that end |
-| Drag a wall's body | Move the whole wall |
+| **`Shift`**-drag a corner | Move that corner |
+| **`Shift`**-drag a wall's body | Move the whole wall |
 | Long-press a wall, or hover + `Delete` | Remove it |
 | Hold `Alt` | Ignore snapping |
 | `Ctrl`/`Cmd` + `Z` | Undo the last wall edit |
+
+Plain dragging always **draws**; `Shift` is what modifies existing geometry.
+That way running a new wall out of a corner — the thing you do dozens of times
+while tracing a plan — needs no modifier, and does not nudge the corner it
+attaches to. Adjusting a corner is the occasional action, so it takes the key.
 
 Snapping is **on** while drawing — endpoint-to-endpoint first, then 45° angles,
 then the grid. That polarity is deliberately the opposite of dragging lights
