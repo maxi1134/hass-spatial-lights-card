@@ -4524,6 +4524,69 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._hass && this._config && this._config.entities) this._renderAll();
   }
 
+  /**
+   * Promote the wall editor to the browser's top layer.
+   *
+   * showModal() throws InvalidStateError when the dialog's tree is not in a
+   * document, and _renderAll can legitimately run while the card is still
+   * detached -- Home Assistant sets config and hass on a preview card before
+   * appending it. The previous version called showModal exactly once during
+   * render and swallowed the exception, which looks identical to "the modal
+   * just does not open" with nothing in the console to go on. So: attempt it,
+   * and if the tree is not ready, mark it pending and retry from
+   * connectedCallback and on the next frame.
+   *
+   * Being modal also makes everything behind it inert, so the small preview
+   * underneath cannot steal the gesture.
+   */
+  _openWallEditor() {
+    const overlay = this._els && this._els.wallOverlay;
+    if (!overlay || !this._wallEditMode) return;
+    if (overlay.open) { this._wallEditorOpenPending = false; return; }
+
+    if (typeof overlay.showModal !== 'function') {
+      console.warn('[spatial-lights-card] <dialog> unsupported; wall editor may be confined.');
+      overlay.setAttribute('open', '');
+      return;
+    }
+    if (!overlay.isConnected) {
+      // Not in a document yet: retry rather than throw and give up.
+      // rAF AND a timeout, because a hidden or throttled document may never
+      // run the frame callback -- the same reason the field renderer carries a
+      // backstop.
+      this._wallEditorOpenPending = true;
+      const retry = () => { if (this._wallEditorOpenPending) this._openWallEditor(); };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(retry);
+      setTimeout(retry, 120);
+      return;
+    }
+
+    try {
+      overlay.showModal();
+      this._wallEditorOpenPending = false;
+    } catch (err) {
+      console.warn('[spatial-lights-card] wall editor showModal() failed:', err,
+        'build:', SpatialLightColorCard.BUILD);
+      overlay.setAttribute('open', '');
+    }
+
+    // Confirm it actually reached the top layer. If an ancestor still boxes it
+    // in, say so with numbers rather than leaving a mysteriously tiny panel.
+    const raf2 = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+    raf2(() => {
+      if (!overlay.isConnected) return;
+      const box = overlay.getBoundingClientRect();
+      const vw = window.innerWidth || 0;
+      if (box.width > 0 && vw > 0 && box.width < vw * 0.9) {
+        console.warn(
+          `[spatial-lights-card] wall editor is confined to ${Math.round(box.width)}x`
+          + `${Math.round(box.height)} instead of the ${vw}px viewport - an ancestor is`
+          + ' acting as its containing block. build: ' + SpatialLightColorCard.BUILD
+        );
+      }
+    });
+  }
+
   _requestWallEditorDraw() {
     if (!this._wallEditMode) return;
     if (this._wallEditorFrame != null) return;
@@ -4746,6 +4809,12 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** ---------- Events ---------- */
   connectedCallback() {
+    // Now that the tree is in a document, a wall editor that could not open
+    // during a detached render can finally be promoted to the top layer.
+    if (this._wallEditMode) {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => this._openWallEditor());
+      setTimeout(() => this._openWallEditor(), 120);
+    }
     if (!this._boundKeyDown) {
       this._boundKeyDown = (e) => this._handleKeyDown(e);
       document.addEventListener('keydown', this._boundKeyDown);
@@ -5053,40 +5122,9 @@ class SpatialLightColorCard extends HTMLElement {
         this._wallStageObserver = new ResizeObserver(() => this._requestWallEditorDraw());
         this._wallStageObserver.observe(stage);
       }
-      // Promote to the top layer. Also makes everything behind it inert, so
-      // the tiny preview underneath cannot steal the gesture.
       const overlay = this._els.wallOverlay;
       if (overlay) {
-        if (typeof overlay.showModal === 'function') {
-          if (!overlay.open) {
-            try {
-              overlay.showModal();
-            } catch (err) {
-              // Never silent: a swallowed failure here looks exactly like
-              // "the modal just does not open" with nothing to go on.
-              console.warn('[spatial-lights-card] wall editor showModal() failed:', err);
-              overlay.setAttribute('open', '');
-            }
-          }
-        } else {
-          console.warn('[spatial-lights-card] <dialog> unsupported; wall editor may be confined.');
-          overlay.setAttribute('open', '');
-        }
-        // Confirm it actually reached the top layer. If an ancestor still has
-        // it boxed in, the editor is unusable and the user needs to know why
-        // rather than see a mysteriously tiny panel.
-        requestAnimationFrame(() => {
-          if (!overlay.isConnected) return;
-          const box = overlay.getBoundingClientRect();
-          const vw = window.innerWidth || 0;
-          if (box.width > 0 && vw > 0 && box.width < vw * 0.9) {
-            console.warn(
-              `[spatial-lights-card] wall editor is confined to ${Math.round(box.width)}x`
-              + `${Math.round(box.height)} instead of the ${vw}px viewport - an ancestor is `
-              + 'acting as its containing block. Build: ' + SpatialLightColorCard.BUILD
-            );
-          }
-        });
+        this._openWallEditor();
         // Escape reaches the dialog before the card's key handler. The first
         // one should end the run in progress, not close the editor.
         overlay.addEventListener('cancel', (ev) => {
