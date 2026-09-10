@@ -9778,11 +9778,31 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
   _setupEntityPickers() {
     if (!this._hass || !this.shadowRoot) return;
+    // Entities already on the card. The "Add entity..." picker hides these:
+    // offering one again is a dead option, since the add handler rejects
+    // duplicates anyway.
+    const taken = new Set(Array.isArray(this._config && this._config.entities)
+      ? this._config.entities : []);
+    // ha-entity-picker's entityFilter has been given both a state object and a
+    // bare entity_id across HA versions; accept either, and never filter when
+    // the shape is unrecognised (better a stale option than an empty list).
+    const idOf = (e) => (typeof e === 'string' ? e : (e && e.entity_id) || '');
+
     this.shadowRoot.querySelectorAll('ha-entity-picker').forEach(picker => {
       picker.hass = this._hass;
       // Canvas element pickers allow all domains
       if (!picker.hasAttribute('data-no-domain-filter') && (!picker.includeDomains || picker.includeDomains.length === 0)) {
         picker.includeDomains = ['light', 'switch', 'scene', 'input_boolean', 'binary_sensor'];
+      }
+      // Only the add-entity picker: canvas-element pickers point at arbitrary
+      // entities (a sensor to read, an entity to open) and have every reason
+      // to reference something already on the card.
+      if (picker.id === 'addEntityPicker') {
+        picker.excludeEntities = Array.from(taken);
+        picker.entityFilter = (e) => {
+          const id = idOf(e);
+          return id ? !taken.has(id) : true;
+        };
       }
     });
     // Set default entity picker value
