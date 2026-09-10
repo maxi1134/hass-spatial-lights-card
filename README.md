@@ -846,6 +846,7 @@ HA's editor preview pane is far too small to trace a floor plan in. **Done**
 | **`Shift`**-drag a corner | Move that corner &mdash; **every wall meeting there moves with it**, so a traced room stays closed |
 | **`Shift`**-drag a wall's body | Move the whole wall |
 | **Tap** a wall | Select it &mdash; the inspector below the plan turns it into a door and picks the entity |
+| **Right-click** a wall (mouse only) | Remove it |
 | Long-press a wall, or hover + `Delete` | Remove it |
 | Hold `Alt` | Ignore snapping |
 | `Ctrl`/`Cmd` + `Z` | Undo the last wall edit |

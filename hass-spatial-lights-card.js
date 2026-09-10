@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.17.0 (fork-maxi1134)';
+  static BUILD = 'v1.18.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -5235,6 +5235,16 @@ class SpatialLightColorCard extends HTMLElement {
       const stage = this._els.wallStage;
       stage.addEventListener('pointerdown', (e) => {
         if (this._wallDrawState) { e.preventDefault(); return; }
+        // Right-click deletes. Handled on pointerdown rather than contextmenu
+        // because only pointerdown carries BOTH pointerType and button, so
+        // "mouse only" is a fact here rather than a guess -- Android's
+        // long-press raises contextmenu with no way to tell it from a real
+        // right-click.
+        if (e.pointerType === 'mouse' && e.button !== 0) {
+          e.preventDefault();
+          if (e.button === 2) this._handleWallRightClick(e);
+          return;
+        }
         this._onWallPointerDown(e);
       });
       stage.addEventListener('pointermove', (e) => {
@@ -5763,6 +5773,13 @@ class SpatialLightColorCard extends HTMLElement {
     // Only respond to primary mouse button; touch/pen report button=0 as well.
     // Right-click (2) and middle-click (1) should not start drags or long-press
     // timers — `_handleCanvasContextMenu` handles right-click separately.
+    // Right-click deletes a wall while drawing is armed. Checked before the
+    // non-primary-button bail below, which would otherwise swallow it.
+    if (this._wallEditMode && e.pointerType === 'mouse' && e.button === 2) {
+      e.preventDefault();
+      this._handleWallRightClick(e);
+      return;
+    }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     // Wall drawing owns the canvas outright while it is armed: no selection,
     // no light dragging, no long-press more-info.
@@ -9441,6 +9458,29 @@ class SpatialLightColorCard extends HTMLElement {
     }
     if (best) return best;
     return this._snapWallPoint(pt, pt.rect, this._wallChainAnchor || null, -1, disableSnap);
+  }
+
+  /**
+   * Delete the wall under a mouse right-click.
+   *
+   * Mouse only, deliberately: touch has no right button, and the contextmenu
+   * event a long-press raises is indistinguishable from a real right-click --
+   * so binding this to contextmenu would make every Android long-press delete
+   * a wall twice over, the hold timer having already done it once.
+   */
+  _handleWallRightClick(e) {
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return false;
+    const hit = this._hitTestWall(pt, pt.rect);
+    if (!hit) return false;
+    // Fix the selection BEFORE removing, so the inspector cannot end up
+    // pointing at a hole or at the wrong wall once indices shift down.
+    if (this._wallSelectedIndex === hit.index) this._selectWall(null);
+    else if (typeof this._wallSelectedIndex === 'number' && this._wallSelectedIndex > hit.index) {
+      this._selectWall(this._wallSelectedIndex - 1);
+    }
+    this._deleteWallAt(hit.index);
+    return true;
   }
 
   /**
