@@ -145,6 +145,14 @@ Wall edits are identified by GEOMETRY, not by index. A delta carries `from` (the
 
 **Wall drawing.** Editor-session state only, armed by the `spatial-card-wall-mode` window event (a *separate* event from `spatial-card-edit-mode`, whose handler dedupes on `active` and would swallow it). `_onWallPointerDown/Move/Up` run ahead of the normal canvas gestures. Continuing a chain takes precedence over grabbing an endpoint, or the second leg of every traced room drags the first leg instead. Edits apply to `_draftWalls` locally first, then emit a `spatial-card-wall-delta` (`add`/`update`/`delete` + `_src`/`_part`) — never a snapshot, since the card's list is the normalizer's output and echoing it back would quadruple the user's list and destroy their boxes. `SpatialLightColorCardEditor._applyWallDelta` explodes a box/polyline only when one of its edges is actually dragged. Wall undo is a separate stack (`_wallHistory`) from position undo.
 
+## 8c. Full-size wall editor
+
+HA's edit-card dialog gives the preview a narrow column (~250px in a typical two-pane layout), which is unusable for tracing a plan, and that dialog's layout cannot be restyled from inside the card's shadow root. So arming wall mode also puts up `.wall-editor-overlay` — the card's own `position: fixed; z-index: 1000` overlay, the same pattern as the large colour wheel — carrying the plan at up to 96vw with its real aspect ratio (`_wallEditorAspect`, from the measured image).
+
+`_wallSurface()` is the single seam that makes this work: every wall gesture already operates in canvas PERCENTAGES, so pointing `_wallPointFromEvent` and pointer capture at the overlay stage is enough for the same `_onWallPointerDown/Move/Up` handlers to drive it. `_drawWallEditor` reuses `_renderLightField(canvas, rect)` (parameterised for this) so you draw against the real diffusion, plus `_drawFieldWalls` and light-position dots. Canvases marked `data-css-sized` opt out of `_sizeFieldCanvas`'s inline CSS box pinning, since the overlay canvas is laid out by CSS.
+
+Done (and a second Escape — the first ends a run) leaves wall mode entirely and broadcasts `active: false`, so the editor's switch and the card cannot disagree about whether it is armed.
+
 ## 8a. Label legibility over the field
 
 `.light-label` paints in TWO layers: `background-color: var(--label-ground)` (opaque) with `background-image: linear-gradient(var(--label-bg), var(--label-bg))` on top. `background-image` paints above `background-color`, so the theme's tint survives while the label is guaranteed opaque.

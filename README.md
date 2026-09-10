@@ -740,8 +740,11 @@ Glow walls can also be configured in the visual editor's **Glow Walls** section.
 #### Drawing walls on the plan
 
 Typing four numbers per wall is a poor way to lay out a floor plan, so the editor
-can turn the preview into a drawing surface. Open the card editor, expand
-**Glow Walls**, and switch on **Draw walls on the plan**:
+gives you a real drawing surface. Open the card editor, expand **Glow Walls**,
+and switch on **Draw walls on the plan** — a full-size editor opens over the
+page showing your plan at nearly the whole viewport, because HA's editor
+preview pane is far too small to trace a floor plan in. **Done** (or a second
+`Esc`) closes it.
 
 | Gesture | Result |
 |---------|--------|

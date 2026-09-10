@@ -2841,11 +2841,16 @@ class SpatialLightColorCard extends HTMLElement {
         <div class="sr-announcer" aria-live="polite"></div>
       </ha-card>
       ${this._renderLargeColorWheel()}
+      ${this._renderWallEditorOverlay()}
     `;
 
     // Cache refs once
     this._els.canvas = this.shadowRoot.getElementById('canvas');
     this._els.lightField = this.shadowRoot.getElementById('lightField');
+    this._els.wallOverlay = this.shadowRoot.getElementById('wallEditorOverlay');
+    this._els.wallStage = this.shadowRoot.getElementById('wallEditorStage');
+    this._els.wallCanvas = this.shadowRoot.getElementById('wallEditorCanvas');
+    this._els.wallCount = this.shadowRoot.getElementById('wallEditorCount');
     // Give the canvas the plan image's own aspect ratio before anything
     // measures it, so labels and the light field see the final geometry.
     this._applyBackgroundAspect();
@@ -3097,7 +3102,17 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .light.icon-only .light-icon-mdi {
         color: var(--light-color, rgba(255,255,255,0.7));
-        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+        /* The glyph is tinted with the LIGHT'S OWN colour, so on top of that
+           light's projected pool it is the same hue as its surroundings and
+           disappears -- a red bulb in the middle of a red wash. The stacked
+           zero-offset shadows act as a tight dark outline (SVG icons cannot
+           take text-stroke), which keeps the colour cue while making the
+           silhouette read against any background. Literal colours, not
+           var()-resolved: iOS clips and caches var-resolved drop-shadows. */
+        filter:
+          drop-shadow(0 0 1px rgba(0,0,0,0.95))
+          drop-shadow(0 0 1px rgba(0,0,0,0.95))
+          drop-shadow(0 1px 3px rgba(0,0,0,0.8));
       }
       .light.icon-only.off .light-icon-mdi {
         color: rgba(255,255,255,0.6);
@@ -3136,8 +3151,13 @@ class SpatialLightColorCard extends HTMLElement {
         /* Colored glow comes from .light-halo, not the drop-shadow filter.
            iOS clipped the var-resolved drop-shadow to the icon's bounding
            rectangle and cached it, leaving a visible rectangle of stale
-           color around the icon after color changes. */
-        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+           color around the icon after color changes.
+           The tight pair is an outline so the light-coloured glyph still reads
+           against its own projected pool. */
+        filter:
+          drop-shadow(0 0 1px rgba(0,0,0,0.95))
+          drop-shadow(0 0 1px rgba(0,0,0,0.95))
+          drop-shadow(0 1px 3px rgba(0,0,0,0.8));
       }
       .light.minimal-ui.off .light-icon-mdi {
         color: rgba(255,255,255,0.55);
@@ -3764,6 +3784,53 @@ class SpatialLightColorCard extends HTMLElement {
       .modal-close:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
       /* Large color wheel overlay */
+      /* ---------- Full-size wall editor ---------- */
+      .wall-editor-overlay {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.9); backdrop-filter: blur(10px);
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        z-index: 1000; padding: 14px; gap: 12px;
+      }
+      .wall-editor-head {
+        display: flex; align-items: center; gap: 14px; width: 100%;
+        max-width: 1400px; padding: 0 4px;
+      }
+      .wall-editor-title { font-size: 15px; font-weight: 600; color: #fff; }
+      .wall-editor-count { font-size: 12px; color: rgba(255,255,255,0.6); flex: 1; }
+      .wall-editor-btn {
+        border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.12);
+        color: #fff; border-radius: 8px; padding: 7px 18px; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+      }
+      .wall-editor-btn:hover { background: rgba(255,255,255,0.2); }
+      /* The stage carries the plan and sets the aspect ratio; sizing by BOTH
+         max-width and max-height lets aspect-ratio pick whichever fits, so a
+         wide plan fills the width and a tall one fills the height. */
+      .wall-editor-stage {
+        position: relative;
+        max-width: min(96vw, 1400px);
+        max-height: calc(100vh - 130px);
+        width: 96vw;
+        background-color: #f4f1ea;
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 6px;
+        box-shadow: 0 10px 60px rgba(0,0,0,0.6);
+        touch-action: none;
+        cursor: crosshair;
+        overflow: hidden;
+      }
+      .wall-editor-canvas {
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        display: block; pointer-events: none;
+      }
+      .wall-editor-hint {
+        font-size: 11px; color: rgba(255,255,255,0.55); text-align: center;
+        max-width: 900px; line-height: 1.6;
+      }
+      .wall-editor-hint kbd {
+        background: rgba(255,255,255,0.14); border-radius: 4px; padding: 1px 5px;
+        font-family: inherit; font-size: 10px;
+      }
+
       .color-wheel-overlay {
         position: fixed; inset: 0; background: rgba(0,0,0,0.88); backdrop-filter: blur(12px);
         display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -4201,6 +4268,140 @@ class SpatialLightColorCard extends HTMLElement {
     `;
   }
 
+  /**
+   * Full-size wall editor.
+   *
+   * Home Assistant's edit-card dialog gives the preview a narrow column — a
+   * couple of hundred pixels wide in a typical two-pane layout — and tracing a
+   * floor plan at that size is guesswork. The dialog's layout is HA's and
+   * cannot be restyled from inside the card's shadow root, so instead the card
+   * puts up its own overlay: the same plan, the same gestures, at nearly the
+   * full viewport. Same fixed/z-index pattern the large colour wheel already
+   * uses.
+   */
+  _renderWallEditorOverlay() {
+    if (!this._wallEditMode) return '';
+    const bg = this._config.background_image;
+    const ar = this._wallEditorAspect();
+    const bgStyle = bg && bg.url
+      ? `background-image:url('${String(bg.url).replace(/"/g, '%22').replace(/'/g, "\'")}');`
+        + `background-size:${this._backgroundSizeValue(bg)};`
+        + `background-position:${bg.position || 'center'};`
+        + `background-repeat:${bg.repeat || 'no-repeat'};`
+        + (bg.rendering ? `image-rendering:${bg.rendering};` : '')
+      : '';
+    return `
+      <div class="wall-editor-overlay" id="wallEditorOverlay">
+        <div class="wall-editor-head">
+          <div class="wall-editor-title">Draw walls</div>
+          <div class="wall-editor-count" id="wallEditorCount"></div>
+          <button class="wall-editor-btn" id="wallEditorDone">Done</button>
+        </div>
+        <div class="wall-editor-stage" id="wallEditorStage"
+             style="${bgStyle} aspect-ratio:${ar};">
+          <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
+        </div>
+        <div class="wall-editor-hint">
+          Drag to draw &middot; press the same corner to continue the run &middot;
+          <kbd>Esc</kbd> ends a run &middot; drag an endpoint or a wall to move it &middot;
+          long-press a wall to delete &middot; hold <kbd>Alt</kbd> to ignore snapping
+        </div>
+      </div>
+    `;
+  }
+
+  /** The stage must match the plan's shape, or drawn walls would be skewed. */
+  _wallEditorAspect() {
+    if (this._config.aspect_ratio) {
+      return `${this._config.aspect_ratio.w} / ${this._config.aspect_ratio.h}`;
+    }
+    const bg = this._config.background_image;
+    if (bg && bg.url) {
+      const dims = SpatialLightColorCard._imageSizeCache.get(bg.url);
+      if (dims && typeof dims.then !== 'function' && dims.w > 0 && dims.h > 0) {
+        return `${dims.w} / ${dims.h}`;
+      }
+    }
+    // No plan to measure: fall back to the card's own canvas proportions.
+    const rect = this._planRect();
+    if (rect) return `${Math.round(rect.width)} / ${Math.round(rect.height)}`;
+    return '16 / 10';
+  }
+
+  /**
+   * The surface wall gestures are measured against. Everything in the drawing
+   * code works in canvas percentages, so pointing this at the overlay is all
+   * that is needed to make the same handlers drive the big stage.
+   */
+  _wallSurface() {
+    if (this._wallEditMode && this._els && this._els.wallStage) return this._els.wallStage;
+    return this._els && this._els.canvas;
+  }
+
+  /** Paint the plan's walls (and the light field, if on) on the big stage. */
+  _drawWallEditor() {
+    const stage = this._els && this._els.wallStage;
+    const cv = this._els && this._els.wallCanvas;
+    if (!stage || !cv) return;
+    const box = stage.getBoundingClientRect();
+    if (!(box.width > 0) || !(box.height > 0)) return;
+    const rect = { width: box.width, height: box.height };
+
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+
+    if (this._fieldActive) {
+      // Same renderer, bigger canvas — so what you draw against is what the
+      // dashboard will actually show.
+      this._renderLightField(cv, rect);
+    } else {
+      const dpr = this._sizeFieldCanvas(cv, rect);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      this._drawFieldWalls(ctx, rect);
+    }
+
+    // Light positions, so walls can be placed relative to what they occlude.
+    const dpr2 = cv.width / rect.width;
+    ctx.setTransform(dpr2, 0, 0, dpr2, 0, 0);
+    ctx.save();
+    for (const id of this._config.entities) {
+      const pos = this._config.positions[id];
+      if (!pos) continue;
+      const st = this._hass && this._hass.states[id];
+      const isOn = st && st.state === 'on';
+      const cx = pos.x / 100 * rect.width;
+      const cy = pos.y / 100 * rect.height;
+      let rgb = this._parseColorToRGB(this._resolveEntityColor(id, !!isOn, st ? st.attributes : {}));
+      if (!rgb) rgb = { r: 255, g: 165, b: 0 };
+      ctx.beginPath();
+      ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${isOn ? 0.95 : 0.35})`;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const count = (this._wallList() || []).length;
+    if (this._els.wallCount) {
+      this._els.wallCount.textContent = count === 1 ? '1 wall' : `${count} walls`;
+    }
+  }
+
+  _requestWallEditorDraw() {
+    if (!this._wallEditMode) return;
+    if (this._wallEditorFrame != null) return;
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+    this._wallEditorFrame = raf(() => {
+      this._wallEditorFrame = null;
+      try { this._drawWallEditor(); } catch (err) {
+        console.warn('[spatial-lights-card] wall editor draw failed:', err);
+      }
+    });
+  }
+
   _updateControlValues(controlContext) {
     const context = controlContext || { avgState: { brightness: 128, temperature: 4000 }, tempRange: { min: 2000, max: 6500 } };
     const { avgState, tempRange } = context;
@@ -4605,6 +4806,19 @@ class SpatialLightColorCard extends HTMLElement {
       this._colorWheelFrame = null;
     }
     this._clearLightFieldSchedule();
+    if (this._wallStageObserver) {
+      this._wallStageObserver.disconnect();
+      this._wallStageObserver = null;
+    }
+    if (this._wallEditorFrame != null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._wallEditorFrame);
+      else clearTimeout(this._wallEditorFrame);
+      this._wallEditorFrame = null;
+    }
+    if (this._els && this._els.wallCanvas) {
+      this._els.wallCanvas.width = 0;
+      this._els.wallCanvas.height = 0;
+    }
     if (this._wallHoldTimer) {
       clearTimeout(this._wallHoldTimer);
       this._wallHoldTimer = null;
@@ -4680,6 +4894,47 @@ class SpatialLightColorCard extends HTMLElement {
       this._els.canvas.addEventListener('touchmove', (e) => this._handleCanvasTouchMove(e), { passive: false });
       this._els.canvas.addEventListener('dblclick', (e) => this._handleCanvasDoubleClick(e));
       this._els.canvas.addEventListener('contextmenu', (e) => this._handleCanvasContextMenu(e));
+    }
+
+    // Full-size wall editor: the same handlers, driven by the big stage.
+    if (this._els.wallStage) {
+      const stage = this._els.wallStage;
+      stage.addEventListener('pointerdown', (e) => {
+        if (this._wallDrawState) { e.preventDefault(); return; }
+        this._onWallPointerDown(e);
+      });
+      stage.addEventListener('pointermove', (e) => {
+        if (this._wallDrawState) this._onWallPointerMove(e);
+        else this._trackWallHover(e);
+      });
+      stage.addEventListener('pointerup', (e) => this._onWallPointerUp(e));
+      stage.addEventListener('pointercancel', () => this._cancelActiveInteractions());
+      // Android raises contextmenu from the same hold as delete-a-wall.
+      stage.addEventListener('contextmenu', (e) => e.preventDefault());
+      if (typeof ResizeObserver !== 'undefined') {
+        if (this._wallStageObserver) this._wallStageObserver.disconnect();
+        this._wallStageObserver = new ResizeObserver(() => this._requestWallEditorDraw());
+        this._wallStageObserver.observe(stage);
+      }
+      const done = this.shadowRoot.getElementById('wallEditorDone');
+      if (done) {
+        done.addEventListener('click', () => {
+          // Closing the editor leaves wall mode entirely, so the editor's own
+          // switch and the card cannot disagree about whether it is armed.
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+              detail: { editorId: this._wallEditorId, active: false },
+            }));
+          }
+          this._wallEditMode = false;
+          this._wallEditorId = null;
+          this._wallChainAnchor = null;
+          this._wallDrawState = null;
+          this._draftWalls = null;
+          if (this._hass && this._config && this._config.entities) this._renderAll();
+        });
+      }
+      this._requestWallEditorDraw();
       // Reposition labels when hovering over lights (delegated, deferred to next frame
       // so :hover pseudo-class is fully applied before we check it)
       this._els.canvas.addEventListener('pointerover', (e) => {
@@ -4977,14 +5232,18 @@ class SpatialLightColorCard extends HTMLElement {
     // pending stroke); Delete/Backspace removes the wall under the pointer.
     if (this._wallEditMode && !isEditable) {
       if (e.key === 'Escape') {
+        e.preventDefault();
         if (this._wallChainAnchor || this._wallDrawState) {
-          e.preventDefault();
+          // First Escape ends the run in progress...
           this._wallChainAnchor = null;
           this._wallDrawState = null;
           this._draftWalls = null;
           this._invalidateWallGeometry();
           return;
         }
+        // ...a second one leaves the editor.
+        const done = this.shadowRoot && this.shadowRoot.getElementById('wallEditorDone');
+        if (done) { done.click(); return; }
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && this._wallHoverIndex != null) {
         e.preventDefault();
@@ -7960,8 +8219,12 @@ class SpatialLightColorCard extends HTMLElement {
       cv.width = w;
       cv.height = h;
     }
-    cv.style.width = `${rect.width}px`;
-    cv.style.height = `${rect.height}px`;
+    // The overlay canvas is sized by CSS; only the in-card layer needs its
+    // CSS box pinned to the measured rect.
+    if (!cv.dataset.cssSized) {
+      cv.style.width = `${rect.width}px`;
+      cv.style.height = `${rect.height}px`;
+    }
     return dpr;
   }
 
@@ -8326,11 +8589,13 @@ class SpatialLightColorCard extends HTMLElement {
    * a whole then composites over the plan with `mix-blend-mode` (screen by
    * default, which tints the plan without crushing its own darks).
    */
-  _renderLightField() {
+  _renderLightField(targetCanvas, targetRect) {
     if (this._fieldFailed) return;
-    const cv = this._els && this._els.lightField;
+    // Parameterised so the full-size wall editor can paint the same field on
+    // its own, much larger canvas. Defaults to the in-card layer.
+    const cv = targetCanvas || (this._els && this._els.lightField);
     if (!cv || !this._hass) return;
-    const rect = this._planRect();
+    const rect = targetRect || this._planRect();
     if (!rect) return;
 
     const ctx = cv.getContext('2d');
@@ -8532,7 +8797,9 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** Pointer position as canvas percentages. */
   _wallPointFromEvent(e) {
-    const rect = this._els.canvas.getBoundingClientRect();
+    const surface = this._wallSurface();
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
     if (!(rect.width > 0) || !(rect.height > 0)) return null;
     return {
       x: (e.clientX - rect.left) / rect.width * 100,
@@ -8669,7 +8936,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._wallDrawState) { e.preventDefault(); return true; }
     const pt = this._wallPointFromEvent(e);
     if (!pt) return false;
-    try { this._els.canvas.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may be gone */ }
+    try { this._wallSurface()?.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may be gone */ }
 
     // Work on a private copy for the whole gesture. Committing on pointerup
     // means one config write per wall, not one per frame.
@@ -8765,7 +9032,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (!st || e.pointerId !== st.pointerId) return false;
     if (this._wallHoldTimer) { clearTimeout(this._wallHoldTimer); this._wallHoldTimer = null; }
     this._wallDrawState = null;
-    try { this._els.canvas.releasePointerCapture?.(e.pointerId); } catch (_) { /* already released */ }
+    try { this._wallSurface()?.releasePointerCapture?.(e.pointerId); } catch (_) { /* already released */ }
 
     const w = this._draftWalls && this._draftWalls[st.index];
     if (!w) { this._draftWalls = null; return true; }
@@ -8855,6 +9122,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._wallMaskCache) this._wallMaskCache.clear();
     this._fieldOccluders = null;
     this._requestLightFieldDraw();
+    this._requestWallEditorDraw();
     if (!this._fieldActive) this._updateAllGlows();
   }
 
