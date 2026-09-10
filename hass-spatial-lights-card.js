@@ -8665,7 +8665,11 @@ class SpatialLightColorCard extends HTMLElement {
         anchor: { x: anchor.x, y: anchor.y },
       };
     } else if (hit && hit.kind === 'endpoint') {
-      this._wallDrawState = { mode: 'endpoint', index: hit.index, end: hit.end, pointerId: e.pointerId, moved: false };
+      const w0 = this._draftWalls[hit.index];
+      this._wallDrawState = {
+        mode: 'endpoint', index: hit.index, end: hit.end, pointerId: e.pointerId, moved: false,
+        orig: { x1: w0.x1, y1: w0.y1, x2: w0.x2, y2: w0.y2 },
+      };
     } else if (hit && hit.kind === 'body') {
       const w = this._draftWalls[hit.index];
       this._wallDrawState = {
@@ -8761,6 +8765,12 @@ class SpatialLightColorCard extends HTMLElement {
       this._commitWalls({
         op: 'update',
         src: w._src, part: w._part,
+        // `from` is what this wall looked like BEFORE the drag. _src is null
+        // for anything drawn in the current session (it is only assigned when
+        // a saved config comes back through _normalizeGlowWalls), so the
+        // editor needs a way to identify the entry that does not depend on an
+        // index it cannot know yet.
+        from: st.orig || null,
         wall: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
       });
     }
@@ -8774,7 +8784,10 @@ class SpatialLightColorCard extends HTMLElement {
     const w = this._draftWalls[index];
     if (!w) return;
     this._draftWalls.splice(index, 1);
-    this._commitWalls({ op: 'delete', src: w._src, part: w._part });
+    this._commitWalls({
+      op: 'delete', src: w._src, part: w._part,
+      from: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
+    });
   }
 
   /**
@@ -9675,16 +9688,32 @@ class SpatialLightColorCardEditor extends HTMLElement {
       return;
     }
 
-    // A segment drawn this session carries _src null until the card is rebuilt
-    // from the saved config. The `add` that created it appended to the end of
-    // the raw list, so that last entry is the one it refers to — dropping the
-    // delta instead (as this used to) meant a wall could be drawn but not then
-    // adjusted or deleted until the editor reloaded.
+    // Resolve WHICH raw entry this delta refers to.
+    //
+    // _src is null for anything drawn in the current session — it is only
+    // assigned when a saved config comes back through _normalizeGlowWalls, and
+    // HA's save round trip is asynchronous, so several strokes can land first.
+    // Guessing "the last entry" for a null _src is wrong the moment the user
+    // edits any wall other than the one they drew most recently: dragging the
+    // first of three walls silently rewrote the third and left the first
+    // alone, so the card showed one geometry and the saved config held
+    // another — which only became visible after a reload.
+    //
+    // So identify the entry by the geometry it had BEFORE the edit, and trust
+    // _src only when it actually points at something matching.
     const src = d.src;
-    let idx;
-    if (typeof src === 'number' && src >= 0 && src < walls.length) idx = src;
-    else if (src == null && walls.length > 0) idx = walls.length - 1;
-    else idx = -1;
+    let idx = -1;
+    if (typeof src === 'number' && src >= 0 && src < walls.length
+        && this._wallMatches(walls[src], d.from, d.part)) {
+      idx = src;
+    } else if (d.from) {
+      idx = walls.findIndex((w) => this._wallMatches(w, d.from, d.part));
+    } else if (typeof src === 'number' && src >= 0 && src < walls.length) {
+      // No `from` to check against (older card/editor pairing): fall back to
+      // the index, which is right whenever the list has not shifted.
+      idx = src;
+    }
+    // Better to drop an unidentifiable edit than to corrupt a different wall.
     if (idx < 0) { this._wallHistory.pop(); return; }
 
     const raw = walls[idx];
@@ -9712,6 +9741,36 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     this._fireConfigChanged();
     this._render();
+  }
+
+  /**
+   * Does this raw entry carry the geometry `from`?
+   *
+   * Handles all four authored shapes: array shorthand, {x1,y1,x2,y2}, boxes
+   * and polylines. For a composite the named `part` is exploded and compared,
+   * so dragging one edge of a box finds that box.
+   */
+  _wallMatches(raw, from, part) {
+    if (!raw || !from) return false;
+    const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.05;
+    const sameSeg = (seg) => seg
+      && ((near(seg.x1, from.x1) && near(seg.y1, from.y1) && near(seg.x2, from.x2) && near(seg.y2, from.y2))
+        // A segment is the same line whichever end is listed first.
+        || (near(seg.x1, from.x2) && near(seg.y1, from.y2) && near(seg.x2, from.x1) && near(seg.y2, from.y1)));
+
+    if (Array.isArray(raw)) {
+      return raw.length >= 4 && sameSeg({ x1: raw[0], y1: raw[1], x2: raw[2], y2: raw[3] });
+    }
+    if (typeof raw !== 'object') return false;
+    if (Array.isArray(raw.points) || (raw.width != null && raw.height != null)) {
+      const parts = this._explodeWall(raw);
+      if (part != null) {
+        const named = parts.find((pp) => String(pp.part) === String(part));
+        if (named) return sameSeg(named.seg);
+      }
+      return parts.some((pp) => sameSeg(pp.seg));
+    }
+    return sameSeg(raw);
   }
 
   /** Split a box or polyline entry into {part, seg} pairs, matching the normalizer. */
