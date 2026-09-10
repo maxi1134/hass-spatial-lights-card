@@ -3071,12 +3071,38 @@ class SpatialLightColorCard extends HTMLElement {
          outside the light. Color changes are instant now; background-color
          still fades for the body color in standard mode. */
       .light::before { content:''; position:absolute; inset:0; border-radius:inherit; background:inherit; box-shadow: var(--shadow-sm); transition: border-width 200ms ease, background-color 200ms ease, inset 200ms ease; }
+      /* The dim/desaturate tokens land HERE, on the marker body, the glow, the
+         halo and the icon -- deliberately not on .light-label or
+         .light-status-badge, which must stay legible whatever the lamp is
+         doing.
+         Opacity is safe to set on the icon; 'filter' is NOT, because
+         '.light > .light-icon' (two classes) would outrank the icon's own
+         '.light-icon-mdi' outline chain (one class) and wipe it. The icons
+         therefore dim by opacity and keep their filters. */
+      .light::before,
+      .light::after,
+      .light > .light-glow,
+      .light > .light-halo,
+      .light > .light-icon {
+        opacity: var(--light-dim, 1);
+      }
+      .light::before,
+      .light::after,
+      .light > .light-glow,
+      .light > .light-halo {
+        filter: var(--light-desat, none);
+      }
       .light.on::after {
         content:''; position:absolute; inset:-6px; border-radius:inherit; background:inherit; filter: blur(10px);
         opacity: 0.22; z-index: -1;
       }
       /* Remove forced gradient, allow JS to override background if needed */
-      .light.off { opacity: 0.55; }
+      /* Dimming is expressed as tokens the light's VISUAL children consume,
+          never as opacity/filter on .light itself. Group opacity on the marker
+          composites its whole subtree -- label included -- so an opaque label
+          background is powerless against it and projected light from a
+          neighbouring lamp shows straight through the name. Same for filter. */
+      .light.off { --light-dim: 0.55; }
       .light.off:not([style*="background"]) { background: var(--light-off-bg, linear-gradient(135deg,#3a3a3a 0%, #2a2a2a 100%)); }
       .light.off::after { display:none; }
 
@@ -3117,7 +3143,7 @@ class SpatialLightColorCard extends HTMLElement {
       .light.icon-only.off .light-icon-mdi {
         color: rgba(255,255,255,0.6);
       }
-      .light.icon-only.off { opacity: 0.8; }
+      .light.icon-only.off { --light-dim: 0.8; }
       /* Selection indicator for icon-only mode */
       .light.icon-only.selected::before {
         border-color: var(--accent-primary);
@@ -3262,14 +3288,18 @@ class SpatialLightColorCard extends HTMLElement {
         box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent-primary) 90%, transparent), 0 0 0 5px color-mix(in srgb, var(--accent-primary) 25%, transparent), 0 0 15px color-mix(in srgb, var(--accent-primary) 50%, transparent);
       }
       /* Selected off lights should be more visible than normal off lights */
-      .light.selected.off { opacity: 0.82; }
-      .light.selected.off.icon-only { opacity: 0.92; }
-      .light.selected.off.minimal-ui { opacity: 1; }
+      .light.selected.off { --light-dim: 0.82; }
+      .light.selected.off.icon-only { --light-dim: 0.92; }
+      .light.selected.off.minimal-ui { --light-dim: 1; }
       /* Always show label for selected lights */
       .light.selected .light-label { opacity: 1; }
       /* Dim unselected lights when a selection is active to increase contrast */
-      .canvas.has-selection .light:not(.selected) { filter: brightness(0.55) saturate(0.6); }
-      .canvas.has-selection .light.off:not(.selected) { filter: brightness(0.45) saturate(0.5); }
+      .canvas.has-selection .light:not(.selected) {
+        --light-desat: brightness(0.55) saturate(0.6); --light-dim: 0.6;
+      }
+      .canvas.has-selection .light.off:not(.selected) {
+        --light-desat: brightness(0.45) saturate(0.5); --light-dim: 0.45;
+      }
 
       .light.preset-highlight::before {
         box-shadow: 0 0 0 2.5px rgba(255,255,255,0.7), 0 0 16px rgba(255,255,255,0.35) !important;
@@ -3339,8 +3369,8 @@ class SpatialLightColorCard extends HTMLElement {
       /* H10: unavailable indicator. Light is dimmed + slightly desaturated;
          a small amber "?" badge sits in the top-right of the circle, scaled
          relative to the light so it stays proportional at any light_size. */
-      .light.unavailable { opacity: 0.55; filter: grayscale(0.5); }
-      .light.unavailable.selected { opacity: 0.75; }
+      .light.unavailable { --light-dim: 0.55; --light-desat: grayscale(0.5); }
+      .light.unavailable.selected { --light-dim: 0.75; }
       .light-status-badge {
         position: absolute;
         top: -4%; right: -4%;

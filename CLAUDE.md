@@ -159,6 +159,12 @@ Done (and a second Escape — the first ends a run) leaves wall mode entirely an
 
 This exists because `--label-bg` is structurally translucent in the default `theme_mode: auto`: `--label-bg` → `--surface-elevated` → `color-mix(in srgb, var(--surface-primary) 87%, var(--text-primary))`, and `--surface-primary` is `var(--ha-card-background, ...)`. color-mix's result alpha is the weighted mean of its operands', so a glass theme with `--ha-card-background: rgba(255,255,255,0.08)` yields `0.87*0.08 + 0.13 = 0.1996` — a 20%-opaque label that the projected light reads straight through. `theme.glass: true` does the same thing deliberately (`--label-bg: color-mix(... 70%, transparent)`).
 
+**Dimming never goes on `.light` itself.** Group `opacity` (and `filter`) on the marker composites its ENTIRE subtree, label included, so an opaque label background is powerless against it — an off light at `opacity: 0.55` renders its solid label at 55% and a neighbouring lamp's projected light shows straight through the name. The off / selected-off / unavailable / has-selection states therefore set `--light-dim` and `--light-desat` tokens, consumed by `.light::before`, `::after`, `.light-glow`, `.light-halo` and `.light-icon` — never by `.light-label` or `.light-status-badge`.
+
+`filter` is deliberately NOT applied to the icon by that shared rule: `.light > .light-icon` (two classes) would outrank the icon's own `.light-icon-mdi` outline chain (one class) and wipe it, so icons dim by opacity only and `has-selection` sets a `--light-dim` as well as a `--light-desat` to compensate.
+
+Icon glyphs in icon-only / minimal-ui are tinted `var(--light-color)`, i.e. the light's own colour, so they sit at zero contrast in the middle of that light's own pool. Stacked zero-offset `drop-shadow`s give them a tight dark outline (SVG cannot take `text-stroke`); literal colours, never `var()`-resolved, because iOS clips and caches those.
+
 `--label-ground` is `var(--card-background-color, #141414)` in auto (the opaque sibling token glass themes leave alone) and a fixed hex in the dark/light palettes. Setting `theme.label_background` explicitly emits `--label-ground: transparent`, so a user who deliberately picks a translucent label still gets one.
 
 ## 8b. Background image sizing
