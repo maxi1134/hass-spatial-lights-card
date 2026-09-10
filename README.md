@@ -202,7 +202,7 @@ Position history stores up to 50 steps.
 | `title` | string | `""` | Card title. When empty, the header is hidden entirely. |
 | `entities` | list | **required** | Entities (lights, switches, input_booleans, scenes) to display. |
 | `positions` | map | `{}` | Per-entity x/y positions from 0–100 (percentage). |
-| `canvas_height` | number | `450` | Canvas height in pixels. Ignored when `aspect_ratio` is set, or when a background image supplies the ratio (see `background_image.auto_aspect`). |
+| `canvas_height` | number | `450` | Canvas height in pixels. Used when no background image supplies a ratio (and as the fallback while the image loads). Ignored when `aspect_ratio` is set or auto-aspect is active. |
 | `aspect_ratio` | string | `null` | Optional `"W:H"` (e.g. `"16:9"`, `"1200x800"`). The canvas derives its height from its width so positions stay glued to a floor-plan background at any card width. Usually unnecessary — a background image supplies its own ratio. |
 | `light_field` | map/bool | `{enabled: false}` | Shared-canvas light diffusion: colours merge additively and walls cast real shadows. See [Light Diffusion](#light-diffusion-light_field). |
 | `grid_size` | number | `25` | Grid spacing in pixels when snapping. |
@@ -324,14 +324,14 @@ desktop stays over the sofa on a phone.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `url` | — | Image URL (`/local/...`, `/api/image/serve/...`, or absolute) |
-| `auto_aspect` | `true` | Canvas takes the image's intrinsic aspect ratio |
+| `auto_aspect` | `true` | Canvas takes the image's intrinsic aspect ratio (overridden only by `aspect_ratio`) |
 | `fit` | `contain` | `contain`, `cover` (crops), `stretch` (distorts), `native` |
 | `rendering` | `auto` | CSS `image-rendering` — use `pixelated` for hand-drawn or low-resolution plans |
 | `size` | — | Raw CSS `background-size`; overrides `fit` when set |
 | `position` / `repeat` / `blend_mode` / `opacity` | CSS defaults | Passed straight through |
 
-Auto-aspect steps aside as soon as you take control: it is skipped if you set
-`aspect_ratio`, set `canvas_height` explicitly, or set `auto_aspect: false`.
+Auto-aspect steps aside as soon as you pin the geometry yourself — set
+`aspect_ratio`, or `auto_aspect: false`:
 
 ```yaml
 # Pin the geometry yourself instead
@@ -340,6 +340,18 @@ background_image:
   auto_aspect: false
 canvas_height: 520
 ```
+
+`canvas_height` does **not** override auto-aspect; it is the fallback for when
+there is no plan image, or the image fails to load. (Cards added through the UI
+used to always carry a `canvas_height`, which would have meant the fix never
+engaged for them.)
+
+> **Upgrading:** if you previously matched `aspect_ratio` to your image by hand,
+> nothing changes. If you did not, your canvas now takes the plan's ratio rather
+> than a fixed height, so the whole plan becomes visible and your light
+> positions land on the plan features their percentages always referred to —
+> under the old `cover` default the plan was cropped, so they didn't. Set
+> `auto_aspect: false` and `fit: cover` to keep the previous look exactly.
 
 ### Light Size
 Customize the size of light circles globally or per-entity.

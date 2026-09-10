@@ -256,10 +256,9 @@ class SpatialLightColorCard extends HTMLElement {
       entities: config.entities,
       positions: normalizedPositions,
       title: config.title || '',
+      // Used when there is no plan image to take a ratio from, when the image
+      // fails to load, and as the CSS fallback while the probe is in flight.
       canvas_height: config.canvas_height ?? 450,
-      // Whether the height above came from the user or from the default.
-      // Auto-aspect only takes over the canvas geometry when the user has not
-      // pinned a height themselves.
       canvas_height_explicit: config.canvas_height != null,
       // Optional "W:H" (or "W/H", "1200x800", number). When set, the canvas
       // derives its height from its rendered width so percentage positions
@@ -373,6 +372,17 @@ class SpatialLightColorCard extends HTMLElement {
     // editor calls setConfig on every keystroke, and re-solving every polygon
     // because the user typed in the title field is pure waste.
     this._wallGeomVersion = this._hashWalls(this._config.glow_walls);
+    // Clear the failure latch: the new config may be exactly the fix, and a
+    // permanently disabled renderer that only a page reload can revive is a
+    // worse outcome than retrying once per config change.
+    this._fieldFailed = false;
+    // A cached load FAILURE is dropped on every config change so a transient
+    // 404 or an expired signed URL does not disable auto-aspect for the rest
+    // of the session (successes stay cached — the image is immutable).
+    const bgUrl = this._config.background_image && this._config.background_image.url;
+    if (bgUrl && SpatialLightColorCard._imageSizeCache.get(bgUrl) === null) {
+      SpatialLightColorCard._imageSizeCache.delete(bgUrl);
+    }
     this._invalidateLightField();
 
     this._gridSize = this._config.grid_size;
@@ -1095,6 +1105,7 @@ class SpatialLightColorCard extends HTMLElement {
    */
   get _fieldActive() {
     return !!(this._config && this._config.light_field && this._config.light_field.enabled
+      && !this._fieldFailed
       && SpatialLightColorCard._canvas2dOk());
   }
 
@@ -1141,11 +1152,14 @@ class SpatialLightColorCard extends HTMLElement {
       hex = hex.slice(1);
       if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
       if (hex.length === 6) {
-        return {
-          r: parseInt(hex.slice(0, 2), 16),
-          g: parseInt(hex.slice(2, 4), 16),
-          b: parseInt(hex.slice(4, 6), 16),
-        };
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        // A 6-character non-hex string ('#gggggg') parses to NaN. Returning it
+        // used to reach addColorStop as 'rgba(NaN,...)', which throws.
+        // Report unparseable instead so callers fall back to their default.
+        if ([r, g, b].every(Number.isFinite)) return { r, g, b };
+        return null;
       }
     }
 
@@ -1479,10 +1493,16 @@ class SpatialLightColorCard extends HTMLElement {
     if (!bg || !bg.url) return false;
     // An explicit aspect_ratio is the user pinning the geometry themselves.
     if (this._config.aspect_ratio) return false;
+    // Opting out is explicit; otherwise a plan image supplies its own ratio.
+    //
+    // `canvas_height` deliberately does NOT veto this. Every card added
+    // through the UI carries canvas_height from getStubConfig, so treating it
+    // as a veto meant the fix never engaged for the most common setup — and
+    // those users got letterbox bars from the new `contain` default instead of
+    // the old crop, which is the worst of both. canvas_height stays the
+    // fallback for when there is no image or the probe fails.
     if (bg.auto_aspect !== undefined) return bg.auto_aspect;
-    // Default on — but never override a canvas_height the user typed in,
-    // otherwise upgrading the card would silently resize existing dashboards.
-    return !this._config.canvas_height_explicit;
+    return true;
   }
 
   /**
@@ -4350,6 +4370,16 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._editPositionsMode === active && (!active || this._editorId === d.editorId)) return;
         this._editPositionsMode = active;
         this._editorId = active ? (d.editorId || null) : null;
+        // Exclusivity is enforced on both sides: a dropped wall-mode event
+        // would otherwise leave the card in both modes, where the wall branch
+        // wins and dragging lights stops working with no way back.
+        if (active && this._wallEditMode) {
+          this._wallEditMode = false;
+          this._wallEditorId = null;
+          this._wallDrawState = null;
+          this._draftWalls = null;
+          this._wallChainAnchor = null;
+        }
         if (this._hass && this._config && this._config.entities) this._renderAll();
       };
       window.addEventListener('spatial-card-edit-mode', this._boundEditModeChange);
@@ -4372,7 +4402,12 @@ class SpatialLightColorCard extends HTMLElement {
         if (active) this._editPositionsMode = false;
         this._wallChainAnchor = null;
         this._wallDrawState = null;
+        const hadDraft = !!this._draftWalls;
         this._draftWalls = null;
+        // _fieldOccluders may still hold the draft's geometry; _renderAll does
+        // not clear it, so drop it explicitly or the abandoned draft keeps
+        // casting shadows.
+        if (hadDraft) this._invalidateWallGeometry();
         if (this._hass && this._config && this._config.entities) this._renderAll();
       };
       window.addEventListener('spatial-card-wall-mode', this._boundWallModeChange);
@@ -4387,16 +4422,27 @@ class SpatialLightColorCard extends HTMLElement {
               this._editPositionsMode = !!active;
               this._editorId = active ? editorId : null;
               // The preview card is recreated on every config change, so wall
-              // mode has to be restored the same way edit mode is.
+              // mode has to be restored the same way edit mode is. This reply
+              // runs synchronously during connectedCallback, i.e. AFTER the
+              // markup was built with _wallEditMode false — so the wall canvas
+              // does not exist yet. Flag it for a re-render below.
               this._wallEditMode = !!wallActive;
               this._wallEditorId = wallActive ? editorId : null;
+              if (wallActive) this._wallModeNeedsRender = true;
             },
           },
         }));
-      } else if (this._editPositionsMode) {
-        // Re-parented outside a preview (e.g. dialog closed): drop edit mode.
+        if (this._wallModeNeedsRender) {
+          this._wallModeNeedsRender = false;
+          if (this._hass && this._config && this._config.entities) this._renderAll();
+        }
+      } else if (this._editPositionsMode || this._wallEditMode) {
+        // Re-parented outside a preview (e.g. dialog closed): drop both
+        // canvas-owning modes, or the live card keeps eating pointer events.
         this._editPositionsMode = false;
         this._editorId = null;
+        this._wallEditMode = false;
+        this._wallEditorId = null;
       }
 
       // H11: cancel in-flight gestures when the tab is hidden or the window
@@ -4490,6 +4536,14 @@ class SpatialLightColorCard extends HTMLElement {
       this._colorWheelFrame = null;
     }
     this._clearLightFieldSchedule();
+    if (this._wallHoldTimer) {
+      clearTimeout(this._wallHoldTimer);
+      this._wallHoldTimer = null;
+    }
+    this._wallDrawState = null;
+    this._draftWalls = null;
+    this._wallChainAnchor = null;
+    this._wallHoverIndex = null;
     // Release the backing store. iOS Safari accounts canvas memory globally
     // across a dashboard, and HA recreates the editor preview card on every
     // keystroke, so a leaked bitmap per recreation is not hypothetical.
@@ -5629,6 +5683,13 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _handleCanvasContextMenu(e) {
+    // Wall drawing owns the canvas outright, and its own delete gesture is a
+    // 500ms hold — exactly when Android raises contextmenu. Swallow it, or
+    // the browser menu appears mid-stroke and cancels the pointer sequence.
+    if (this._wallEditMode) {
+      e.preventDefault();
+      return;
+    }
     // An armed hold-to-select marquee owns the gesture: Android fires
     // contextmenu from the same long-press (~500ms) that armed us at 300ms.
     if (this._selectionTouchClaim === 'select') {
@@ -7783,6 +7844,13 @@ class SpatialLightColorCard extends HTMLElement {
         // card down with it. Latch off instead and leave the plan readable.
         this._fieldFailed = true;
         console.warn('[spatial-lights-card] light field disabled after error:', err);
+        // _fieldActive is now false, but the DOM was built without the
+        // per-light .light-glow divs. Re-render so the legacy renderer this
+        // one displaced actually takes back over instead of leaving the card
+        // with no diffusion at all.
+        if (this._hass && this._config && this._config.entities) {
+          try { this._renderAll(); } catch (_) { /* nothing left to try */ }
+        }
       }
     };
 
@@ -7837,7 +7905,19 @@ class SpatialLightColorCard extends HTMLElement {
     const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}`;
     if (this._fieldOccluders && this._fieldOccluders.key === key) return this._fieldOccluders;
 
-    const walls = this._draftWalls || this._config.glow_walls || [];
+    let walls = this._draftWalls || this._config.glow_walls || [];
+    // The angle set grows with the wall count too (6 rays per endpoint pair),
+    // so the solve is O(walls^2). Cap it rather than let a pathological config
+    // wedge the browser, and say so instead of silently truncating.
+    const WALL_CAP = 400;
+    if (walls.length > WALL_CAP) {
+      if (!this._wallCapWarned) {
+        this._wallCapWarned = true;
+        console.warn(`[spatial-lights-card] ${walls.length} glow_walls exceeds the `
+          + `${WALL_CAP}-segment light-field cap; only the first ${WALL_CAP} cast shadows.`);
+      }
+      walls = walls.slice(0, WALL_CAP);
+    }
     const segs = [];
     for (const w of walls) {
       const ax = w.x1 / 100 * rect.width;
@@ -7930,10 +8010,29 @@ class SpatialLightColorCard extends HTMLElement {
     // full polygon solve per brightness step. Worst-case geometric error is
     // 2px on an already-soft gradient edge. The bucketed values are used for
     // BOTH the solve and the draw, so the shadows always match the shape.
-    const q = (v) => Math.max(4, Math.round(v / 4) * 4);
+    // Clamped as well as bucketed. `glow.width`/`length` are only validated as
+    // finite and positive, so a config of 1e17 would drive the sweep's angular
+    // step to underflow to exactly 0 and hang the browser in an endless loop.
+    // 20000px is far beyond any real canvas and keeps the step well clear of 0.
+    const q = (v) => Math.min(20000, Math.max(4, Math.round(v / 4) * 4));
+
+    // Gradient extent in LOCAL units. Most shapes let CSS resolve
+    // `radial-gradient(... farthest-corner)`, which for a box measured from
+    // its own corner works out to SQRT2 in this frame. `semicone` is the
+    // exception: _updateGlow sizes its gradient explicitly as
+    // `radial-gradient(${50 + sw*40}% 70% at 50% 0%)`, so it needs its own
+    // radii or its falloff runs about twice as far as the DOM renderer's.
+    let gradRx = Math.SQRT2, gradRy = Math.SQRT2;
+    if (shape === 'semicone') {
+      const sw = (gc && gc.start_width > 0) ? gc.start_width : 0.35;
+      gradRx = (50 + sw * 40) / 50;
+      gradRy = 0.7;
+    }
+
     return {
       x, y, rot, sx: q(sx), sy: q(sy),
       centred, disc, footprint, linear, alpha, falloff, stops, shape,
+      gradRx, gradRy,
     };
   }
 
@@ -8016,7 +8115,10 @@ class SpatialLightColorCard extends HTMLElement {
     // Plain size cap rather than true LRU: the working set is one entry per
     // light per frame, so anything beyond a few hundred is stale by
     // definition.
-    if (this._visPolyCache.size > 256) this._visPolyCache.clear();
+    // Sized above one frame's worst-case working set: lights x samples x
+    // (1 + ambient). At 256 a 12-light, 9-sample, ambient config evicted
+    // everything it had just computed and the cache became pure overhead.
+    if (this._visPolyCache.size > 4096) this._visPolyCache.clear();
     this._visPolyCache.set(key, poly);
     return poly;
   }
@@ -8040,8 +8142,9 @@ class SpatialLightColorCard extends HTMLElement {
       const by = (-bdx * sin + bdy * cos) * isy;
       const d2 = this._distSqOriginToSeg(ax, ay, bx, by);
       if (d2 > maxR * maxR) continue;
-      // Light sitting exactly on a wall produces a degenerate bowtie. Nudge
-      // the segment off the origin deterministically instead.
+      // A light sitting exactly on a wall is degenerate: rays along the wall's
+      // supporting line give a bowtie polygon. Drop that segment — it occludes
+      // nothing from a point on it anyway — rather than emit garbage.
       if (d2 < 2.5e-7) continue;
       local.push({ ax, ay, bx, by });
     }
@@ -8067,7 +8170,13 @@ class SpatialLightColorCard extends HTMLElement {
     }
     // Sagitta <= 0.75px keeps a disc looking round at any size.
     const rPx = Math.max(em.sx, em.sy);
-    const step = 2 * Math.acos(Math.max(-1, 1 - 0.75 / Math.max(rPx, 1)));
+    // Floored: for a very large rPx the acos argument rounds to exactly 1 and
+    // the step becomes 0, which would loop forever. 512 samples is already
+    // finer than any display can show.
+    const step = Math.max(
+      Math.PI / 256,
+      2 * Math.acos(Math.max(-1, 1 - 0.75 / Math.max(rPx, 1)))
+    );
     for (let a = -Math.PI; a < Math.PI; a += step) push(a);
 
     // Normalize into [-PI, PI), sort, dedupe (a box shares 4 corners, so
@@ -8086,8 +8195,12 @@ class SpatialLightColorCard extends HTMLElement {
       if (Math.abs(a - prev) < 1e-7) continue;
       prev = a;
       const ct = Math.cos(a), st = Math.sin(a);
+      // A ray that misses the footprint entirely means the shape emits nothing
+      // in that direction — radius 0, not the max reach. Directional shapes
+      // (cone/beam/bar/...) are open behind the light, so falling back to the
+      // reach here painted a full disc of light BEHIND every cone.
       let r = em.disc ? 1 : this._rayVsFootprint(ct, st, em.footprint);
-      if (!(r < Infinity)) r = maxR;
+      if (!(r < Infinity)) r = 0;
       for (let k = 0; k < local.length; k++) {
         const s = local[k];
         const t = this._castRay(ct, st, s.ax, s.ay, s.bx, s.by);
@@ -8185,11 +8298,14 @@ class SpatialLightColorCard extends HTMLElement {
       const n = samples > 1 && srcR > 0 ? samples : 1;
       for (let s = 0; s < n; s++) {
         let ox = em.x, oy = em.y;
-        if (n > 1) {
-          const a = (s / n) * Math.PI * 2;
-          const rr = s === 0 ? 0 : srcR;
-          ox += Math.cos(a) * rr;
-          oy += Math.sin(a) * rr;
+        if (n > 1 && s > 0) {
+          // Sample 0 is the centre; the remaining n-1 samples are spread over
+          // a FULL turn among themselves. Spacing them by 2pi/n instead left a
+          // gap at 0 rad, so a 3-sample light put two taps 120 degrees apart
+          // and pulled the effective emitter off-centre.
+          const a = ((s - 1) / (n - 1)) * Math.PI * 2;
+          ox += Math.cos(a) * srcR;
+          oy += Math.sin(a) * srcR;
         }
         const sub = { ...em, x: ox, y: oy };
         const poly = this._visibilityPolygonCached(sub, occ.segs, rect, `${entityId}#${s}`);
@@ -8236,7 +8352,15 @@ class SpatialLightColorCard extends HTMLElement {
     if (em.linear) {
       grad = ctx.createLinearGradient(0, 0, 0, 1);
     } else {
-      grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.SQRT2);
+      // A canvas gradient captures the CTM at creation, so scaling only around
+      // the create call yields an ellipse with radii (gradRx, gradRy) while
+      // the polygon below is still filled in unscaled local coordinates.
+      const rx = em.gradRx || Math.SQRT2;
+      const ry = em.gradRy || Math.SQRT2;
+      ctx.save();
+      ctx.scale(rx, ry);
+      grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      ctx.restore();
     }
     for (const [pos, op] of stops) {
       const a = Math.max(0, Math.min(1, op * alpha));
@@ -8447,6 +8571,11 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _onWallPointerDown(e) {
+    // A stroke owns the canvas until it ends. Without this a second finger
+    // re-copies _draftWalls and retargets _wallDrawState, discarding the wall
+    // being drawn and leaving the first pointer's up-event to commit the
+    // wrong entry.
+    if (this._wallDrawState) { e.preventDefault(); return true; }
     const pt = this._wallPointFromEvent(e);
     if (!pt) return false;
     try { this._els.canvas.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may be gone */ }
@@ -8612,6 +8741,10 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** Drop every wall-derived cache and repaint. */
   _invalidateWallGeometry() {
+    // Indices shift whenever the list changes, so a remembered hover target
+    // would point at a different wall than the one under the pointer. The next
+    // pointermove re-establishes it.
+    this._wallHoverIndex = null;
     this._wallGeomVersion = this._hashWalls(this._wallList());
     this._wallConfigVersion = (this._wallConfigVersion || 0) + 1;
     this._wallMaskPerEntity = {};
@@ -9010,7 +9143,9 @@ class SpatialLightColorCard extends HTMLElement {
         if (k === 'enabled') return;
         if (lf[k] === lfDefaults[k]) return;
         const v = lf[k];
-        yamlLines.push(`${indent}${k}: ${typeof v === 'string' && v === '' ? "''" : v}`);
+        // Strings are always quoted: an unquoted '#ff0000' is a YAML comment,
+        // so wall_color round-tripped as nothing at all.
+        yamlLines.push(`${indent}${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`);
       });
     }
 
@@ -9080,7 +9215,16 @@ class SpatialLightColorCard extends HTMLElement {
   // height + 1 row for the controls area. With aspect_ratio the height is
   // width-dependent; estimate against a typical ~500px masonry column.
   getCardSize() {
-    const ar = this._config && this._config.aspect_ratio;
+    let ar = this._config && this._config.aspect_ratio;
+    // When the plan image supplies the ratio, report THAT height — otherwise
+    // masonry reserves rows for a canvas_height the canvas is not using and
+    // the card overlaps or leaves a gap.
+    if (!ar && this._wantsAutoAspect && this._wantsAutoAspect()) {
+      const dims = SpatialLightColorCard._imageSizeCache.get(this._config.background_image.url);
+      if (dims && typeof dims.then !== 'function' && dims.w > 0 && dims.h > 0) {
+        ar = { w: dims.w, h: dims.h };
+      }
+    }
     const h = ar ? 500 * (ar.h / ar.w) : ((this._config && this._config.canvas_height) || 450);
     return Math.max(3, Math.ceil(h / 50) + 1);
   }
@@ -9098,7 +9242,9 @@ class SpatialLightColorCard extends HTMLElement {
       : [];
     return {
       entities: lights, positions: {}, title: '',
-      canvas_height: 450, grid_size: 25, label_mode: 'smart',
+      // No canvas_height: with a plan image the canvas takes the image's own
+      // ratio, and without one setConfig's 450 default applies anyway.
+      grid_size: 25, label_mode: 'smart',
       always_show_controls: false, controls_below: true,
       default_entity: null, show_entity_icons: true, icon_style: 'mdi',
       light_size: 56, icon_only_mode: false, size_overrides: {}, icon_only_overrides: {},
@@ -9300,10 +9446,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
     }
     if (this._boundPreviewHello) {
       window.removeEventListener('spatial-card-preview-hello', this._boundPreviewHello);
+      this._boundPreviewHello = null;
     }
     if (this._boundWallDelta) {
       window.removeEventListener('spatial-card-wall-delta', this._boundWallDelta);
-      this._boundPreviewHello = null;
+      this._boundWallDelta = null;
     }
     this._positionHistory = [];
     this._positionRedoStack = [];
@@ -9470,10 +9617,16 @@ class SpatialLightColorCardEditor extends HTMLElement {
       return;
     }
 
+    // A segment drawn this session carries _src null until the card is rebuilt
+    // from the saved config. The `add` that created it appended to the end of
+    // the raw list, so that last entry is the one it refers to — dropping the
+    // delta instead (as this used to) meant a wall could be drawn but not then
+    // adjusted or deleted until the editor reloaded.
     const src = d.src;
-    // A segment the card created this session has no raw index yet; the add
-    // that produced it already appended the entry, so treat it as the last.
-    const idx = (typeof src === 'number' && src >= 0 && src < walls.length) ? src : -1;
+    let idx;
+    if (typeof src === 'number' && src >= 0 && src < walls.length) idx = src;
+    else if (src == null && walls.length > 0) idx = walls.length - 1;
+    else idx = -1;
     if (idx < 0) { this._wallHistory.pop(); return; }
 
     const raw = walls[idx];
@@ -9507,7 +9660,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
   _explodeWall(raw) {
     const out = [];
     if (Array.isArray(raw.points)) {
-      const pts = raw.points.filter(p => Array.isArray(p) && p.length >= 2).map(p => [Number(p[0]), Number(p[1])]);
+      // Filtered EXACTLY as _normalizeGlowWalls does (map, then drop
+      // non-finite). Filtering differently would shift `_part` indices between
+      // the two sides and edit the wrong segment.
+      const pts = raw.points
+        .map((pt) => Array.isArray(pt) && pt.length >= 2 ? [Number(pt[0]), Number(pt[1])] : null)
+        .filter((pt) => pt && pt.every(Number.isFinite));
       for (let k = 0; k + 1 < pts.length; k++) {
         out.push({ part: k, seg: { x1: pts[k][0], y1: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1] } });
       }
@@ -11416,6 +11574,15 @@ class SpatialLightColorCardEditor extends HTMLElement {
         // toggling edit mode is not a config change, and writing it into the
         // config is how it used to leak into saved dashboards.
         this._editPositionsActive = editPosSwitch.checked;
+        if (this._editPositionsActive && this._wallDrawActive) {
+          // Both modes claim every canvas pointer event, and the wall branch
+          // runs first — leaving both armed silently kills light dragging.
+          // The wall switch already disarms this one; mirror it here.
+          this._wallDrawActive = false;
+          window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+            detail: { editorId: this._editorId, active: false },
+          }));
+        }
         window.dispatchEvent(new CustomEvent('spatial-card-edit-mode', {
           detail: { editorId: this._editorId, active: this._editPositionsActive },
         }));
@@ -12311,7 +12478,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // Add wall buttons
     // --- Light diffusion ---
     const lfSet = (key, value) => {
-      if (!this._config.light_field || typeof this._config.light_field !== 'object') {
+      // `light_field: true` is a documented shorthand; preserve what it means
+      // instead of replacing it with an empty object and silently turning
+      // diffusion off the first time any control is touched.
+      if (this._config.light_field === true) {
+        this._config.light_field = { enabled: true };
+      } else if (!this._config.light_field || typeof this._config.light_field !== 'object'
+                 || Array.isArray(this._config.light_field)) {
         this._config.light_field = {};
       }
       if (value === null || value === undefined || value === '') delete this._config.light_field[key];
