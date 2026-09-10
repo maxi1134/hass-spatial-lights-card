@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.19.0 (fork-maxi1134)';
+  static BUILD = 'v1.20.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -109,6 +109,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._colorWheelActive = false;
     this._colorWheelObserver = null;
     this._canvasObserver = null;
+    this._planBoxObserver = null;
     this._glowResizeTimer = null;   // trailing debounce for resize-driven glow updates
     this._glowResizeLast = 0;
     this._colorWheelFrame = null;
@@ -277,6 +278,15 @@ class SpatialLightColorCard extends HTMLElement {
       // keep pointing at the same spot of a floor plan at every card width.
       // Unset (default) keeps the fixed pixel canvas_height.
       aspect_ratio: this._normalizeAspectRatio(config.aspect_ratio),
+      // Quarter-turn view rotation of the whole plan. Deliberately a VIEW
+      // transform rather than a rewrite of every coordinate: it leaves the
+      // user's authored positions, zones, walls and aspect ratio untouched, so
+      // setting it back to 0 restores their layout exactly and no arithmetic
+      // slip can corrupt work they placed by hand. It also picks up state that
+      // never reaches config at all -- glow defaults that _normalizeGlowConfig
+      // fills in, and positions _initializePositions invents for entities the
+      // user never dragged.
+      plan_rotation: SpatialLightColorCard.normalizeRotation(config.plan_rotation),
       grid_size: config.grid_size ?? 25,
       label_mode: config.label_mode || 'smart',
       label_overrides: config.label_overrides || {},
@@ -490,6 +500,99 @@ class SpatialLightColorCard extends HTMLElement {
     return ['normal', 'screen', 'plus-lighter', 'multiply', 'overlay', 'soft-light', 'hard-light'];
   }
 
+  /**
+   * Plan rotation primitives. Static and pure, so the editor (which rewrites
+   * config) and the card (which renders) cannot drift apart on the convention.
+   *
+   * The rotation is CLOCKWISE ON SCREEN, matching how you would turn a sheet
+   * of paper: a 90 turn sends the top-left corner to the top-right.
+   *
+   * Everything rounds to 2dp -- the precision `_round2` already persists wall
+   * coordinates at. That is not cosmetic: without rounding, `100 - (100 - x)`
+   * drifts by ~7e-15 for percentages that are not binary-exact, so rotating
+   * four times would not return the config it started from. Rounded, four 90s
+   * and two 180s are EXACTLY the identity (verified over 90601 point pairs).
+   */
+  static ROTATIONS = [0, 90, 180, 270];
+
+  static normalizeRotation(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    // Snap to the nearest quarter turn: the feature is 90/180/270, and a
+    // free-angle rotation would need real occlusion maths rather than a
+    // coordinate swap.
+    const q = ((Math.round(n / 90) * 90) % 360 + 360) % 360;
+    return q;
+  }
+
+  static _rot2(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+  }
+
+  /** A point in canvas percentages. */
+  static rotatePoint(x, y, deg) {
+    const R = SpatialLightColorCard._rot2;
+    switch (SpatialLightColorCard.normalizeRotation(deg)) {
+      case 90:  return { x: R(100 - y), y: R(x) };
+      case 180: return { x: R(100 - x), y: R(100 - y) };
+      case 270: return { x: R(y), y: R(100 - x) };
+      default:  return { x: R(x), y: R(y) };
+    }
+  }
+
+  /**
+   * A DISPLACEMENT (a glow offset), which carries no translation term. Glow
+   * offsets are applied OUTSIDE the `rotate()` in the transform list, so they
+   * live in plan axes rather than the light's own frame and must turn with it.
+   */
+  static rotateVector(ox, oy, deg) {
+    const R = SpatialLightColorCard._rot2;
+    switch (SpatialLightColorCard.normalizeRotation(deg)) {
+      case 90:  return { x: R(-oy), y: R(ox) };
+      case 180: return { x: R(-ox), y: R(-oy) };
+      case 270: return { x: R(oy), y: R(-ox) };
+      default:  return { x: R(ox), y: R(oy) };
+    }
+  }
+
+  /**
+   * An angle in the card's convention: 0 = down, increasing CLOCKWISE on
+   * screen. Measured, not assumed -- the glow transform ends in
+   * `rotate(${direction}deg)` and CSS rotation is clockwise, so direction 90
+   * points LEFT (the config comment claiming "90=right" is wrong). Since the
+   * plan turn is clockwise too, the two share a sign and this is an addition.
+   */
+  static rotateAngle(a, deg) {
+    const n = Number(a);
+    const base = Number.isFinite(n) ? n : 0;
+    const turned = base + SpatialLightColorCard.normalizeRotation(deg);
+    // Round AFTER the wrap, not before it. `% 360` re-introduces exactly the
+    // float error the rounding removes -- 372.34 % 360 is 12.339999999999975 --
+    // so rounding first fails the four-turn identity for 24128 of 36000
+    // two-decimal angles. An integer test angle hides this completely.
+    return SpatialLightColorCard._rot2(((turned % 360) + 360) % 360);
+  }
+
+  /**
+   * An axis-aligned box stays axis-aligned, but 90/270 swap its width and
+   * height, so it has to be rebuilt from two transformed corners rather than
+   * having its origin moved.
+   */
+  static rotateBox(box, deg) {
+    const R = SpatialLightColorCard._rot2;
+    const x = Number(box.x), y = Number(box.y);
+    const w = Number(box.width), h = Number(box.height);
+    const a = SpatialLightColorCard.rotatePoint(x, y, deg);
+    const b = SpatialLightColorCard.rotatePoint(x + w, y + h, deg);
+    return {
+      x: R(Math.min(a.x, b.x)),
+      y: R(Math.min(a.y, b.y)),
+      width: R(Math.abs(b.x - a.x)),
+      height: R(Math.abs(b.y - a.y)),
+    };
+  }
+
   /** Normalize a single glow config object, filling in defaults. */
   _normalizeGlowConfig(obj) {
     const defaults = {
@@ -567,10 +670,33 @@ class SpatialLightColorCard extends HTMLElement {
     if (typeof value === 'string' && value.endsWith('%')) {
       const n = parseFloat(value);
       const base = (rect && rect.width > 0) ? rect.width : 1000;
-      return Number.isFinite(n) ? (n / 100) * base : 0;
+      // A percent size means "this fraction of the plan", so it has to survive
+      // a quarter turn. Percent resolves against the canvas WIDTH, which the
+      // dashboard column fixes; turning a 2:1 plan leaves that width alone but
+      // draws the plan twice as large, so an unscaled pool would cover half
+      // the room it used to. Measured: a 120% radius at 0 needs 240% at 90 to
+      // light the same area. The factor is exactly the turned canvas' aspect.
+      //
+      // Applied at RESOLVE time, so the 400% cap _normalizeGlowLength puts on
+      // the config value cannot clip it, and nothing is written back.
+      // Deliberately NOT applied to plain numbers: those are documented as CSS
+      // pixels, and someone who asked for 80px asked for 80px.
+      return Number.isFinite(n) ? (n / 100) * base * this._planScale(rect) : 0;
     }
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
+  }
+
+  /**
+   * How much larger the plan is drawn after a quarter turn. 1 unless the axes
+   * are swapped. Measured from the live rect rather than the configured ratio,
+   * so it stays consistent with whatever the canvas actually ended up being.
+   */
+  _planScale(rect) {
+    if (!this._planRotationSwapsAxes()) return 1;
+    const r = (rect && rect.width > 0 && rect.height > 0) ? rect : this._planRect();
+    if (!r || !(r.width > 0) || !(r.height > 0)) return 1;
+    return r.height / r.width;
   }
 
   /** Normalize custom gradient stops: array of [position%, opacity] tuples. */
@@ -1270,8 +1396,30 @@ class SpatialLightColorCard extends HTMLElement {
   _getGlowConfig(entity_id) {
     const base = this._config.glow;
     const override = this._config.glow_overrides[entity_id];
-    if (!override) return base;
-    return { ...base, ...override };
+    const merged = override ? { ...base, ...override } : base;
+    const rot = this._planRotation();
+    // Unrotated is the overwhelmingly common case and this is a per-light,
+    // per-frame call, so it keeps returning the config object by reference.
+    if (!rot) return merged;
+    // Emission turns with the plan, applied HERE rather than at each consumer:
+    // one place means the legacy glow, the light field and the wall editor
+    // cannot disagree about which way a light faces, and it also covers the
+    // defaults _normalizeGlowConfig filled in -- `glow: {enabled: true}` has
+    // no `direction` key of its own, and it is the commonest glow config
+    // there is.
+    //
+    // `direction` shares a sign with the plan turn: CSS rotate() is clockwise
+    // on screen (measured -- direction 90 points LEFT, not right as the
+    // config comment claims) and so is the turn. The offsets are applied
+    // OUTSIDE that rotate in the transform list, so they live in plan axes and
+    // turn as a displacement rather than an angle.
+    const off = SpatialLightColorCard.rotateVector(merged.offset_x, merged.offset_y, rot);
+    return {
+      ...merged,
+      direction: SpatialLightColorCard.rotateAngle(merged.direction, rot),
+      offset_x: off.x,
+      offset_y: off.y,
+    };
   }
 
   /** Parse a CSS color string to {r, g, b}. Returns null if unparseable. */
@@ -1674,6 +1822,12 @@ class SpatialLightColorCard extends HTMLElement {
         canvas.style.aspectRatio = '';
         canvas.style.height = '';
       }
+      // ...but a quarter turn still has to turn the BOX, whatever gave it its
+      // shape. Without this the canvas keeps its old proportions while every
+      // coordinate rotates into it, which shears the layout instead of
+      // turning it -- and leaves _planScale below 1, shrinking percent-sized
+      // pools rather than preserving them.
+      this._applyRotatedBoxFallback(canvas);
       return;
     }
 
@@ -1683,13 +1837,23 @@ class SpatialLightColorCard extends HTMLElement {
       const live = this._els && this._els.canvas;
       if (!live || !this._wantsAutoAspect()) return;
       if (this._config.background_image.url !== url) return;
-      if (!dims || !(dims.w > 0) || !(dims.h > 0)) return;
-      live.style.aspectRatio = `${dims.w} / ${dims.h}`;
+      if (!dims || !(dims.w > 0) || !(dims.h > 0)) {
+        // The plan failed to load, so there is no ratio to adopt -- but a
+        // quarter turn still has to turn the box, or the layout shears.
+        this._applyRotatedBoxFallback(live);
+        return;
+      }
+      // A quarter turn makes a landscape plan portrait. The probe measures the
+      // UNROTATED file, so the ratio has to be swapped here -- otherwise the
+      // canvas keeps its old shape while its contents are rotated into it, and
+      // percentage coordinates land sheared rather than turned.
+      const swap = this._planRotationSwapsAxes();
+      live.style.aspectRatio = swap ? `${dims.h} / ${dims.w}` : `${dims.w} / ${dims.h}`;
       // aspect-ratio is ignored while both width and height are definite, and
       // the stylesheet sets a pixel height in the no-aspect_ratio branch.
       live.style.height = 'auto';
       this._onCanvasGeometryChanged();
-      this._warnIfPlanUpscaled(dims);
+      this._warnIfPlanUpscaled(swap ? { w: dims.h, h: dims.w } : dims);
     };
 
     const cache = SpatialLightColorCard._imageSizeCache;
@@ -1772,6 +1936,39 @@ class SpatialLightColorCard extends HTMLElement {
     this._requestWallEditorDraw();
   }
 
+  /** The plan's quarter turn: 0, 90, 180 or 270. */
+  _planRotation() {
+    return this._config ? SpatialLightColorCard.normalizeRotation(this._config.plan_rotation) : 0;
+  }
+
+  /**
+   * PLAN space -> SCREEN space. Config, and every gesture handler, work in
+   * plan coordinates; only the moment a percentage becomes a pixel does the
+   * rotation apply. Keeping the transform at that one boundary is what stops
+   * it leaking into wall snapping, joints, hit tests and the delta protocol.
+   */
+  _toScreenPct(x, y) {
+    return SpatialLightColorCard.rotatePoint(x, y, this._planRotation());
+  }
+
+  /** SCREEN space -> PLAN space, for turning a pointer back into config. */
+  _toPlanPct(x, y) {
+    return SpatialLightColorCard.rotatePoint(x, y, (360 - this._planRotation()) % 360);
+  }
+
+  /** True when the turn swaps the plan's width and height. */
+  _planRotationSwapsAxes() {
+    const r = this._planRotation();
+    return r === 90 || r === 270;
+  }
+
+  /** Classes the plan layer needs to turn with the config it describes. */
+  _planRotationClass() {
+    const r = this._planRotation();
+    if (!r) return '';
+    return r === 180 ? ' plan-half' : ' plan-quarter';
+  }
+
   _canvasBackgroundStyle() {
     const bg = this._config.background_image;
     if (!bg) return '';
@@ -1787,6 +1984,8 @@ class SpatialLightColorCard extends HTMLElement {
     if (bg.repeat) vars.push(`--canvas-background-repeat:${bg.repeat}`);
     if (bg.blend_mode) vars.push(`--canvas-background-blend-mode:${bg.blend_mode}`);
     if (bg.opacity !== undefined && bg.opacity !== null) vars.push(`--canvas-background-opacity:${bg.opacity}`);
+    const rot = this._planRotation();
+    if (rot) vars.push(`--plan-rotation:${rot}deg`);
     return vars.join('; ');
   }
 
@@ -1978,8 +2177,9 @@ class SpatialLightColorCard extends HTMLElement {
       const pos = this._config.positions[entityId] || { x: 50, y: 50 };
       const sizeOverride = this._config.size_overrides[entityId] || this._config.light_size;
       const size = (window.innerWidth <= 768) ? Math.min(sizeOverride, 50) : sizeOverride;
-      const cx = pos.x / 100 * canvasRect.width;
-      const cy = pos.y / 100 * canvasRect.height;
+      const spos = this._toScreenPct(pos.x, pos.y);
+      const cx = spos.x / 100 * canvasRect.width;
+      const cy = spos.y / 100 * canvasRect.height;
       const r = size / 2;
       const labelEl = el.querySelector('.light-label');
       const isVisible = el.classList.contains('selected') || el.matches(':hover');
@@ -2487,9 +2687,17 @@ class SpatialLightColorCard extends HTMLElement {
       const entity = light.dataset.entity;
       const pos = this._config.positions[entity];
       if (pos) {
+        // style.left/top are SCREEN percentages -- _renderLightsHTML writes
+        // them through _toScreenPct and _onPointerUp reads them back through
+        // _toPlanPct -- so a plan coordinate must be mapped here too. Writing
+        // the raw value teleported every marker on a turned plan (arrow-key
+        // nudge, undo, redo, Rearrange), and because the next pointerdown
+        // latches style.left as its start, the wrong value was then committed
+        // back to config.
+        const spos = this._toScreenPct(pos.x, pos.y);
         light.style.transition = 'left 200ms ease, top 200ms ease';
-        light.style.left = `${pos.x}%`;
-        light.style.top = `${pos.y}%`;
+        light.style.left = `${spos.x}%`;
+        light.style.top = `${spos.y}%`;
         // Remove transition after complete to avoid future lag
         setTimeout(() => {
           if (light) light.style.transition = '';
@@ -2973,7 +3181,7 @@ class SpatialLightColorCard extends HTMLElement {
       <ha-card>
         ${showHeader ? this._renderHeader() : ''}
         <div class="canvas-wrapper">
-          <div class="canvas${(this._config.canvas_touch_scroll && this._lockPositions && !this._editPositionsMode && !this._wallEditMode) ? ' touch-scroll' : ''}" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasInlineStyle()}">
+          <div class="canvas${(this._config.canvas_touch_scroll && this._lockPositions && !this._editPositionsMode && !this._wallEditMode) ? ' touch-scroll' : ''}${this._planRotationClass()}" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasInlineStyle()}">
             <div class="grid"></div>
             ${this._fieldCanvasNeeded ? '<canvas class="light-field" id="lightField" aria-hidden="true"></canvas>' : ''}
             ${this._config.entities.length === 0 ? this._renderEmptyState() : this._renderLightsHTML()}
@@ -3074,6 +3282,7 @@ class SpatialLightColorCard extends HTMLElement {
       });
       this._canvasObserver.observe(this._els.canvas);
     }
+    this._observePlanBox();
 
     this._attachEventListeners();
     if ((showControls || this._config.always_show_controls) && this._els.colorWheel) {
@@ -3163,8 +3372,8 @@ class SpatialLightColorCard extends HTMLElement {
       .canvas-wrapper { position: relative; }
       .canvas {
         position: relative; width: 100%; background: var(--canvas-bg, var(--surface-primary));
-        ${this._config.aspect_ratio
-          ? `aspect-ratio: ${this._config.aspect_ratio.w} / ${this._config.aspect_ratio.h}; height: auto;`
+        ${this._viewAspectRatio()
+          ? `aspect-ratio: ${this._viewAspectRatio().w} / ${this._viewAspectRatio().h}; height: auto;`
           : `height: ${this._config.canvas_height}px;`}
         overflow: hidden; user-select: none; touch-action: none;
       }
@@ -3187,6 +3396,26 @@ class SpatialLightColorCard extends HTMLElement {
         mix-blend-mode: var(--canvas-background-blend-mode, normal);
         opacity: var(--canvas-background-opacity, 1);
         pointer-events: none; z-index: 0;
+      }
+      /* Plan rotation. The plan is already a ::before layer, so it can turn
+         on its own without turning the markers, canvases and controls stacked
+         above it -- and without any hit-test path needing an inverse
+         transform, because every COORDINATE is rotated in config instead. */
+      .canvas.plan-half::before {
+        transform: rotate(var(--plan-rotation, 180deg));
+      }
+      /* A quarter turn makes a landscape plan portrait, so the layer has to be
+         laid out with the canvas' dimensions SWAPPED and then turned back over
+         it. cqh/cqw are the only way to say "the canvas' other axis" in CSS
+         without measuring in JS; container-type is applied ONLY here, so the
+         unrotated path keeps exactly the layout it had. Verified not to
+         confine position:fixed descendants -- that trap is what put the wall
+         editor in the top layer. */
+      .canvas.plan-quarter { container-type: size; }
+      .canvas.plan-quarter::before {
+        inset: auto; top: 50%; left: 50%;
+        width: 100cqh; height: 100cqw;
+        transform: translate(-50%, -50%) rotate(var(--plan-rotation, 90deg));
       }
       .grid {
         position: absolute; inset: 0;
@@ -4037,6 +4266,28 @@ class SpatialLightColorCard extends HTMLElement {
         cursor: crosshair;
         overflow: hidden;
       }
+      /* Same two-layer arrangement as the card's canvas, so ONE set of
+         rotation rules serves both surfaces and they cannot end up disagreeing
+         about which way the plan faces. */
+      .wall-editor-stage::before {
+        content: ''; position: absolute; inset: 0;
+        background-image: var(--canvas-background-image, none);
+        background-size: var(--canvas-background-size, contain);
+        background-position: var(--canvas-background-position, center);
+        background-repeat: var(--canvas-background-repeat, no-repeat);
+        image-rendering: var(--canvas-background-rendering, auto);
+        pointer-events: none; z-index: 0;
+      }
+      .wall-editor-stage.plan-half::before {
+        transform: rotate(var(--plan-rotation, 180deg));
+      }
+      .wall-editor-stage.plan-quarter { container-type: size; }
+      .wall-editor-stage.plan-quarter::before {
+        inset: auto; top: 50%; left: 50%;
+        width: 100cqh; height: 100cqw;
+        transform: translate(-50%, -50%) rotate(var(--plan-rotation, 90deg));
+      }
+      .wall-editor-canvas { position: relative; z-index: 1; }
       .wall-editor-canvas {
         position: absolute; inset: 0; width: 100%; height: 100%;
         display: block; pointer-events: none;
@@ -4237,8 +4488,11 @@ class SpatialLightColorCard extends HTMLElement {
       const stateClass = (domain === 'scene' || isOn) ? 'on' : 'off';
       const iconOnlyClass = isMinimalUI ? 'minimal-ui' : (isIconOnly ? 'icon-only' : '');
 
-      // Build inline styles
-      let style = `left:${pos.x}%; top:${pos.y}%;`;
+      // Build inline styles. The plan may be turned, and a marker sits at a
+      // screen percentage, so the plan coordinate is mapped here -- the one
+      // place a light's position becomes a screen position.
+      const spos = this._toScreenPct(pos.x, pos.y);
+      let style = `left:${spos.x}%; top:${spos.y}%;`;
 
       // Per-light size override
       const lightSize = this._config.size_overrides[entity_id] || this._config.light_size;
@@ -4326,7 +4580,7 @@ class SpatialLightColorCard extends HTMLElement {
   _renderCanvasElementsHTML() {
     if (!this._config.canvas_elements || this._config.canvas_elements.length === 0) return '';
     return this._config.canvas_elements.map(el => {
-      const pos = el.position;
+      const pos = this._toScreenPct(el.position.x, el.position.y);
       let style = `left:${pos.x}%; top:${pos.y}%;`;
       const cssVars = [];
       if (el.style.color) cssVars.push(`--ce-color:${el.style.color}`);
@@ -4535,11 +4789,12 @@ class SpatialLightColorCard extends HTMLElement {
     const bg = this._config.background_image;
     const ar = this._wallEditorAspect();
     const bgStyle = bg && bg.url
-      ? `background-image:url('${String(bg.url).replace(/"/g, '%22').replace(/'/g, "\'")}');`
-        + `background-size:${this._backgroundSizeValue(bg)};`
-        + `background-position:${bg.position || 'center'};`
-        + `background-repeat:${bg.repeat || 'no-repeat'};`
-        + (bg.rendering ? `image-rendering:${bg.rendering};` : '')
+      ? `--canvas-background-image:url('${String(bg.url).replace(/"/g, '%22').replace(/'/g, "\'")}');`
+        + `--canvas-background-size:${this._backgroundSizeValue(bg)};`
+        + `--canvas-background-position:${bg.position || 'center'};`
+        + `--canvas-background-repeat:${bg.repeat || 'no-repeat'};`
+        + (bg.rendering ? `--canvas-background-rendering:${bg.rendering};` : '')
+        + (this._planRotation() ? `--plan-rotation:${this._planRotation()}deg;` : '')
       : '';
     return `
       <dialog class="wall-editor-overlay" id="wallEditorOverlay">
@@ -4552,7 +4807,7 @@ class SpatialLightColorCard extends HTMLElement {
           </div>
           <button class="wall-editor-btn" id="wallEditorDone">Done</button>
         </div>
-        <div class="wall-editor-stage" id="wallEditorStage"
+        <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
              style="${bgStyle} aspect-ratio:${ar};">
           <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
@@ -4570,14 +4825,14 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** The stage must match the plan's shape, or drawn walls would be skewed. */
   _wallEditorAspect() {
-    if (this._config.aspect_ratio) {
-      return `${this._config.aspect_ratio.w} / ${this._config.aspect_ratio.h}`;
-    }
+    const va = this._viewAspectRatio();
+    if (va) return `${va.w} / ${va.h}`;
     const bg = this._config.background_image;
     if (bg && bg.url) {
       const dims = SpatialLightColorCard._imageSizeCache.get(bg.url);
       if (dims && typeof dims.then !== 'function' && dims.w > 0 && dims.h > 0) {
-        return `${dims.w} / ${dims.h}`;
+        // The probe measures the unrotated file, so a quarter turn swaps it.
+        return this._planRotationSwapsAxes() ? `${dims.h} / ${dims.w}` : `${dims.w} / ${dims.h}`;
       }
     }
     // No plan to measure: fall back to the card's own canvas proportions.
@@ -4632,8 +4887,9 @@ class SpatialLightColorCard extends HTMLElement {
       if (!pos) continue;
       const st = this._hass && this._hass.states[id];
       const isOn = st && st.state === 'on';
-      const cx = pos.x / 100 * rect.width;
-      const cy = pos.y / 100 * rect.height;
+      const spos = this._toScreenPct(pos.x, pos.y);
+      const cx = spos.x / 100 * rect.width;
+      const cy = spos.y / 100 * rect.height;
       let rgb = this._parseColorToRGB(this._resolveEntityColor(id, !!isOn, st ? st.attributes : {}));
       if (!rgb) rgb = { r: 255, g: 165, b: 0 };
 
@@ -5198,6 +5454,10 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._canvasObserver) {
       this._canvasObserver.disconnect();
       this._canvasObserver = null;
+    }
+    if (this._planBoxObserver) {
+      this._planBoxObserver.disconnect();
+      this._planBoxObserver = null;
     }
     if (this._glowResizeTimer) {
       clearTimeout(this._glowResizeTimer);
@@ -5846,10 +6106,15 @@ class SpatialLightColorCard extends HTMLElement {
       if (e.key === 'ArrowDown') { delta.y = step; moved = true; }
       if (moved) {
         e.preventDefault();
+        // ArrowRight means "right on screen". Positions are plan space, so the
+        // nudge is a screen displacement that has to come back to plan axes --
+        // otherwise arrow keys move lights sideways on a turned plan.
+        const pd = SpatialLightColorCard.rotateVector(
+          delta.x, delta.y, (360 - this._planRotation()) % 360);
         this._selectedLights.forEach(entity => {
           const pos = this._config.positions[entity] || { x: 50, y: 50 };
-          const nx = Math.max(0, Math.min(100, pos.x + delta.x));
-          const ny = Math.max(0, Math.min(100, pos.y + delta.y));
+          const nx = Math.max(0, Math.min(100, pos.x + pd.x));
+          const ny = Math.max(0, Math.min(100, pos.y + pd.y));
           this._config.positions[entity] = { x: nx, y: ny };
         });
         this._smoothApplyPositions();
@@ -6233,12 +6498,12 @@ class SpatialLightColorCard extends HTMLElement {
         const node = this.shadowRoot.querySelector(`.canvas-element[data-element-id="${CSS.escape(elementId)}"]`);
         if (node) {
           node.classList.remove('dragging');
-          const finalLeft = parseFloat(node.style.left);
-          const finalTop = parseFloat(node.style.top);
+          // style.left/top are SCREEN percentages; config is plan space.
+          const fin = this._toPlanPct(parseFloat(node.style.left), parseFloat(node.style.top));
           // Update the canvas element position in config
           const elConfig = this._config.canvas_elements?.find(el => el.id === elementId);
           if (elConfig) {
-            elConfig.position = { x: finalLeft, y: finalTop };
+            elConfig.position = { x: fin.x, y: fin.y };
           }
         }
         if (moved) {
@@ -6259,9 +6524,8 @@ class SpatialLightColorCard extends HTMLElement {
         const node = this.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(entity)}"]`);
         if (node) {
           node.classList.remove('dragging');
-          const finalLeft = parseFloat(node.style.left);
-          const finalTop = parseFloat(node.style.top);
-          this._config.positions[entity] = { x: finalLeft, y: finalTop };
+          const fin = this._toPlanPct(parseFloat(node.style.left), parseFloat(node.style.top));
+          this._config.positions[entity] = { x: fin.x, y: fin.y };
         }
         if (moved) {
           this._saveHistory();
@@ -8395,7 +8659,11 @@ class SpatialLightColorCard extends HTMLElement {
    * every brightness/color state update.
    */
   _applyWallShadows(glowEl, entityId, gc, canvasRect) {
-    const walls = this._config.glow_walls;
+    // Screen space: this builds a mask over the glow element, which sits at
+    // the marker's screen position. gc.direction arrives already turned by
+    // _getGlowConfig and is part of versionKey, so the mask cache invalidates
+    // on a rotation without any extra key.
+    const walls = this._wallsForRender(this._config.glow_walls || []);
     if (!walls || walls.length === 0 || !canvasRect) {
       return;
     }
@@ -8408,7 +8676,8 @@ class SpatialLightColorCard extends HTMLElement {
     // None of these change on a typical hass state update (brightness/color change).
     // Build a lightweight version key from the inputs that DO change.
     if (!this._wallMaskPerEntity) this._wallMaskPerEntity = {};
-    const pos = this._config.positions[entityId] || { x: 50, y: 50 };
+    const posPlan = this._config.positions[entityId] || { x: 50, y: 50 };
+    const pos = this._toScreenPct(posPlan.x, posPlan.y);
     const glowWRaw = parseFloat(glowEl.style.width) || gc.width;
     const glowHRaw = parseFloat(glowEl.style.height) || gc.length;
     if (glowWRaw <= 0 || glowHRaw <= 0) return;
@@ -8592,6 +8861,10 @@ class SpatialLightColorCard extends HTMLElement {
         mix(Math.round(w.x2 * 64)); mix(Math.round(w.y2 * 64));
       }
     }
+    // The view rotation belongs in the hash: it changes every wall's SCREEN
+    // geometry while leaving the config coordinates alone, so without it
+    // _visPolyCache would serve polygons solved for the previous orientation.
+    mix(this._planRotation());
     return h >>> 0;
   }
 
@@ -8719,7 +8992,7 @@ class SpatialLightColorCard extends HTMLElement {
     const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}|${this._wallDoorStateKey()}`;
     if (this._fieldOccluders && this._fieldOccluders.key === key) return this._fieldOccluders;
 
-    let walls = this._draftWalls || this._config.glow_walls || [];
+    let walls = this._wallsForRender(this._draftWalls || this._config.glow_walls || []);
     // The angle set grows with the wall count too (6 rays per endpoint pair),
     // so the solve is O(walls^2). Cap it rather than let a pathological config
     // wedge the browser, and say so instead of silently truncating.
@@ -8778,14 +9051,19 @@ class SpatialLightColorCard extends HTMLElement {
     const baseLength = hasGlow
       ? this._resolveGlowLength(gc.length, rect)
       : this._resolveGlowLength(lf.radius, rect) * 2;
+    // Already rotated by _getGlowConfig; a light with no glow emits a disc, so
+    // its direction is immaterial.
     const direction = hasGlow ? gc.direction : 0;
 
     // Matches _updateGlow: length tracks brightness, width does not.
     const length = scaleB ? baseLength * Math.max(ratio, 0.1) : baseLength;
     const alpha = (scaleB ? baseIntensity * Math.max(ratio, 0.05) : baseIntensity) * lf.exposure;
 
-    const x = pos.x / 100 * rect.width + (hasGlow ? gc.offset_x : 0);
-    const y = pos.y / 100 * rect.height + (hasGlow ? gc.offset_y : 0);
+    // gc comes from _getGlowConfig, which has ALREADY turned the direction and
+    // the offsets. Rotating them again here would double-apply the turn.
+    const spos = this._toScreenPct(pos.x, pos.y);
+    const x = spos.x / 100 * rect.width + (hasGlow ? gc.offset_x : 0);
+    const y = spos.y / 100 * rect.height + (hasGlow ? gc.offset_y : 0);
     const rot = direction * Math.PI / 180;
 
     const centred = shape === 'round' || shape === 'oval' || shape === 'custom';
@@ -9229,7 +9507,7 @@ class SpatialLightColorCard extends HTMLElement {
     // In lights mode walls are context rather than the subject, but they must
     // still be visible -- placing a light means placing it relative to a room.
 
-    const walls = this._draftWalls || this._config.glow_walls || [];
+    const walls = this._wallsForRender(this._draftWalls || this._config.glow_walls || []);
     if (!walls.length) return;
 
     ctx.save();
@@ -9326,11 +9604,127 @@ class SpatialLightColorCard extends HTMLElement {
     if (!surface) return null;
     const rect = surface.getBoundingClientRect();
     if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const sx = (e.clientX - rect.left) / rect.width * 100;
+    const sy = (e.clientY - rect.top) / rect.height * 100;
+    const pt = this._toPlanPct(sx, sy);
     return {
-      x: (e.clientX - rect.left) / rect.width * 100,
-      y: (e.clientY - rect.top) / rect.height * 100,
-      rect,
+      x: pt.x,
+      y: pt.y,
+      // A PLAN-space rect: when the view is turned a quarter, the plan's own
+      // width runs down the screen, so px tolerances computed from this rect
+      // (wall snapping, joint radius, hit tests) stay isotropic and correct
+      // without any of those call sites knowing about rotation.
+      rect: this._planSpaceRect(rect),
     };
+  }
+
+  /**
+   * An explicitly configured aspect ratio as the VIEW sees it. A quarter turn
+   * makes a wide plan tall, and the canvas box has to turn with the
+   * coordinates or the layout is sheared rather than rotated. Swapped here at
+   * paint rather than rewritten in config, so the user's `aspect_ratio` stays
+   * exactly what they typed -- inverting it numerically is lossy (1.6 -> 0.63
+   * -> 1.59, a permanent shear on every round trip).
+   */
+  _viewAspectRatio() {
+    const ar = this._config && this._config.aspect_ratio;
+    if (!ar) return null;
+    return this._planRotationSwapsAxes() ? { w: ar.h, h: ar.w } : { w: ar.w, h: ar.h };
+  }
+
+  /**
+   * Turn the canvas box for a quarter turn when nothing else supplies a ratio
+   * -- i.e. the shape comes from `canvas_height` and there is no
+   * `aspect_ratio` and no usable plan image (none configured, or its probe
+   * failed).
+   *
+   * The unrotated box is (column width W) x (canvas_height H). A quarter turn
+   * has to invert that, so the turned box is H : W -- and since W is still
+   * fixed by the dashboard column, the height becomes W*(W/H). Measured from
+   * the WRAPPER, not the canvas: the canvas' own width is what we are about to
+   * change, so reading it back would be circular.
+   */
+  _applyRotatedBoxFallback(canvas) {
+    canvas = canvas || (this._els && this._els.canvas);
+    if (!canvas) return;
+    // Only when nothing else gives the canvas its shape. An explicit
+    // `aspect_ratio` is already turned by _viewAspectRatio in the stylesheet,
+    // and overriding it here squashed a configured 3:1 plan to the
+    // canvas_height ratio instead.
+    if (this._viewAspectRatio()) {
+      if (canvas.dataset.rotBox) {
+        canvas.style.aspectRatio = '';
+        canvas.style.height = '';
+        delete canvas.dataset.rotBox;
+      }
+      return;
+    }
+    if (!this._planRotationSwapsAxes()) {
+      if (canvas.dataset.rotBox) {
+        canvas.style.aspectRatio = '';
+        canvas.style.height = '';
+        delete canvas.dataset.rotBox;
+      }
+      return;
+    }
+    const host = canvas.parentElement;
+    const w = host ? host.getBoundingClientRect().width : 0;
+    const h = Number(this._config && this._config.canvas_height) || 450;
+    // Width 0 means the card is not laid out yet -- HA sets config and hass on
+    // a card BEFORE appending it, so the first _renderAll legitimately runs
+    // detached. The wrapper observer below re-runs this the moment a real
+    // width exists, so bailing here is a deferral rather than a miss.
+    if (!(w > 0) || !(h > 0)) return;
+    // Idempotent for a given width: re-applying the same ratio is a no-op, so
+    // the observer cannot drive itself round a loop.
+    const ratio = `${h} / ${w}`;
+    if (canvas.style.aspectRatio === ratio) return;
+    canvas.style.aspectRatio = ratio;
+    canvas.style.height = 'auto';
+    canvas.dataset.rotBox = '1';
+    this._onCanvasGeometryChanged();
+  }
+
+  /**
+   * Watch the WRAPPER, so the rotated box survives the two things that broke a
+   * one-shot measurement in _renderAll: a detached first render (width 0, and
+   * nothing ever re-ran it) and a later column resize (the ratio is derived
+   * from the width, so it goes stale the moment the width changes).
+   *
+   * The wrapper is the right thing to observe: its width does not depend on
+   * the canvas height we are about to set, so reading it is not circular.
+   */
+  _observePlanBox() {
+    if (this._planBoxObserver) {
+      this._planBoxObserver.disconnect();
+      this._planBoxObserver = null;
+    }
+    const canvas = this._els && this._els.canvas;
+    const host = canvas && canvas.parentElement;
+    if (!host || typeof window === 'undefined' || !('ResizeObserver' in window)) return;
+    this._planBoxObserver = new ResizeObserver(() => {
+      this._applyRotatedBoxFallback(this._els && this._els.canvas);
+    });
+    this._planBoxObserver.observe(host);
+  }
+
+  /** A screen rect expressed in plan axes: dimensions swap on a quarter turn. */
+  _planSpaceRect(rect) {
+    if (!this._planRotationSwapsAxes()) return rect;
+    return { width: rect.height, height: rect.width, left: rect.left, top: rect.top };
+  }
+
+  /** Walls in SCREEN space, for the renderers. Spreads, so `_door`/`_src`/
+   *  `_part` survive -- a wall rebuilt from scratch here would lose its door
+   *  metadata and every door would silently become a solid wall. */
+  _wallsForRender(walls) {
+    const rot = this._planRotation();
+    if (!rot) return walls;
+    return walls.map((w) => {
+      const a = this._toScreenPct(w.x1, w.y1);
+      const b = this._toScreenPct(w.x2, w.y2);
+      return { ...w, x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    });
   }
 
   /** The wall list the drawing UI edits (draft while dragging, else config). */
@@ -9964,7 +10358,12 @@ class SpatialLightColorCard extends HTMLElement {
       // A stroke shorter than ~2% of the canvas diagonal is a tap, not a
       // wall. Without this every stray tap injects an invisible zero-length
       // entry into the user's YAML.
-      const rect = this._els.canvas.getBoundingClientRect();
+      // `w` holds PLAN percentages (the seam converts on the way in), so it
+      // has to be measured against the plan-space rect. Using the raw screen
+      // rect scales each axis by the other's extent on a quarter turn, which
+      // discards real strokes on one axis and commits jitter on the other.
+      // Math.hypot is swap-invariant, so minLen is unaffected either way.
+      const rect = this._planSpaceRect(this._wallSurface().getBoundingClientRect());
       const dxPx = (w.x2 - w.x1) / 100 * rect.width;
       const dyPx = (w.y2 - w.y1) / 100 * rect.height;
       const minLen = Math.hypot(rect.width, rect.height) * 0.02;
@@ -10333,6 +10732,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     if (this._config.title) yamlLines.push(`title: ${this._config.title}`);
     yamlLines.push(`canvas_height: ${this._config.canvas_height}`);
+    if (this._config.plan_rotation) yamlLines.push(`plan_rotation: ${this._config.plan_rotation}`);
     if (this._config.aspect_ratio) {
       yamlLines.push(`aspect_ratio: "${this._config.aspect_ratio.w}:${this._config.aspect_ratio.h}"`);
     }
@@ -10444,6 +10844,7 @@ class SpatialLightColorCard extends HTMLElement {
         if (bg.size) yamlLines.push(`${indent}size: ${bg.size}`);
         if (bg.rendering) yamlLines.push(`${indent}rendering: ${bg.rendering}`);
         if (bg.auto_aspect !== undefined) yamlLines.push(`${indent}auto_aspect: ${bg.auto_aspect}`);
+
         if (bg.position) yamlLines.push(`${indent}position: ${bg.position}`);
         if (bg.repeat) yamlLines.push(`${indent}repeat: ${bg.repeat}`);
         if (bg.blend_mode) yamlLines.push(`${indent}blend_mode: ${bg.blend_mode}`);
@@ -10537,17 +10938,25 @@ class SpatialLightColorCard extends HTMLElement {
   // height + 1 row for the controls area. With aspect_ratio the height is
   // width-dependent; estimate against a typical ~500px masonry column.
   getCardSize() {
-    let ar = this._config && this._config.aspect_ratio;
+    let ar = this._viewAspectRatio();
     // When the plan image supplies the ratio, report THAT height — otherwise
     // masonry reserves rows for a canvas_height the canvas is not using and
     // the card overlaps or leaves a gap.
     if (!ar && this._wantsAutoAspect && this._wantsAutoAspect()) {
       const dims = SpatialLightColorCard._imageSizeCache.get(this._config.background_image.url);
       if (dims && typeof dims.then !== 'function' && dims.w > 0 && dims.h > 0) {
-        ar = { w: dims.w, h: dims.h };
+        // Turned, the plan is as tall as it was wide -- masonry has to reserve
+        // rows for that or the card overlaps its neighbour.
+        ar = this._planRotationSwapsAxes() ? { w: dims.h, h: dims.w } : { w: dims.w, h: dims.h };
       }
     }
-    const h = ar ? 500 * (ar.h / ar.w) : ((this._config && this._config.canvas_height) || 450);
+    // The canvas_height arm has to turn too, and on the same terms as
+    // _applyRotatedBoxFallback: the turned box is canvas_height : W, so at the
+    // assumed ~500px column the height becomes 500 * (500 / canvas_height).
+    const ch = (this._config && this._config.canvas_height) || 450;
+    const h = ar
+      ? 500 * (ar.h / ar.w)
+      : (this._planRotationSwapsAxes() ? 500 * (500 / ch) : ch);
     return Math.max(3, Math.ceil(h / 50) + 1);
   }
   // Hint to the modern grid/sections layout: full-width works best because
@@ -10923,6 +11332,38 @@ class SpatialLightColorCardEditor extends HTMLElement {
       composed: true,
     }));
     requestAnimationFrame(() => { this._configFromEditor = false; });
+  }
+
+  /**
+   * Turn the plan a quarter at a time.
+   *
+   * This writes ONE key. Every coordinate the user authored -- positions,
+   * zones, walls in whichever form they wrote them, the aspect ratio -- is
+   * left exactly as it was, and the card applies the turn when it paints. So
+   * setting the rotation back to 0 restores the layout precisely, no
+   * arithmetic slip can corrupt work placed by hand, and both undo stacks
+   * stay valid because nothing they snapshot has changed.
+   *
+   * It also picks up orientation state that never reaches config at all: glow
+   * defaults _normalizeGlowConfig fills in (`glow: {enabled: true}` carries no
+   * `direction` of its own, and that is the commonest glow config there is),
+   * and positions _initializePositions invents for entities the user has never
+   * dragged.
+   */
+  _rotatePlan(deg) {
+    const step = SpatialLightColorCard.normalizeRotation(deg);
+    if (!step) return;
+    // Normalize the BASE as well as the step: the editor's setConfig copies the
+    // raw Lovelace config verbatim, so a hand-written `plan_rotation: 45`
+    // would otherwise accumulate to 135 rather than snapping to a quarter.
+    const base = SpatialLightColorCard.normalizeRotation(this._config.plan_rotation);
+    const next = SpatialLightColorCard.rotateAngle(base, step);
+    // 0 is the default, so clear the key rather than writing `plan_rotation: 0`
+    // and leaving litter in the user's YAML.
+    if (next) this._config.plan_rotation = next;
+    else delete this._config.plan_rotation;
+    this._fireConfigChanged();
+    this._setDOMValues();
   }
 
   _pushPositionHistory() {
@@ -11540,6 +11981,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
       .undo-redo-row { display: flex; gap: 8px; }
       .undo-redo-row .action-btn { flex: 1; text-align: center; }
+      .rotate-row { display: flex; gap: 6px; flex: 0 0 auto; }
+      /* Wide enough to hit on a touch screen, and the glyph carries the
+         meaning, so no text label competes with the row's own label. */
+      .rotate-btn {
+        width: 40px; min-width: 40px; margin: 0;
+        font-size: 20px; line-height: 1; text-align: center; padding: 6px 0;
+      }
+      .rotate-readout {
+        min-width: 38px; text-align: center; align-self: center;
+        font: 600 12px ui-monospace, monospace; color: var(--text-secondary, #aaa);
+      }
 
       .color-input-row {
         display: flex; align-items: center; gap: 8px;
@@ -12199,6 +12651,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <span class="chevron">&#9660;</span>
           </div>
           <div class="section-body">
+            <div class="option-row">
+              <div>
+                <div class="label">Rotate plan</div>
+                <div class="sublabel">Turns the whole layout a quarter at a time &mdash; lights, zones, walls and the plan image together. Nothing you placed is rewritten, so going back to 0&deg; restores it exactly. A quarter turn makes a wide plan tall, so expect the card to change shape.</div>
+              </div>
+              <div class="rotate-row">
+                <button class="action-btn rotate-btn" id="cfgRotateCCW" title="Rotate a quarter turn left">&#8634;</button>
+                <span class="rotate-readout" id="cfgRotateReadout">0&deg;</span>
+                <button class="action-btn rotate-btn" id="cfgRotateCW" title="Rotate a quarter turn right">&#8635;</button>
+              </div>
+            </div>
             <div class="option-row">
               <div>
                 <div class="label">Place lights on the plan</div>
@@ -12960,6 +13423,8 @@ class SpatialLightColorCardEditor extends HTMLElement {
   }
 
   _setDOMValues() {
+    const rr = this.shadowRoot && this.shadowRoot.getElementById('cfgRotateReadout');
+    if (rr) rr.textContent = `${SpatialLightColorCard.normalizeRotation(this._config.plan_rotation)}°`;
     const root = this.shadowRoot;
     const c = this._config;
 
@@ -14166,6 +14631,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._render();
       });
     }
+    const rotCCW = root.getElementById('cfgRotateCCW');
+    if (rotCCW) rotCCW.addEventListener('click', () => this._rotatePlan(270));
+    const rotCW = root.getElementById('cfgRotateCW');
+    if (rotCW) rotCW.addEventListener('click', () => this._rotatePlan(90));
+
     const lightPlaceBtn = root.getElementById('cfgLightPlaceOpen');
     if (lightPlaceBtn) {
       lightPlaceBtn.addEventListener('click', () => {

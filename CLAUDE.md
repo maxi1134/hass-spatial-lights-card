@@ -181,6 +181,96 @@ Three places have to know, or the feature is inert: `_prepareOccluders` skips no
 
 Done (and a second Escape — the first ends a run) leaves wall mode entirely and broadcasts `active: false`, so the editor's switch and the card cannot disagree about whether it is armed.
 
+## 8d. Plan rotation
+
+`plan_rotation` (0/90/180/270, clockwise on screen) is a **view transform**, not a rewrite of the user's
+coordinates. That choice is load-bearing, and the alternative was built first and thrown away.
+
+**Why not rewrite the config.** Rotating every coordinate once looks cheaper — no gesture path changes at
+all — but it has to enumerate every orientation-bearing value, and three of them are not in the config to
+enumerate. `_normalizeGlowConfig` defaults `shape: 'cone'`/`direction: 0`, so `glow: {enabled: true}` — the
+commonest glow config there is — carries no `direction` key and would keep pointing screen-down. `positions`
+is `{}` in `getStubConfig` and `_initializePositions` invents the rest inside the CARD, so a rewrite in the
+editor moves nothing for lights the user never dragged. And `getStubConfig` emits `icon_rotation: 0`, so
+"rotate it if present" tilts every glyph on every UI-added card. On top of that, `_normalizeGlowLength`
+clamps percents at 400% and inverting a numeric `aspect_ratio` is lossy (`1.6 → 0.63 → 1.59`), both
+one-way doors. Under a view transform a missed site is a transient mis-registration that vanishes at 0°;
+under a rewrite the same omission permanently corrupts a hand-placed layout.
+
+**THE SEAM is `_wallPointFromEvent`.** It returns the pointer in PLAN coordinates and a PLAN-SPACE rect
+(`_planSpaceRect`, dimensions swapped on a quarter turn). Because every wall gesture already worked in
+canvas percentages against `pt.rect`, that one change puts wall snapping, `_wallJointsAt`, `_hitTestWall`,
+`_hitTestLightOnStage`, the light-stage drags and the whole wall delta protocol into plan space with NO
+edits — and keeps px tolerances isotropic on screen. Config therefore never sees a rotated coordinate,
+which is why the delta protocol's identify-by-geometry still works.
+
+**Emission rotates at `_getGlowConfig`**, the single resolver all four consumers call — so the legacy glow,
+the light field and the wall editor cannot disagree, and defaults the normalizer filled in are covered.
+`_getFieldEmitter` must NOT rotate them again. `direction` shares a sign with the plan turn: CSS `rotate()`
+is clockwise on screen, so direction 90 points LEFT (the config comment claiming "90=right" is wrong —
+measured). Offsets are applied OUTSIDE that rotate in the transform list, so they live in plan axes and
+turn as a displacement, not an angle.
+
+**The plan image turns on the existing `.canvas::before` layer**, so the markers, canvases and controls
+stacked above it stay put. 180 is a plain `rotate(180deg)`. A quarter turn needs the layer sized to the
+canvas' dimensions SWAPPED, and `width: 100cqh; height: 100cqw` under `container-type: size` is the only way
+to say "the other axis" in CSS without measuring in JS. Measured: the layer's rotated box covers the canvas
+exactly at all four rotations, `container-type: size` does NOT confine `position: fixed` descendants (it is
+not the §8c containing-block trap), and the blend group survives so projected light still tints the plan.
+`container-type` is applied ONLY on quarter turns, so the unrotated path keeps exactly the layout it had.
+`.wall-editor-stage` got the same two-layer treatment — its background moved from the div to a `::before` —
+so one set of rules serves both surfaces and they cannot face different ways.
+
+**Three things must know, or the feature is subtly broken.** `_hashWalls` mixes in the rotation, because a
+turn changes every wall's SCREEN geometry while leaving config alone and `_visPolyCache`'s only key is that
+hash. `_viewAspectRatio` swaps an explicitly configured ratio, and `_applyBackgroundAspect`/`_wallEditorAspect`
+swap the ratio probed from the (unrotated) image file — without that the canvas keeps its old shape while
+its contents rotate into it, and percentages land sheared rather than turned. `getCardSize` reports the
+turned shape so masonry reserves the right rows.
+
+**`_planScale`** multiplies PERCENT-resolved glow sizes by the turned canvas' aspect. Percent resolves
+against the canvas WIDTH, which the dashboard column fixes; turning a 2:1 plan leaves that width alone but
+draws the plan twice as large, so an unscaled pool would cover half the room it used to. Measured: 120% at
+0° needs 240% at 90° to light the same area. Applied at RESOLVE time so the normalizer's 400% cap cannot
+clip it. Plain pixel numbers are deliberately not scaled.
+
+**`rotateAngle` rounds AFTER the 360 wrap.** `% 360` re-introduces exactly the float error the rounding
+removes (`372.34 % 360` is `12.339999999999975`), so rounding first fails the four-turn identity for 24128
+of 36000 two-decimal angles. An integer test angle hides this completely — the regression test sweeps
+36000 of them.
+
+**Three leaks adversarial review found, all of the same shape: a site that reads one frame and writes the
+other.** `_smoothApplyPositions` wrote raw PLAN percentages into `style.left/top` — screen percentages
+everywhere else — so arrow-key nudge, undo, redo and Rearrange teleported every marker on a turned plan,
+and because `_onPointerDown` latches `style.left` as the drag origin, the very next grab committed the
+teleported value back to config. `_onWallPointerUp`'s tap-vs-draw threshold measured a PLAN-space draft
+wall against the raw SCREEN rect, so each axis got the other's extent: on a quarter-turned 3:1 plan it was
+3x too strict along one screen axis (discarding deliberate strokes) and 3x too lax along the other
+(committing jitter as walls). The test for it asserts the property that matters — the threshold is
+ISOTROPIC on screen, 5px horizontal == 5px vertical — not an absolute pixel count. And `_viewAspectRatio`
+returns null when the shape comes from `canvas_height` alone, so the box never turned and coordinates
+sheared into it; `_applyRotatedBoxFallback` turns it from the WRAPPER's width (reading the canvas' own
+width would be circular — it is what we are about to change) and is guarded on `_viewAspectRatio()` being
+null, a guard whose first version was missing and squashed a configured 3:1 plan to 77x13.
+
+**`_applyRotatedBoxFallback` must be observer-driven, not measured once.** Its ratio is derived from the
+wrapper's WIDTH, which makes a single measurement inside `_renderAll` wrong three ways: HA sets config and
+hass on a card BEFORE appending it, so that render sees width 0 and nothing ever retried; the ratio then
+goes stale on any column resize (sidebar collapse, window resize, phone rotation); and a configured image
+whose probe FAILS keeps `_wantsAutoAspect()` true, so the early-return holding the only call site was never
+reached. A `ResizeObserver` on the wrapper fixes the first two together — the wrapper's width does not
+depend on the canvas height being set, so reading it is not circular, and re-applying the same ratio is a
+no-op so it cannot drive itself round a loop — and the probe's failure branch calls it too. `getCardSize`'s
+`canvas_height` arm has to turn on the same terms, or masonry reserves the unturned height for exactly the
+configs this path turns. And `_rotatePlan` normalizes the BASE as well as the step, because the editor's
+`setConfig` copies the raw Lovelace config verbatim: a hand-written `plan_rotation: 45` would otherwise
+accumulate to 135 instead of snapping to a quarter.
+
+The undo stacks stay valid across a rotation precisely because nothing they snapshot changes.
+
+`.harness/load-card.js` loads the card class under node (stubbed DOM), which is what makes
+`.harness/rot-math.test.js` a real unit test of the shipped primitives rather than a copy of the maths.
+
 ## 8a. Label legibility over the field
 
 `.light-label` paints in TWO layers: `background-color: var(--label-ground)` (opaque) with `background-image: linear-gradient(var(--label-bg), var(--label-bg))` on top. `background-image` paints above `background-color`, so the theme's tint survives while the label is guaranteed opaque.

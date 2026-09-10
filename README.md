@@ -780,6 +780,36 @@ Glow walls can also be configured in the visual editor's **Glow Walls** section.
 >   show_walls: always
 > ```
 
+#### Rotating the plan
+
+**Positions → Rotate plan** turns the whole layout a quarter at a time, so you
+can try your floor plan the other way round without re-placing anything.
+Lights, zones, walls, the plan image and the direction each light throws its
+light all turn together.
+
+It is a **view** setting, not a rewrite. Everything you placed — `positions`,
+`canvas_elements`, `glow_walls`, `aspect_ratio` — stays exactly as you authored
+it, and the card applies the turn when it paints. So going back to 0° restores
+your layout precisely, and no arithmetic slip can scramble work you placed by
+hand.
+
+```yaml
+plan_rotation: 90     # 0 | 90 | 180 | 270, clockwise. Default 0.
+```
+
+Two things change shape, unavoidably, on a quarter turn:
+
+- **The card.** A wide plan becomes a tall one. In a fixed-width dashboard
+  column a 2:1 plan gets roughly four times taller, and the editor preview
+  will need scrolling — the full-size editor (below) is the comfortable way to
+  work while rotated.
+- **Nothing else.** Percent glow sizes are rescaled so a light still covers the
+  same part of the room; plain pixel sizes are left alone, because a pixel is a
+  pixel.
+
+Icons keep their own upright orientation — `icon_rotation` is not touched, the
+same way map labels stay level when you turn a map.
+
 #### Placing lights
 
 The same full-size editor also places lights: **Positions → Open editor**, or
