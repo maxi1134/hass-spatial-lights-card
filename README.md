@@ -688,6 +688,12 @@ field uses its shape, size, direction, colour and falloff, so cones, beams and
 ovals all diffuse and cast shadows through the new renderer. Lights without any
 glow config diffuse as a plain round pool of `radius`.
 
+Two glow keys are deliberately ignored by the field: `blur` and
+`edge_softness`. Both existed to fake soft edges on a hard-edged DOM element —
+the field's shadow edges are real geometry, and softening them is what
+`samples` / `source_radius` do (a penumbra that widens with distance from the
+wall, as it should). Set `samples: 1` for crisp shadow edges.
+
 Cost is modest: 12 lights against 30 wall segments with 5-sample soft shadows
 measures ~6.5 ms for a full solve and ~1.1 ms once the visibility polygons are
 cached (they are keyed on geometry only, so colour and brightness changes never
