@@ -916,6 +916,14 @@ All color values accept any CSS color. Every key is optional — leave one out t
 ### Lights not visible on load?
 - Reload the dashboard after updating the card.
 
+### Labels hard to read over the light?
+
+They shouldn't be — light is always painted behind the names and icons, and
+labels carry an opaque backing so nothing can bleed through them. If you have
+deliberately set a translucent `theme.label_background`, that choice is
+honoured as-is, so the light *will* show through it; remove it (or give it a
+solid colour) to get the opaque backing back.
+
 ### Floor plan looks blurry or soft?
 
 Almost always the source image is being **upscaled**. The card is as wide as its

@@ -1330,6 +1330,7 @@ class SpatialLightColorCard extends HTMLElement {
         --header-bg: var(--surface-secondary);
         --label-bg: var(--surface-elevated);
         --label-text: var(--text-primary);
+        --label-ground: #141414;
         --slider-track: var(--surface-tertiary);
         --light-off-bg: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
       `,
@@ -1353,6 +1354,7 @@ class SpatialLightColorCard extends HTMLElement {
         --header-bg: var(--surface-secondary);
         --label-bg: #ffffff;
         --label-text: var(--text-primary);
+        --label-ground: #ffffff;
         --slider-track: #dcdce1;
         --light-off-bg: linear-gradient(135deg, #d7d7dc 0%, #c6c6cc 100%);
       `,
@@ -1377,6 +1379,15 @@ class SpatialLightColorCard extends HTMLElement {
         --header-bg: var(--surface-secondary);
         --label-bg: var(--surface-elevated);
         --label-text: var(--text-primary);
+        /* Opaque ground painted UNDER --label-bg so a label is never
+           see-through. In auto mode --label-bg is derived from the host
+           theme's card background via color-mix, and color-mix's result alpha
+           is the weighted mean of its operands' -- so a glass theme
+           (--ha-card-background: rgba(...)) yields a label only 13-20%
+           opaque, and whatever is behind it, floor plan or projected light,
+           reads straight through. --card-background-color is the opaque
+           sibling token that glass themes leave alone. */
+        --label-ground: var(--card-background-color, #141414);
         --slider-track: var(--surface-tertiary);
         --light-off-bg: linear-gradient(135deg,
           color-mix(in srgb, var(--text-primary) 24%, var(--surface-primary)) 0%,
@@ -1412,7 +1423,12 @@ class SpatialLightColorCard extends HTMLElement {
       overrides.push(`--controls-below-backdrop: blur(${blur}px) saturate(150%);`);
       overrides.push(`--header-backdrop: blur(${blur}px) saturate(150%);`);
     }
-    if (t.label_background) overrides.push(`--label-bg: ${t.label_background};`);
+    if (t.label_background) {
+      overrides.push(`--label-bg: ${t.label_background};`);
+      // The user picked this colour deliberately; if they chose a translucent
+      // one, respect it rather than quietly painting it onto an opaque base.
+      overrides.push('--label-ground: transparent;');
+    }
     if (t.label_text) overrides.push(`--label-text: ${t.label_text};`);
 
     return (palettes[mode] || palettes.auto) + overrides.join('\n        ');
@@ -3188,7 +3204,13 @@ class SpatialLightColorCard extends HTMLElement {
       .light-label {
         position: absolute; top: calc(100% + 8px); left: 50%;
         transform: translateX(calc(-50% + var(--label-offset, 0px)));
-        padding: 4px 8px; background: var(--label-bg, var(--surface-elevated)); color: var(--label-text, var(--text-primary));
+        padding: 4px 8px; color: var(--label-text, var(--text-primary));
+        /* Two layers: background-image paints ABOVE background-color, so the
+           theme's (possibly translucent) label colour sits on top of an
+           opaque ground. Keeps the theme's tint, drops the transparency, and
+           guarantees projected light can never show through a name. */
+        background-color: var(--label-ground, #141414);
+        background-image: linear-gradient(var(--label-bg, var(--surface-elevated)), var(--label-bg, var(--surface-elevated)));
         backdrop-filter: var(--controls-below-backdrop, none);
         font-size: 11px; font-weight: 600; border-radius: var(--radius-sm); white-space: nowrap; pointer-events: none;
         opacity: 0; transition: opacity var(--transition-fast); z-index: 5; border: 1px solid var(--border-subtle);
@@ -3933,7 +3955,12 @@ class SpatialLightColorCard extends HTMLElement {
       // aggressively (the user-visible "rectangles restricting the
       // shadows"). A sibling div has its own bounds and uses `var()` only
       // in `background-color`, where mobile invalidates reliably.
-      const haloHtml = (isIconOnly || isMinimalUI)
+      // Gated on the light field the same way .light-glow is: the halo is the
+      // icon-only / minimal-ui colour carrier, i.e. a second projected-light
+      // source. Left ungated it paints inside .light's own stacking context
+      // (above the field canvas), so a light rendered both ways showed twice
+      // the glow and the halo escaped every wall.
+      const haloHtml = ((isIconOnly || isMinimalUI) && !this._fieldActive)
         ? '<div class="light-halo" aria-hidden="true"></div>'
         : '';
 
