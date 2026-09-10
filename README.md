@@ -916,6 +916,45 @@ All color values accept any CSS color. Every key is optional — leave one out t
 ### Lights not visible on load?
 - Reload the dashboard after updating the card.
 
+### Floor plan looks blurry or soft?
+
+Almost always the source image is being **upscaled**. The card is as wide as its
+dashboard column, and on a 2x display a full-width card renders a plan at
+2000-3000 device pixels across — a 1000px-wide source has to be stretched to
+fill that, and no CSS setting can invent the missing detail.
+
+Open the browser console: the card measures your plan and tells you the exact
+width you need, e.g.
+
+```
+[spatial-lights-card] Plan image is being upscaled 4.1x and will look soft:
+source is 400x250, but this card renders it at 1640px wide
+(820 CSS px x 2 device pixel ratio). Use a source at least 1640px wide...
+```
+
+What to do, in order of how much it helps:
+
+1. **Use a bigger source.** Export the plan at the width the warning names, or
+   wider. An SVG floor plan is better still — it is resolution-independent and
+   stays sharp at any card width.
+2. **Check what Home Assistant is actually serving.** A URL like
+   `/api/image/serve/<id>/512x512` is a *downscaled variant* — HA generates
+   several sizes on upload and that path pins you to a small one. Put the
+   full-resolution file in `config/www/` and reference it as `/local/plan.png`
+   instead.
+3. **For line art, turn off smoothing:**
+   ```yaml
+   background_image:
+     url: /local/plan.png
+     rendering: crisp-edges   # or: pixelated
+   ```
+   This keeps edges hard rather than interpolated. It sharpens line drawings and
+   hurts photographs, so it is not the default.
+4. **Make the card narrower** (fewer grid columns), so less upscaling is needed.
+
+JPEG artifacts are a separate matter — if the plan was saved as a low-quality
+JPEG, re-export it as PNG or SVG.
+
 ### Other issues?
 - [Submit the issue on GitHub](https://github.com/Mihonarium/hass-spatial-lights-card/issues/new).
 

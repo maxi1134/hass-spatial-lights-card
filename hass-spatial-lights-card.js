@@ -1537,6 +1537,7 @@ class SpatialLightColorCard extends HTMLElement {
       // the stylesheet sets a pixel height in the no-aspect_ratio branch.
       live.style.height = 'auto';
       this._onCanvasGeometryChanged();
+      this._warnIfPlanUpscaled(dims);
     };
 
     const cache = SpatialLightColorCard._imageSizeCache;
@@ -1564,6 +1565,36 @@ class SpatialLightColorCard extends HTMLElement {
     });
     cache.set(url, pending);
     pending.then(apply);
+  }
+
+  /**
+   * Say so when the plan is being blown up past its native resolution.
+   *
+   * A blurry floor plan is almost always this and nothing else: the card is
+   * as wide as the dashboard column, and on a 2x display a full-width card
+   * wants a source two to three thousand pixels across. There is nothing CSS
+   * can do about missing pixels, so the useful thing is to name the number the
+   * user needs instead of leaving them guessing. Warned once per URL per card.
+   */
+  _warnIfPlanUpscaled(dims) {
+    const canvas = this._els && this._els.canvas;
+    if (!canvas || !dims || !(dims.w > 0)) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0)) return;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const needed = Math.round(rect.width * dpr);
+    // 1.25x gives normal responsive reflow some slack before it complains.
+    if (needed <= dims.w * 1.25) return;
+    const url = this._config.background_image.url;
+    if (this._upscaleWarnedFor === url) return;
+    this._upscaleWarnedFor = url;
+    console.warn(
+      `[spatial-lights-card] Plan image is being upscaled ${(needed / dims.w).toFixed(1)}x `
+      + `and will look soft: source is ${dims.w}x${dims.h}, but this card renders it at `
+      + `${needed}px wide (${Math.round(rect.width)} CSS px x ${dpr} device pixel ratio). `
+      + `Use a source at least ${needed}px wide, or set background_image.rendering to `
+      + `'crisp-edges' if it is line art. URL: ${url}`
+    );
   }
 
   /**
