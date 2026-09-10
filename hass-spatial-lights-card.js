@@ -504,8 +504,14 @@ class SpatialLightColorCard extends HTMLElement {
       enabled: obj.enabled === true,
       shape: SpatialLightColorCard.GLOW_SHAPES.includes(obj.shape) ? obj.shape : defaults.shape,
       direction: Number.isFinite(Number(obj.direction)) ? Number(obj.direction) : defaults.direction,
-      length: Number.isFinite(Number(obj.length)) && Number(obj.length) > 0 ? Number(obj.length) : defaults.length,
-      width: Number.isFinite(Number(obj.width)) && Number(obj.width) > 0 ? Number(obj.width) : defaults.width,
+      // Sizes accept a plain number (CSS px) or a '%' string, which is
+      // resolved against the canvas at paint time by _resolveGlowLength.
+      // Percent is what makes a plan look the same at every card width --
+      // positions and walls are already percentages, so a pixel reach means
+      // the light covers a different part of the plan in the editor preview,
+      // on a phone and on a monitor.
+      length: this._normalizeGlowLength(obj.length, defaults.length),
+      width: this._normalizeGlowLength(obj.width, defaults.width),
       intensity: Number.isFinite(Number(obj.intensity)) ? Math.max(0, Math.min(1, Number(obj.intensity))) : defaults.intensity,
       blur: Number.isFinite(Number(obj.blur)) && Number(obj.blur) >= 0 ? Number(obj.blur) : defaults.blur,
       offset_x: Number.isFinite(Number(obj.offset_x)) ? Number(obj.offset_x) : defaults.offset_x,
@@ -519,6 +525,40 @@ class SpatialLightColorCard extends HTMLElement {
       gradient_stops: this._normalizeGradientStops(obj.gradient_stops),
       custom_shape: this._normalizeCustomShape(obj.custom_shape),
     };
+  }
+
+  /**
+   * Accept a glow size as either CSS px (number) or a percentage of the
+   * canvas ('30%'). Percent strings are preserved verbatim and resolved at
+   * paint time; anything unusable falls back to the default.
+   */
+  _normalizeGlowLength(value, fallback) {
+    if (typeof value === 'string') {
+      const m = value.trim().match(/^(\d+(?:\.\d+)?)\s*%$/);
+      if (m) {
+        const n = parseFloat(m[1]);
+        if (n > 0) return `${Math.min(400, n)}%`;
+      }
+    }
+    const n = Number(value);
+    return (Number.isFinite(n) && n > 0) ? n : fallback;
+  }
+
+  /**
+   * Resolve a normalized glow size to CSS pixels.
+   *
+   * Percentages are measured against the canvas WIDTH rather than the
+   * diagonal or the height, so a round pool stays round and the number means
+   * the same thing whatever the plan's aspect ratio.
+   */
+  _resolveGlowLength(value, rect) {
+    if (typeof value === 'string' && value.endsWith('%')) {
+      const n = parseFloat(value);
+      const base = (rect && rect.width > 0) ? rect.width : 1000;
+      return Number.isFinite(n) ? (n / 100) * base : 0;
+    }
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
   }
 
   /** Normalize custom gradient stops: array of [position%, opacity] tuples. */
@@ -1047,7 +1087,10 @@ class SpatialLightColorCard extends HTMLElement {
       // plan to black. Translucent coloured light over the plan always shows.
       over_plan: 'normal',
       exposure: 1,            // global multiplier on the field's alpha
-      radius: 190,            // px reach for a light with no glow config of its own
+      // Reach for a light with no glow config of its own. Plan-relative by
+      // default so the field looks identical at every card width; a plain
+      // number is still accepted and means CSS px.
+      radius: '19%',
       falloff: 'smooth',      // reused from the glow falloff curves
       ambient: 0,             // 0-1 wide, low-intensity second pass
       ambient_reach: 2.5,     // reach multiplier for that pass
@@ -1085,7 +1128,7 @@ class SpatialLightColorCard extends HTMLElement {
       blend: oneOf(obj.blend, SpatialLightColorCard.LIGHT_FIELD_BLENDS, defaults.blend),
       over_plan: oneOf(obj.over_plan, SpatialLightColorCard.LIGHT_FIELD_PLAN_BLENDS, defaults.over_plan),
       exposure: num(obj.exposure, defaults.exposure, 0, 4),
-      radius: num(obj.radius, defaults.radius, 4, 4000),
+      radius: this._normalizeGlowLength(obj.radius, defaults.radius),
       falloff: SpatialLightColorCard.GLOW_FALLOFFS.includes(obj.falloff) ? obj.falloff : defaults.falloff,
       ambient: num(obj.ambient, defaults.ambient, 0, 1),
       ambient_reach: num(obj.ambient_reach, defaults.ambient_reach, 1, 8),
@@ -7737,7 +7780,14 @@ class SpatialLightColorCard extends HTMLElement {
       return;
     }
 
-    const gc = this._getGlowConfig(entityId);
+    const gcRaw = this._getGlowConfig(entityId);
+    // Percent sizes resolve to px here so every shape case below, and the wall
+    // mask geometry, keep working on plain numbers.
+    const gc = {
+      ...gcRaw,
+      width: this._resolveGlowLength(gcRaw.width, canvasRect),
+      length: this._resolveGlowLength(gcRaw.length, canvasRect),
+    };
     // Switches, binary sensors, scenes don't have brightness — treat as full (255)
     const brightness = state.attributes.brightness || ((isScene || isBinaryDomain) ? 255 : 0); // 0-255
     const ratio = brightness / 255;
@@ -8070,15 +8120,14 @@ class SpatialLightColorCard extends HTMLElement {
     const hasOverrides = Object.keys(this._config.glow_overrides).length > 0;
     if (!hasGlobalGlow && !hasOverrides) return;
 
-    // Pre-compute canvas rect once per frame (avoid reflow per-light)
-    const walls = this._config.glow_walls;
+    // Pre-compute canvas rect once per frame (avoid reflow per-light).
+    // Needed unconditionally now, not just for wall masks: percent glow sizes
+    // resolve against it.
     let canvasRect = null;
-    if (walls && walls.length > 0) {
-      const canvas = this._els.canvas;
-      if (canvas) {
-        canvasRect = canvas.getBoundingClientRect();
-        if (canvasRect.width <= 0 || canvasRect.height <= 0) canvasRect = null;
-      }
+    const canvas = this._els.canvas;
+    if (canvas) {
+      canvasRect = canvas.getBoundingClientRect();
+      if (canvasRect.width <= 0 || canvasRect.height <= 0) canvasRect = null;
     }
 
     const lights = this.shadowRoot.querySelectorAll('.light');
@@ -8322,8 +8371,12 @@ class SpatialLightColorCard extends HTMLElement {
     const stops = hasGlow ? gc.gradient_stops : null;
     const scaleB = hasGlow ? gc.scale_with_brightness : true;
     const baseIntensity = hasGlow ? gc.intensity : 0.7;
-    const width = hasGlow ? gc.width : lf.radius * 2;
-    const baseLength = hasGlow ? gc.length : lf.radius * 2;
+    const width = hasGlow
+      ? this._resolveGlowLength(gc.width, rect)
+      : this._resolveGlowLength(lf.radius, rect) * 2;
+    const baseLength = hasGlow
+      ? this._resolveGlowLength(gc.length, rect)
+      : this._resolveGlowLength(lf.radius, rect) * 2;
     const direction = hasGlow ? gc.direction : 0;
 
     // Matches _updateGlow: length tracks brightness, width does not.
@@ -11754,12 +11807,15 @@ class SpatialLightColorCardEditor extends HTMLElement {
               </div>
               <div class="two-col">
                 <div class="input-row">
-                  <label for="cfgGlowLength">Length (px)</label>
-                  <input type="number" id="cfgGlowLength" min="1" max="500" step="5" placeholder="80">
+                  <label for="cfgGlowLength">Length</label>
+                  <input type="text" id="cfgGlowLength" placeholder="80 or 25%" inputmode="decimal">
                 </div>
                 <div class="input-row">
-                  <label for="cfgGlowWidth">Width (px)</label>
-                  <input type="number" id="cfgGlowWidth" min="1" max="500" step="5" placeholder="60">
+                  <label for="cfgGlowWidth">Width</label>
+                  <input type="text" id="cfgGlowWidth" placeholder="60 or 25%" inputmode="decimal">
+                </div>
+                <div class="input-row" style="grid-column:1/-1;">
+                  <div class="sublabel">A plain number is CSS pixels, which covers a different share of the plan at every card width &mdash; so the editor preview and the dashboard disagree. A percentage (e.g. <b>25%</b>) is measured against the canvas, like light positions and walls, and renders the same everywhere.
                 </div>
               </div>
               <div class="two-col">
@@ -12949,7 +13005,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
         ensureGlow();
         const raw = el.value.trim();
         if (raw === '') { delete this._config.glow[key]; }
-        else {
+        else if ((key === 'width' || key === 'length') && /^\d+(\.\d+)?\s*%$/.test(raw)) {
+          // Sizes may be plan-relative. Store the '%' form verbatim; the
+          // renderers resolve it against the canvas at paint time.
+          this._config.glow[key] = raw.replace(/\s+/g, '');
+        } else {
           const v = parseFloat(raw);
           if (Number.isFinite(v)) this._config.glow[key] = v;
         }

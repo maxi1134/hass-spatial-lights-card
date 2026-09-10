@@ -683,7 +683,7 @@ light_field:
 | `over_plan` | `normal` | `normal`, `screen`, `multiply`, `plus-lighter`, `overlay`, `soft-light`, `hard-light` |
 | `blend` | `lighter` | How lights accumulate with *each other*: `lighter` (additive) or `screen` |
 | `exposure` | `1.0` | 0–4 multiplier on the layer's alpha |
-| `radius` | `190` | px reach for a light with no `glow` config |
+| `radius` | `'19%'` | Reach for a light with no `glow` config. A percentage of the canvas, or a plain number for CSS px |
 | `falloff` | `smooth` | Same curves as `glow.falloff` |
 | `samples` | `1` | `1`, `3`, `5`, `9` — area-light samples for soft shadows |
 | `source_radius` | `6` | px emitter radius; only meaningful when `samples > 1` |
@@ -698,6 +698,33 @@ light_field:
 default. `screen` suits dark blueprints (it is a no-op over white). `multiply`
 suits white plans and is the most physically literal — a white floor under a red
 bulb really does look red — but it crushes a dark plan toward black.
+
+#### Sizes: percent vs pixels
+
+`glow.width`, `glow.length` and `light_field.radius` accept **either** a plain
+number (CSS pixels) or a **percentage of the canvas** (`'26%'`).
+
+Use percentages. A pixel reach covers a different share of the plan at every
+card width, so the same config renders differently in the editor preview, on a
+phone and on a monitor — light positions and walls are already percentages, so
+only the reach was width-dependent. Measured, one config at three widths:
+
+| | 460 px canvas | 990 px | 1360 px |
+|---|---|---|---|
+| `width: 300` (px) | 56% of the plan | 26% | 19% |
+| `width: '26%'` | 22% | 22% | 22% |
+
+```yaml
+glow:
+  enabled: true
+  shape: round
+  width: 26%     # instead of 300
+  length: 26%
+```
+
+Plain numbers still mean pixels, so nothing changes until you switch. Only
+`light_field.radius` defaults to a percentage, since it is new here and has no
+existing configs to preserve.
 
 **Existing `glow` config still applies.** When a light has `glow` enabled, the
 field uses its shape, size, direction, colour and falloff, so cones, beams and
