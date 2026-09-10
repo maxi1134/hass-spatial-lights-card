@@ -633,8 +633,24 @@ Per-entity glow overrides for shape, direction, and intensity can also be config
 
 ### Light Diffusion (`light_field`)
 
-The glow shapes above are decorative: each one is its own DOM element, so where
-two of them overlap the topmost simply wins and the colours never mix.
+**`glow` and `light_field` are not two separate features**, and the editor
+presents them as one **Light Projection** section with a *Renderer* choice:
+
+| | says what | keys |
+|---|---|---|
+| `glow` | **what each light emits** — shape, size, direction, spread, intensity, falloff, colour | shared by both renderers |
+| `light_field` | **how that emission is composited** — renderer, blending, exposure, ambient, soft shadows, quality | diffused renderer only |
+
+Switching renderer changes nothing about your `glow` config; the diffused
+renderer reads all of it. The only two glow keys it ignores are `blur` and
+`edge_softness` (it models soft edges with `samples`/`source_radius` instead),
+and the editor greys those out as *classic only*. `light_field.radius` applies
+only to lights that have no `glow` config of their own.
+
+The classic renderer gives each light its own DOM element, so where two glows
+overlap the topmost simply wins and the colours never mix — and each light's
+wall shadow is confined to its own glow box, so a wall cannot shadow a
+*neighbouring* light's spill.
 
 `light_field` replaces them with a single shared canvas layered over the plan.
 Every light is painted onto that one surface additively, so **overlapping lights

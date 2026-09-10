@@ -11645,17 +11645,28 @@ class SpatialLightColorCardEditor extends HTMLElement {
         </div>
 
         <!-- Glow Section -->
-        <div class="section${glow.enabled ? '' : ' collapsed'}" id="section-glow">
+        <div class="section${glow.enabled || lfCfg.enabled ? '' : ' collapsed'}" id="section-glow">
           <div class="section-header" data-section="glow">
-            <h3>Glow</h3>
+            <h3>Light Projection${glow.enabled || lfCfg.enabled ? (lfCfg.enabled ? ' &mdash; diffused' : ' &mdash; classic') : ''}</h3>
             <span class="chevron">&#9660;</span>
           </div>
           <div class="section-body">
             <div class="option-row">
-              <div><div class="label">Enable Glow</div><div class="sublabel">Show shaped glow effects behind entities</div></div>
+              <div><div class="label">Project light onto the plan</div><div class="sublabel">Show each light's colour spreading around it</div></div>
               <ha-switch id="cfgGlowEnabled"></ha-switch>
             </div>
             <div id="glowSettingsGroup" style="display:flex;flex-direction:column;gap:12px;">
+              <div class="option-row">
+                <div>
+                  <div class="label">Renderer</div>
+                  <div class="sublabel">Diffused draws every light on one shared layer, so overlapping colours merge and walls cast real shadows. Classic draws a separate shaped glow per light &mdash; cheaper, but colours cannot mix and each shadow is confined to its own light.</div>
+                </div>
+                <select id="cfgLfEnabled">
+                  <option value="field"${lfCfg.enabled ? ' selected' : ''}>Diffused</option>
+                  <option value="classic"${lfCfg.enabled ? '' : ' selected'}>Classic</option>
+                </select>
+              </div>
+              <div class="override-subsection">Emission &mdash; shape and size of each light</div>
               <div class="two-col">
                 <div class="input-row">
                   <label for="cfgGlowShape">Shape</label>
@@ -11752,21 +11763,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
                 <ha-switch id="cfgGlowScaleBrightness"></ha-switch>
               </div>
             </div>
-          </div>
-        </div>
 
-        <!-- Light Field Section -->
-        <div class="section${lfCfg.enabled ? '' : ' collapsed'}" id="section-light-field">
-          <div class="section-header" data-section="light-field">
-            <h3>Light Diffusion${lfCfg.enabled ? ' (on)' : ''}</h3>
-            <span class="chevron">&#9660;</span>
-          </div>
-          <div class="section-body">
-            <div class="sublabel" style="margin-bottom:8px;">Spreads each light's colour across the plan on one shared layer. Overlapping lights merge additively, and walls cast real shadows.</div>
-            <div class="option-row">
-              <div><div class="label">Enable diffusion</div><div class="sublabel">Replaces the per-light glow elements</div></div>
-              <ha-switch id="cfgLfEnabled" ${lfCfg.enabled ? 'checked' : ''}></ha-switch>
-            </div>
+            <!-- Diffused-renderer options. The emission block above is shared:
+                 the field reads shape, size, direction, spread, start_width,
+                 intensity, falloff, gradient_stops, offsets, colour,
+                 custom_shape and scale_with_brightness from it. -->
+            <div id="lfSettingsGroup" style="display:${lfCfg.enabled ? 'flex' : 'none'};flex-direction:column;gap:12px;">
+              <div class="override-subsection">Diffusion &mdash; how the light is composited</div>
             <div class="option-row">
               <div><div class="label">Blend over plan</div><div class="sublabel">normal suits any plan; screen suits dark blueprints; multiply suits white plans</div></div>
               <select id="cfgLfOverPlan">
@@ -11797,17 +11800,18 @@ class SpatialLightColorCardEditor extends HTMLElement {
                 </select>
               </div>
             </div>
+            </div>
           </div>
         </div>
 
-        <!-- Glow Walls Section -->
+        <!-- Walls Section -->
         <div class="section${glowWalls.length === 0 ? ' collapsed' : ''}" id="section-glow-walls">
           <div class="section-header" data-section="glow-walls">
-            <h3>Glow Walls${glowWalls.length > 0 ? ` (${glowWalls.length})` : ''}</h3>
+            <h3>Walls${glowWalls.length > 0 ? ` (${glowWalls.length})` : ''}</h3>
             <span class="chevron">&#9660;</span>
           </div>
           <div class="section-body">
-            <div class="sublabel" style="margin-bottom:8px;">Line segments or boxes that block light from spreading (like room walls).</div>
+            <div class="sublabel" style="margin-bottom:8px;">Line segments or boxes that block projected light, like the walls of a room. They need Light Projection switched on above &mdash; and the <em>Diffused</em> renderer for exact shadows, since Classic confines each shadow to its own light.</div>
             <div class="option-row">
               <div>
                 <div class="label">Draw walls on the plan</div>
@@ -13006,10 +13010,15 @@ class SpatialLightColorCardEditor extends HTMLElement {
       if (Object.keys(this._config.light_field).length === 0) delete this._config.light_field;
       this._fireConfigChanged();
     };
-    const lfSwitch = root.getElementById('cfgLfEnabled');
-    if (lfSwitch) {
-      lfSwitch.addEventListener('change', () => {
-        lfSet('enabled', lfSwitch.checked ? true : false);
+    // Renderer choice, not a second enable switch: the two are one feature
+    // (glow.* says WHAT each light emits, light_field.* says HOW it is
+    // composited), and presenting them as peer toggles made users enable Glow
+    // and never discover that diffusion is what makes walls and colour mixing
+    // exact.
+    const lfSelect = root.getElementById('cfgLfEnabled');
+    if (lfSelect) {
+      lfSelect.addEventListener('change', () => {
+        lfSet('enabled', lfSelect.value === 'field');
         this._render();
       });
     }
@@ -13031,6 +13040,25 @@ class SpatialLightColorCardEditor extends HTMLElement {
         lfSet(key, asNumber ? parseFloat(el.value) : el.value);
       });
     };
+    // Mark the emission fields the diffused renderer ignores. It models soft
+    // shadow edges with samples/source_radius instead, so blur and edge
+    // softness are genuinely inert -- better greyed than silently dead.
+    const classicOnly = ['cfgGlowBlur', 'cfgGlowEdgeSoftness'];
+    classicOnly.forEach((id) => {
+      const el = root.getElementById(id);
+      if (!el) return;
+      const inert = !!(this._config.light_field
+        && (this._config.light_field === true || this._config.light_field.enabled));
+      el.disabled = inert;
+      const row = el.closest('.input-row, .override-row, .option-row');
+      if (row) {
+        row.style.opacity = inert ? '0.45' : '';
+        const lab = row.querySelector('label');
+        if (lab && !lab.dataset.baseText) lab.dataset.baseText = lab.textContent;
+        if (lab) lab.textContent = inert ? `${lab.dataset.baseText} (classic only)` : lab.dataset.baseText;
+      }
+    });
+
     lfSel('cfgLfOverPlan', 'over_plan');
     lfSel('cfgLfQuality', 'quality');
     lfSel('cfgLfShowWalls', 'show_walls');
