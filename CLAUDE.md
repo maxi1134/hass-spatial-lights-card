@@ -127,7 +127,23 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 
 ## 8. Glow / Walls
 
-`_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. `_normalizeGlowWalls()` accepts both line segments (`[x1, y1, x2, y2]` / `{x1,y1,x2,y2}`) and boxes (`{x, y, width, height}`).
+Two renderers exist; exactly one is live at a time, decided by the `_fieldActive` getter (`light_field.enabled` + a 2D-canvas feature test).
+
+**Legacy (default).** `_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. When `_fieldActive`, `_renderLightsHTML` does not emit the div and `_updateAllGlows` returns immediately.
+
+**Light field (`light_field.enabled`).** One shared `<canvas class="light-field">` inside `#canvas`, between `.grid` and the `.light` markers. Each `.light` is its own stacking context (its glow sits at `z-index:-1` inside it), which is the structural reason the legacy glows can never merge — one surface fixes it. `_renderLightField()` draws every lit entity with `globalCompositeOperation='lighter'`, so overlapping colours add.
+
+Shadows are exact: `_computeVisibilityPolygon` sweeps rays at every wall endpoint (±epsilon, which lets the polygon round a corner) and every footprint vertex, taking the nearest hit. It runs in a per-light **affine frame** — `screen = L + R(direction)·diag(sx,sy)·local` — in which every glow shape is a unit primitive (disc / trapezoid / rectangle / 72-gon), so one code path covers all eight shapes. Sound because visibility is affine-invariant. `_getFieldEmitter` builds that frame and deliberately mirrors `_updateGlow`'s DOM geometry so existing glow configs render identically; the gradient radius is `SQRT2` in local units to match what CSS `radial-gradient(... farthest-corner)` resolves to.
+
+Frames are quantized to 4px buckets and polygons cached in `_visPolyCache`, keyed on geometry only — colour, brightness alpha and selection never re-solve. `_wallGeomVersion` is an FNV-1a hash of the wall coordinates rather than a counter, because the editor calls `setConfig` on every keystroke. Scheduling is rAF **plus a 250ms setTimeout backstop**: a hidden document may never run the rAF, and the pending-handle guard would otherwise deadlock every later request.
+
+`_normalizeGlowWalls()` accepts line segments (`[x1, y1, x2, y2]` / `{x1,y1,x2,y2}`), boxes (`{x, y, width, height}`) and polylines (`{points: [[x,y],...], closed}`), and stamps each output segment with `_src` (raw config index) and `_part` (which edge of a box/polyline).
+
+**Wall drawing.** Editor-session state only, armed by the `spatial-card-wall-mode` window event (a *separate* event from `spatial-card-edit-mode`, whose handler dedupes on `active` and would swallow it). `_onWallPointerDown/Move/Up` run ahead of the normal canvas gestures. Continuing a chain takes precedence over grabbing an endpoint, or the second leg of every traced room drags the first leg instead. Edits apply to `_draftWalls` locally first, then emit a `spatial-card-wall-delta` (`add`/`update`/`delete` + `_src`/`_part`) — never a snapshot, since the card's list is the normalizer's output and echoing it back would quadruple the user's list and destroy their boxes. `SpatialLightColorCardEditor._applyWallDelta` explodes a box/polyline only when one of its edges is actually dragged. Wall undo is a separate stack (`_wallHistory`) from position undo.
+
+## 8b. Background image sizing
+
+`_normalizeBackgroundImage` gained `fit`, `rendering` and `auto_aspect`. Default `background-size` is now `contain` (was `cover`, which cropped every plan). With `auto_aspect` (default on) `_applyBackgroundAspect()` measures the image via a static `_imageSizeCache` shared across cards and sets `aspect-ratio` + `height:auto` **inline on `#canvas`** — not through `_renderAll`, so a late image load does not wipe the DOM and any in-flight gesture. It stands down when the user sets `aspect_ratio`, sets `canvas_height` explicitly (tracked by `canvas_height_explicit`), or sets `auto_aspect: false`.
 
 ---
 

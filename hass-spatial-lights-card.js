@@ -11,6 +11,12 @@ class SpatialLightColorCard extends HTMLElement {
   static COLOR_TOLERANCE = 30;
   // Tolerance (Kelvin) for grouping live temperatures and matching active temp presets.
   static TEMP_TOLERANCE = 100;
+  // Accepted values for background_image.rendering (CSS image-rendering).
+  static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
+  // Natural dimensions of plan images, keyed by URL and shared across cards so
+  // one plan is measured once per dashboard. Values are {w,h}, null (failed),
+  // or a Promise while the measurement is in flight.
+  static _imageSizeCache = new Map();
 
   constructor() {
     super();
@@ -76,6 +82,13 @@ class SpatialLightColorCard extends HTMLElement {
     this._editPositionsMode = false;
     this._editorId = null;
     this._boundEditModeChange = null;
+    /** Wall-drawing mode — editor-session state only, never read from config. */
+    this._wallEditMode = false;
+    this._wallEditorId = null;
+    this._boundWallModeChange = null;
+    this._wallDrawState = null;
+    this._draftWalls = null;
+    this._wallChainAnchor = null;
     this._iconRefreshHandle = null;
     this._iconRehydrateHandle = null;
 
@@ -244,6 +257,10 @@ class SpatialLightColorCard extends HTMLElement {
       positions: normalizedPositions,
       title: config.title || '',
       canvas_height: config.canvas_height ?? 450,
+      // Whether the height above came from the user or from the default.
+      // Auto-aspect only takes over the canvas geometry when the user has not
+      // pinned a height themselves.
+      canvas_height_explicit: config.canvas_height != null,
       // Optional "W:H" (or "W/H", "1200x800", number). When set, the canvas
       // derives its height from its rendered width so percentage positions
       // keep pointing at the same spot of a floor plan at every card width.
@@ -342,12 +359,21 @@ class SpatialLightColorCard extends HTMLElement {
 
       // Glow walls — line segments or boxes that block glow from expanding
       glow_walls: this._normalizeGlowWalls(config.glow_walls),
+      light_field: this._normalizeLightField(config.light_field),
     };
 
     // Bump wall config version to invalidate per-entity wall mask caches
     this._wallConfigVersion = (this._wallConfigVersion || 0) + 1;
     this._wallMaskPerEntity = {};
     if (this._wallMaskCache) this._wallMaskCache.clear();
+
+    // The light field caches occluders in pixel space and visibility polygons
+    // per light. Both are keyed off wall geometry, so drop them here.
+    // _wallGeomVersion is a content hash rather than a blind counter: the HA
+    // editor calls setConfig on every keystroke, and re-solving every polygon
+    // because the user typed in the title field is pure waste.
+    this._wallGeomVersion = this._hashWalls(this._config.glow_walls);
+    this._invalidateLightField();
 
     this._gridSize = this._config.grid_size;
 
@@ -425,6 +451,21 @@ class SpatialLightColorCard extends HTMLElement {
   /** Valid glow falloff modes. */
   static get GLOW_FALLOFFS() {
     return ['smooth', 'linear', 'exponential', 'sharp', 'uniform'];
+  }
+
+  /** How light-field contributions accumulate with each other on the layer. */
+  static get LIGHT_FIELD_BLENDS() {
+    return ['lighter', 'screen'];
+  }
+
+  /** Backing-store resolution tiers for the light-field canvas. */
+  static get LIGHT_FIELD_QUALITIES() {
+    return ['auto', 'low', 'medium', 'high'];
+  }
+
+  /** How the finished light-field layer composites over the floor plan. */
+  static get LIGHT_FIELD_PLAN_BLENDS() {
+    return ['normal', 'screen', 'plus-lighter', 'multiply', 'overlay', 'soft-light', 'hard-light'];
   }
 
   /** Normalize a single glow config object, filling in defaults. */
@@ -916,7 +957,13 @@ class SpatialLightColorCard extends HTMLElement {
   _normalizeGlowWalls(walls) {
     if (!Array.isArray(walls)) return [];
     const segments = [];
-    for (const wall of walls) {
+    // `_src` is the index into the RAW config array and `_part` names which
+    // edge of a box a segment came from. Drawing on the plan needs this to map
+    // a picked segment back to the entry the user actually authored — a box
+    // normalizes to four segments, so positional indices do not line up.
+    // Purely additive: every existing consumer reads only x1/y1/x2/y2.
+    for (let i = 0; i < walls.length; i++) {
+      const wall = walls[i];
       if (!wall) continue;
 
       // Array shorthand: [x1, y1, x2, y2]
@@ -924,7 +971,7 @@ class SpatialLightColorCard extends HTMLElement {
         if (wall.length >= 4) {
           const [x1, y1, x2, y2] = wall.map(Number);
           if ([x1, y1, x2, y2].every(Number.isFinite)) {
-            segments.push({ x1, y1, x2, y2 });
+            segments.push({ x1, y1, x2, y2, _src: i, _part: null });
           }
         }
         continue;
@@ -932,15 +979,30 @@ class SpatialLightColorCard extends HTMLElement {
 
       if (typeof wall !== 'object') continue;
 
+      // Polyline: {points: [[x,y], ...], closed?: bool}
+      if (Array.isArray(wall.points) && wall.points.length >= 2) {
+        const pts = wall.points
+          .map((pt) => Array.isArray(pt) ? [Number(pt[0]), Number(pt[1])] : null)
+          .filter((pt) => pt && pt.every(Number.isFinite));
+        for (let k = 0; k + 1 < pts.length; k++) {
+          segments.push({ x1: pts[k][0], y1: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1], _src: i, _part: k });
+        }
+        if (wall.closed && pts.length > 2) {
+          const last = pts.length - 1;
+          segments.push({ x1: pts[last][0], y1: pts[last][1], x2: pts[0][0], y2: pts[0][1], _src: i, _part: last });
+        }
+        continue;
+      }
+
       // Box: {x, y, width, height} → 4 segments
       if (wall.x != null && wall.y != null && wall.width != null && wall.height != null) {
         const x = Number(wall.x), y = Number(wall.y);
         const w = Number(wall.width), h = Number(wall.height);
         if ([x, y, w, h].every(Number.isFinite)) {
-          segments.push({ x1: x, y1: y, x2: x + w, y2: y });         // top
-          segments.push({ x1: x + w, y1: y, x2: x + w, y2: y + h }); // right
-          segments.push({ x1: x + w, y1: y + h, x2: x, y2: y + h }); // bottom
-          segments.push({ x1: x, y1: y + h, x2: x, y2: y });         // left
+          segments.push({ x1: x, y1: y, x2: x + w, y2: y, _src: i, _part: 'top' });
+          segments.push({ x1: x + w, y1: y, x2: x + w, y2: y + h, _src: i, _part: 'right' });
+          segments.push({ x1: x + w, y1: y + h, x2: x, y2: y + h, _src: i, _part: 'bottom' });
+          segments.push({ x1: x, y1: y + h, x2: x, y2: y, _src: i, _part: 'left' });
         }
         continue;
       }
@@ -950,11 +1012,111 @@ class SpatialLightColorCard extends HTMLElement {
         const x1 = Number(wall.x1), y1 = Number(wall.y1);
         const x2 = Number(wall.x2), y2 = Number(wall.y2);
         if ([x1, y1, x2, y2].every(Number.isFinite)) {
-          segments.push({ x1, y1, x2, y2 });
+          segments.push({ x1, y1, x2, y2, _src: i, _part: null });
         }
       }
     }
     return segments;
+  }
+
+  /**
+   * Normalize the `light_field` block — the shared-canvas renderer that
+   * diffuses each light's colour across the plan, merges overlapping lights
+   * additively, and casts hard shadows from `glow_walls`.
+   *
+   * `light_field: true` is accepted as shorthand for `{enabled: true}`.
+   */
+  _normalizeLightField(obj) {
+    const defaults = {
+      enabled: false,
+      quality: 'auto',        // auto | low | medium | high — backing-store DPR cap
+      blend: 'lighter',       // how lights accumulate with each other
+      // How the finished field composites over the plan. 'normal' is the only
+      // mode that reads correctly on BOTH a white floor plan and a dark
+      // blueprint: 'screen' is a no-op over white, 'multiply' crushes a dark
+      // plan to black. Translucent coloured light over the plan always shows.
+      over_plan: 'normal',
+      exposure: 1,            // global multiplier on the field's alpha
+      radius: 190,            // px reach for a light with no glow config of its own
+      falloff: 'smooth',      // reused from the glow falloff curves
+      ambient: 0,             // 0-1 wide, low-intensity second pass
+      ambient_reach: 2.5,     // reach multiplier for that pass
+      samples: 1,             // 1 = hard shadows; 3/5 = area light, soft penumbra
+      source_radius: 6,       // px emitter radius, only meaningful when samples > 1
+      max_pixels: 2600000,    // backing-store budget in device pixels
+      show_walls: 'auto',     // auto (edit mode only) | always | never
+      wall_color: '',         // '' = derive from the theme's border token
+      wall_width: 2,
+    };
+    if (obj === true) return { ...defaults, enabled: true };
+    if (!obj || typeof obj !== 'object') return defaults;
+
+    const num = (v, def, lo, hi) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return def;
+      return Math.max(lo, Math.min(hi, n));
+    };
+    const oneOf = (v, list, def) =>
+      (typeof v === 'string' && list.includes(v.trim().toLowerCase())) ? v.trim().toLowerCase() : def;
+
+    // samples snaps to the nearest supported kernel rather than clamping, so
+    // `samples: 4` gives the 5-tap kernel instead of silently becoming 1.
+    let samples = defaults.samples;
+    if (obj.samples != null) {
+      const n = Number(obj.samples);
+      if (Number.isFinite(n)) {
+        samples = [1, 3, 5, 9].reduce((best, c) => Math.abs(c - n) < Math.abs(best - n) ? c : best, 1);
+      }
+    }
+
+    return {
+      enabled: obj.enabled === true,
+      quality: oneOf(obj.quality, SpatialLightColorCard.LIGHT_FIELD_QUALITIES, defaults.quality),
+      blend: oneOf(obj.blend, SpatialLightColorCard.LIGHT_FIELD_BLENDS, defaults.blend),
+      over_plan: oneOf(obj.over_plan, SpatialLightColorCard.LIGHT_FIELD_PLAN_BLENDS, defaults.over_plan),
+      exposure: num(obj.exposure, defaults.exposure, 0, 4),
+      radius: num(obj.radius, defaults.radius, 4, 4000),
+      falloff: SpatialLightColorCard.GLOW_FALLOFFS.includes(obj.falloff) ? obj.falloff : defaults.falloff,
+      ambient: num(obj.ambient, defaults.ambient, 0, 1),
+      ambient_reach: num(obj.ambient_reach, defaults.ambient_reach, 1, 8),
+      samples,
+      source_radius: num(obj.source_radius, defaults.source_radius, 0, 200),
+      max_pixels: num(obj.max_pixels, defaults.max_pixels, 250000, 8000000),
+      show_walls: oneOf(obj.show_walls, ['auto', 'always', 'never'], defaults.show_walls),
+      wall_color: typeof obj.wall_color === 'string' && obj.wall_color.trim() ? obj.wall_color.trim() : '',
+      wall_width: num(obj.wall_width, defaults.wall_width, 0, 24),
+    };
+  }
+
+  /**
+   * True when the shared-canvas light field owns the diffusion for this card.
+   * While true the per-light `.light-glow` divs are not emitted and
+   * `_updateAllGlows` short-circuits, so exactly one renderer is ever live.
+   */
+  get _fieldActive() {
+    return !!(this._config && this._config.light_field && this._config.light_field.enabled
+      && SpatialLightColorCard._canvas2dOk());
+  }
+
+  /**
+   * The canvas is also needed while drawing walls, so the user can see the
+   * geometry they are placing even with diffusion switched off.
+   */
+  get _fieldCanvasNeeded() {
+    return this._fieldActive || (this._wallEditMode && SpatialLightColorCard._canvas2dOk());
+  }
+
+  /** Memoized feature test — a card in a context without 2D canvas falls back. */
+  static _canvas2dOk() {
+    if (SpatialLightColorCard._canvas2dSupported === undefined) {
+      try {
+        const probe = document.createElement('canvas');
+        SpatialLightColorCard._canvas2dSupported = !!(probe.getContext && probe.getContext('2d'));
+      } catch (err) {
+        SpatialLightColorCard._canvas2dSupported = false;
+      }
+    }
+    return SpatialLightColorCard._canvas2dSupported;
   }
 
   /** Return the effective glow config for a specific entity (global merged with per-entity overrides). */
@@ -1255,17 +1417,142 @@ class SpatialLightColorCard extends HTMLElement {
       const repeat = typeof value.repeat === 'string' ? value.repeat.trim() : '';
       const blend = typeof value.blend_mode === 'string' ? value.blend_mode.trim() : '';
       const opacity = typeof value.opacity === 'number' ? value.opacity : (typeof value.opacity === 'string' ? parseFloat(value.opacity) : NaN);
-      if (!url && !size && !position && !repeat && !blend && isNaN(opacity)) return null;
+      // `fit` is the friendly alias for `size`: contain / cover / stretch / fill.
+      // 'stretch' (and its synonym 'fill') is the only one that distorts the
+      // plan, and it is never the default — see _backgroundSizeValue.
+      const fit = typeof value.fit === 'string' ? value.fit.trim().toLowerCase() : '';
+      // How the browser resamples the plan when the canvas is larger or
+      // smaller than the source bitmap. 'auto' (smooth) suits photographic
+      // and vector plans; 'pixelated'/'crisp-edges' keeps hand-drawn or
+      // low-resolution plans from turning to mush.
+      const rendering = typeof value.rendering === 'string' ? value.rendering.trim().toLowerCase() : '';
+      // When true (default) the canvas adopts the image's intrinsic aspect
+      // ratio, so the plan fills the canvas exactly: no crop, no letterbox,
+      // no distortion, and percentage positions land on the same feature at
+      // every card width.
+      const autoAspect = value.auto_aspect;
+      if (!url && !size && !position && !repeat && !blend && !fit && !rendering
+          && autoAspect === undefined && isNaN(opacity)) return null;
       const normalized = {};
       if (url) normalized.url = url;
       if (size) normalized.size = size;
+      if (fit) normalized.fit = fit;
+      if (SpatialLightColorCard.IMAGE_RENDERING_MODES.includes(rendering)) normalized.rendering = rendering;
       if (position) normalized.position = position;
       if (repeat) normalized.repeat = repeat;
       if (blend) normalized.blend_mode = blend;
+      if (autoAspect !== undefined) normalized.auto_aspect = autoAspect !== false;
       if (!isNaN(opacity)) normalized.opacity = Math.max(0, Math.min(1, opacity));
       return normalized;
     }
     return null;
+  }
+
+  /**
+   * Resolve the CSS background-size for the plan image.
+   *
+   * The historical default was `cover`, which crops whatever does not fit the
+   * canvas box and, combined with a canvas whose height came from a fixed
+   * `canvas_height`, made most floor plans look cropped or squashed. The
+   * default is now `contain`, which never crops and never distorts. With
+   * auto-aspect on (also the default) the canvas matches the image's own
+   * ratio, so `contain` lands pixel-exact with no letterbox bars either.
+   */
+  _backgroundSizeValue(bg) {
+    if (!bg) return '';
+    // An explicit `size:` is a raw CSS passthrough and always wins.
+    if (bg.size) return bg.size;
+    switch (bg.fit) {
+      case 'cover': return 'cover';
+      case 'stretch':
+      case 'fill': return '100% 100%';
+      case 'native':
+      case 'auto': return 'auto';
+      case 'contain': return 'contain';
+      default: return 'contain';
+    }
+  }
+
+  /** True when the canvas should adopt the plan image's intrinsic ratio. */
+  _wantsAutoAspect() {
+    const bg = this._config && this._config.background_image;
+    if (!bg || !bg.url) return false;
+    // An explicit aspect_ratio is the user pinning the geometry themselves.
+    if (this._config.aspect_ratio) return false;
+    if (bg.auto_aspect !== undefined) return bg.auto_aspect;
+    // Default on — but never override a canvas_height the user typed in,
+    // otherwise upgrading the card would silently resize existing dashboards.
+    return !this._config.canvas_height_explicit;
+  }
+
+  /**
+   * Measure the plan image and give the canvas its intrinsic aspect ratio.
+   *
+   * Applied as an inline style rather than through _renderAll so a late image
+   * load does not wipe the DOM (and any in-flight gesture) a second time.
+   * Natural dimensions are cached per URL on the class so repeat renders and
+   * sibling cards sharing one plan measure the image only once.
+   */
+  _applyBackgroundAspect() {
+    const canvas = this._els && this._els.canvas;
+    if (!canvas) return;
+    if (!this._wantsAutoAspect()) {
+      // Config no longer wants it — drop any ratio a previous config applied.
+      if (canvas.style.aspectRatio) {
+        canvas.style.aspectRatio = '';
+        canvas.style.height = '';
+      }
+      return;
+    }
+
+    const url = this._config.background_image.url;
+    const apply = (dims) => {
+      // Guard against a stale load resolving after the config changed.
+      const live = this._els && this._els.canvas;
+      if (!live || !this._wantsAutoAspect()) return;
+      if (this._config.background_image.url !== url) return;
+      if (!dims || !(dims.w > 0) || !(dims.h > 0)) return;
+      live.style.aspectRatio = `${dims.w} / ${dims.h}`;
+      // aspect-ratio is ignored while both width and height are definite, and
+      // the stylesheet sets a pixel height in the no-aspect_ratio branch.
+      live.style.height = 'auto';
+      this._onCanvasGeometryChanged();
+    };
+
+    const cache = SpatialLightColorCard._imageSizeCache;
+    if (cache.has(url)) {
+      const cached = cache.get(url);
+      // A pending measurement is stored as a promise; chain onto it.
+      if (cached && typeof cached.then === 'function') cached.then(apply);
+      else apply(cached);
+      return;
+    }
+
+    const pending = new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const dims = { w: img.naturalWidth, h: img.naturalHeight };
+        cache.set(url, dims);
+        resolve(dims);
+      };
+      img.onerror = () => {
+        // Remember the failure so a broken URL is not re-fetched every render.
+        cache.set(url, null);
+        resolve(null);
+      };
+      img.src = url;
+    });
+    cache.set(url, pending);
+    pending.then(apply);
+  }
+
+  /**
+   * Hook for anything that depends on the canvas's pixel geometry. Called when
+   * the canvas box changes for a reason a ResizeObserver would not catch on
+   * its own frame (e.g. the aspect ratio landing after an image loads).
+   */
+  _onCanvasGeometryChanged() {
+    this._repositionLabels && this._repositionLabels();
   }
 
   _canvasBackgroundStyle() {
@@ -1276,12 +1563,31 @@ class SpatialLightColorCard extends HTMLElement {
       const escaped = String(bg.url).replace(/"/g, '%22').replace(/'/g, "\\'");
       vars.push(`--canvas-background-image:url('${escaped}')`);
     }
-    if (bg.size) vars.push(`--canvas-background-size:${bg.size}`);
+    const size = this._backgroundSizeValue(bg);
+    if (size) vars.push(`--canvas-background-size:${size}`);
+    if (bg.rendering) vars.push(`--canvas-background-rendering:${bg.rendering}`);
     if (bg.position) vars.push(`--canvas-background-position:${bg.position}`);
     if (bg.repeat) vars.push(`--canvas-background-repeat:${bg.repeat}`);
     if (bg.blend_mode) vars.push(`--canvas-background-blend-mode:${bg.blend_mode}`);
     if (bg.opacity !== undefined && bg.opacity !== null) vars.push(`--canvas-background-opacity:${bg.opacity}`);
     return vars.join('; ');
+  }
+
+  /**
+   * Inline vars for #canvas: the background block plus the light field's
+   * blend mode. `isolation: isolate` confines the blend group to the canvas
+   * so a blended field cannot reach up and tint the ha-card behind it.
+   */
+  _canvasInlineStyle() {
+    const parts = [];
+    const bg = this._canvasBackgroundStyle();
+    if (bg) parts.push(bg);
+    if (this._fieldActive) {
+      const lf = this._config.light_field;
+      parts.push(`--lf-blend:${lf.over_plan}`);
+      if (lf.over_plan !== 'normal') parts.push('isolation:isolate');
+    }
+    return parts.join('; ');
   }
 
   set hass(hass) {
@@ -2444,8 +2750,9 @@ class SpatialLightColorCard extends HTMLElement {
       <ha-card>
         ${showHeader ? this._renderHeader() : ''}
         <div class="canvas-wrapper">
-          <div class="canvas${(this._config.canvas_touch_scroll && this._lockPositions && !this._editPositionsMode) ? ' touch-scroll' : ''}" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasBackgroundStyle()}">
+          <div class="canvas${(this._config.canvas_touch_scroll && this._lockPositions && !this._editPositionsMode && !this._wallEditMode) ? ' touch-scroll' : ''}" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasInlineStyle()}">
             <div class="grid"></div>
+            ${this._fieldCanvasNeeded ? '<canvas class="light-field" id="lightField" aria-hidden="true"></canvas>' : ''}
             ${this._config.entities.length === 0 ? this._renderEmptyState() : this._renderLightsHTML()}
             ${this._renderCanvasElementsHTML()}
             ${controlsPosition === 'floating' ? this._renderControlsFloating(showControls, controlContext) : ''}
@@ -2460,6 +2767,10 @@ class SpatialLightColorCard extends HTMLElement {
 
     // Cache refs once
     this._els.canvas = this.shadowRoot.getElementById('canvas');
+    this._els.lightField = this.shadowRoot.getElementById('lightField');
+    // Give the canvas the plan image's own aspect ratio before anything
+    // measures it, so labels and the light field see the final geometry.
+    this._applyBackgroundAspect();
     this._els.controlsFloating = this.shadowRoot.getElementById('controlsFloating');
     this._els.controlsBelow = this.shadowRoot.getElementById('controlsBelow');
     this._els.powerToggle = this.shadowRoot.getElementById('powerToggle');
@@ -2516,6 +2827,9 @@ class SpatialLightColorCard extends HTMLElement {
         if (!this._glowResizeLast || now - this._glowResizeLast > 250) {
           this._glowResizeLast = now;
           this._updateAllGlows();
+          // Geometry changed, so every cached occluder set and polygon is
+          // stale — force past the coalescing guard.
+          this._requestLightFieldDraw(true);
           return;
         }
         this._glowResizeLast = now;
@@ -2523,6 +2837,7 @@ class SpatialLightColorCard extends HTMLElement {
         this._glowResizeTimer = setTimeout(() => {
           this._glowResizeTimer = null;
           this._updateAllGlows();
+          this._requestLightFieldDraw(true);
         }, 150);
       });
       this._canvasObserver.observe(this._els.canvas);
@@ -2629,9 +2944,13 @@ class SpatialLightColorCard extends HTMLElement {
       .canvas::before {
         content: ''; position: absolute; inset: 0;
         background-image: var(--canvas-background-image, none);
-        background-size: var(--canvas-background-size, cover);
+        /* 'contain' never crops and never distorts the plan. With auto-aspect
+           (default) the canvas already matches the image ratio, so this lands
+           pixel-exact with no letterbox bars. */
+        background-size: var(--canvas-background-size, contain);
         background-position: var(--canvas-background-position, center);
         background-repeat: var(--canvas-background-repeat, no-repeat);
+        image-rendering: var(--canvas-background-rendering, auto);
         mix-blend-mode: var(--canvas-background-blend-mode, normal);
         opacity: var(--canvas-background-opacity, 1);
         pointer-events: none; z-index: 0;
@@ -2640,6 +2959,17 @@ class SpatialLightColorCard extends HTMLElement {
         position: absolute; inset: 0;
         background-image: radial-gradient(circle, var(--grid-dots) 1px, transparent 1px);
         background-size: ${this._gridSize}px ${this._gridSize}px; pointer-events: none;
+      }
+
+      /* Shared light-diffusion layer. Sits above the plan and the grid and
+         below every marker, so it tints the floor plan but never covers a
+         light, label, badge, selection box or control. pointer-events:none is
+         mandatory — all hit testing is delegated on #canvas itself. */
+      .light-field {
+        position: absolute; inset: 0; display: block;
+        width: 100%; height: 100%;
+        pointer-events: none; z-index: 0;
+        mix-blend-mode: var(--lf-blend, normal);
       }
 
       .light {
@@ -3537,9 +3867,11 @@ class SpatialLightColorCard extends HTMLElement {
         }
       }
 
-      // Add glow element when glow is enabled (works in all modes)
+      // Add glow element when glow is enabled (works in all modes).
+      // The shared light-field canvas replaces these divs entirely when it is
+      // active, so exactly one renderer ever paints diffusion.
       const entityGlow = this._getGlowConfig(entity_id);
-      const glowHtml = entityGlow.enabled
+      const glowHtml = (entityGlow.enabled && !this._fieldActive)
         ? '<div class="light-glow"></div>'
         : '';
 
@@ -4021,15 +4353,43 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._hass && this._config && this._config.entities) this._renderAll();
       };
       window.addEventListener('spatial-card-edit-mode', this._boundEditModeChange);
+
+      // Wall drawing gets its own event rather than a field on the edit-mode
+      // one: the handler above dedupes on `active`, so a second event
+      // carrying the same value would be swallowed.
+      if (this._boundWallModeChange) window.removeEventListener('spatial-card-wall-mode', this._boundWallModeChange);
+      this._boundWallModeChange = (e) => {
+        const d = e.detail || {};
+        if (!this._isInsideEditorPreview()) return;
+        const active = !!d.active;
+        if (this._wallEditMode === active && (!active || this._wallEditorId === d.editorId)) return;
+        this._wallEditMode = active;
+        this._wallEditorId = active ? (d.editorId || null) : null;
+        // Wall mode and position-editing are mutually exclusive; enforce it
+        // card-side too, since a dropped event would otherwise leave the card
+        // in both, where the wall branch wins and light dragging silently
+        // stops working.
+        if (active) this._editPositionsMode = false;
+        this._wallChainAnchor = null;
+        this._wallDrawState = null;
+        this._draftWalls = null;
+        if (this._hass && this._config && this._config.entities) this._renderAll();
+      };
+      window.addEventListener('spatial-card-wall-mode', this._boundWallModeChange);
+
       if (this._isInsideEditorPreview()) {
         // The preview card is recreated by HA on config changes; ask any
         // live editor for the current edit-mode state (the reply callback
         // is invoked synchronously during dispatch).
         window.dispatchEvent(new CustomEvent('spatial-card-preview-hello', {
           detail: {
-            reply: (editorId, active) => {
+            reply: (editorId, active, wallActive) => {
               this._editPositionsMode = !!active;
               this._editorId = active ? editorId : null;
+              // The preview card is recreated on every config change, so wall
+              // mode has to be restored the same way edit mode is.
+              this._wallEditMode = !!wallActive;
+              this._wallEditorId = wallActive ? editorId : null;
             },
           },
         }));
@@ -4053,6 +4413,7 @@ class SpatialLightColorCard extends HTMLElement {
           if (this._els.colorWheel) this._requestColorWheelDraw(true);
           this._refreshEntityIcons();
           this._updateAllGlows();
+          this._requestLightFieldDraw(true);
         }
       };
       document.addEventListener('visibilitychange', this._boundVisibilityChange);
@@ -4086,6 +4447,9 @@ class SpatialLightColorCard extends HTMLElement {
     }
     if (this._boundEditModeChange && typeof window !== 'undefined') {
       window.removeEventListener('spatial-card-edit-mode', this._boundEditModeChange);
+      if (this._boundWallModeChange) {
+        window.removeEventListener('spatial-card-wall-mode', this._boundWallModeChange);
+      }
       this._boundEditModeChange = null;
     }
     if (this._boundVisibilityChange) {
@@ -4125,6 +4489,16 @@ class SpatialLightColorCard extends HTMLElement {
       cancel(this._colorWheelFrame);
       this._colorWheelFrame = null;
     }
+    this._clearLightFieldSchedule();
+    // Release the backing store. iOS Safari accounts canvas memory globally
+    // across a dashboard, and HA recreates the editor preview card on every
+    // keystroke, so a leaked bitmap per recreation is not hypothetical.
+    if (this._els && this._els.lightField) {
+      this._els.lightField.width = 0;
+      this._els.lightField.height = 0;
+    }
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
     this._pendingTap = null;
     this._longPressTriggered = false;
     this._moreInfoOpen = false;
@@ -4476,6 +4850,27 @@ class SpatialLightColorCard extends HTMLElement {
     );
     if (isEditable && !isOurCard) return;
 
+    // Wall drawing shortcuts. Escape ends a chain (or leaves the mode's
+    // pending stroke); Delete/Backspace removes the wall under the pointer.
+    if (this._wallEditMode && !isEditable) {
+      if (e.key === 'Escape') {
+        if (this._wallChainAnchor || this._wallDrawState) {
+          e.preventDefault();
+          this._wallChainAnchor = null;
+          this._wallDrawState = null;
+          this._draftWalls = null;
+          this._invalidateWallGeometry();
+          return;
+        }
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && this._wallHoverIndex != null) {
+        e.preventDefault();
+        this._deleteWallAt(this._wallHoverIndex);
+        this._wallHoverIndex = null;
+        return;
+      }
+    }
+
     // Undo/Redo — only when card is focused (or has selection), to avoid
     // hijacking these chords across the rest of the dashboard.
     const cardEngaged = isOurCard || this._selectedLights.size > 0 || this._editPositionsMode || this._largeColorWheelOpen;
@@ -4631,6 +5026,9 @@ class SpatialLightColorCard extends HTMLElement {
     // Right-click (2) and middle-click (1) should not start drags or long-press
     // timers — `_handleCanvasContextMenu` handles right-click separately.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Wall drawing owns the canvas outright while it is armed: no selection,
+    // no light dragging, no long-press more-info.
+    if (this._wallEditMode && this._onWallPointerDown(e)) return;
     try { e.target.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may already be gone */ }
 
     const targetLight = e.target.closest('.light');
@@ -4846,6 +5244,10 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _onPointerMove(e) {
+    if (this._wallEditMode) {
+      if (this._wallDrawState) { if (this._onWallPointerMove(e)) return; }
+      else this._trackWallHover(e);
+    }
     if (this._pendingTap && e.pointerId === this._pendingTap.pointerId) {
       const dx = e.clientX - this._pendingTap.startX;
       const dy = e.clientY - this._pendingTap.startY;
@@ -4968,6 +5370,7 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _onPointerUp(e) {
+    if (this._wallEditMode && this._wallDrawState && this._onWallPointerUp(e)) return;
     try { e.target.releasePointerCapture?.(e.pointerId); } catch (_) { /* may not have capture */ }
     if (this._dragState) {
       if (this._dragState.isCanvasElement) {
@@ -5257,6 +5660,14 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _cancelActiveInteractions() {
+    // An aborted wall stroke must revert, not commit half a wall.
+    if (this._wallDrawState || this._draftWalls) {
+      this._wallDrawState = null;
+      this._draftWalls = null;
+      this._wallChainAnchor = null;
+      if (this._wallHoldTimer) { clearTimeout(this._wallHoldTimer); this._wallHoldTimer = null; }
+      this._invalidateWallGeometry();
+    }
     this._dragState = null;
     if (this.shadowRoot) {
       this.shadowRoot.querySelectorAll('.light.dragging').forEach(node => node.classList.remove('dragging'));
@@ -7230,6 +7641,9 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** Update glows for all light elements. Called from updateLights(). */
   _updateAllGlows() {
+    // The shared light-field canvas owns diffusion when enabled; the per-light
+    // divs are not even in the DOM then.
+    if (this._fieldActive) return;
     // Glow works in all modes — check if any glow is enabled
     const hasGlobalGlow = this._config.glow.enabled;
     const hasOverrides = Object.keys(this._config.glow_overrides).length > 0;
@@ -7256,6 +7670,955 @@ class SpatialLightColorCard extends HTMLElement {
       if (!gc.enabled) return;
       this._updateGlow(lightEl, id, st, canvasRect);
     });
+  }
+
+  /* ======================================================================
+     LIGHT FIELD
+     ----------------------------------------------------------------------
+     One shared <canvas> layered over the plan and under the light markers.
+
+     Why a single canvas rather than the per-light `.light-glow` divs: each
+     `.light` is its own stacking context (the glow sits at z-index -1 inside
+     it), so overlapping glows can only ever composite with the painter's
+     algorithm — the topmost one wins and colours never mix. Drawing every
+     light onto one surface with `globalCompositeOperation = 'lighter'` gives
+     Co = as*Cs + ad*Cd, so a red pool crossing a blue pool really is magenta
+     and really is brighter, the way light behaves.
+
+     Shadows are exact rather than masked. For each light we build a
+     visibility polygon by sweeping rays at every wall endpoint (plus a small
+     epsilon either side, which is what lets the polygon slip past a corner
+     and keep going) and at every footprint vertex, taking the nearest hit.
+     Filling that polygon with the light's radial gradient does occlusion,
+     shape and falloff in a single fill.
+
+     The whole sweep runs in a per-light AFFINE FRAME:
+
+         screen = L + R(direction) . diag(sx, sy) . local
+
+     In that frame every glow shape is a unit primitive — round/oval are the
+     unit disc, cone/semicone/beam/spotlight are a unit trapezoid, bar is a
+     unit rectangle — so anisotropy and rotation are absorbed by the matrix
+     and there is exactly one renderer instead of eight. This is sound
+     because visibility is affine-invariant: an invertible affine map
+     preserves collinearity and betweenness, so "segment S occludes point P
+     from L" holds in screen space exactly when it holds in local space.
+     ====================================================================== */
+
+  /**
+   * FNV-1a over the rounded wall coordinates. Used as a cache version so
+   * unrelated setConfig calls (the editor fires one per keystroke) do not
+   * throw away every solved polygon.
+   */
+  _hashWalls(walls) {
+    let h = 0x811c9dc5;
+    const mix = (n) => {
+      h ^= n & 0xff; h = Math.imul(h, 0x01000193);
+      h ^= (n >>> 8) & 0xff; h = Math.imul(h, 0x01000193);
+      h ^= (n >>> 16) & 0xff; h = Math.imul(h, 0x01000193);
+    };
+    if (Array.isArray(walls)) {
+      for (const w of walls) {
+        mix(Math.round(w.x1 * 64)); mix(Math.round(w.y1 * 64));
+        mix(Math.round(w.x2 * 64)); mix(Math.round(w.y2 * 64));
+      }
+    }
+    return h >>> 0;
+  }
+
+  /** Drop every cached light-field intermediate and schedule a repaint. */
+  _invalidateLightField() {
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
+    this._requestLightFieldDraw(true);
+  }
+
+  /**
+   * The plan's box in CSS pixels. Today the plan fills the canvas exactly
+   * (auto-aspect gives the canvas the image's ratio), so this is the canvas
+   * rect — but every consumer goes through here so a future letterboxed mode
+   * is one function to change rather than a hunt through the drag math.
+   */
+  _planRect() {
+    const canvas = this._els && this._els.canvas;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    return { width: rect.width, height: rect.height };
+  }
+
+  /** Cancel whichever of the two scheduled callbacks has not fired. */
+  _clearLightFieldSchedule() {
+    if (this._lightFieldFrame != null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._lightFieldFrame);
+      this._lightFieldFrame = null;
+    }
+    if (this._lightFieldTimer != null) {
+      clearTimeout(this._lightFieldTimer);
+      this._lightFieldTimer = null;
+    }
+  }
+
+  /**
+   * Coalesced repaint request. `force` survives coalescing.
+   *
+   * Scheduled on rAF for frame alignment, with a setTimeout backstop: a
+   * hidden or heavily throttled document may never run the rAF at all, and
+   * the "already pending" guard would then deadlock every later request —
+   * including the one the visibilitychange handler fires on the way back.
+   * Whichever callback wins cancels the other.
+   */
+  _requestLightFieldDraw(force) {
+    if (!this._fieldCanvasNeeded || this._fieldFailed) return;
+    if (force) this._lightFieldPendingForce = true;
+    if (this._lightFieldFrame != null || this._lightFieldTimer != null) return;
+
+    const run = () => {
+      this._clearLightFieldSchedule();
+      this._lightFieldPendingForce = false;
+      try {
+        this._renderLightField();
+      } catch (err) {
+        // A renderer that throws inside updateLights would take the whole
+        // card down with it. Latch off instead and leave the plan readable.
+        this._fieldFailed = true;
+        console.warn('[spatial-lights-card] light field disabled after error:', err);
+      }
+    };
+
+    if (typeof requestAnimationFrame === 'function') {
+      this._lightFieldFrame = requestAnimationFrame(run);
+      this._lightFieldTimer = setTimeout(run, 250);
+    } else {
+      this._lightFieldTimer = setTimeout(run, 16);
+    }
+  }
+
+  /**
+   * Size the backing store to the plan box times a quality-capped DPR.
+   * Returns the device-pixel ratio actually used, or 0 if unusable.
+   */
+  _sizeFieldCanvas(cv, rect) {
+    const lf = this._config.light_field;
+    const deviceDpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    let dpr;
+    switch (lf.quality) {
+      case 'low': dpr = 1; break;
+      case 'medium': dpr = Math.min(deviceDpr, 1.5); break;
+      case 'high': dpr = deviceDpr; break;
+      default: dpr = Math.min(deviceDpr, 2); break;
+    }
+    // Honour the pixel budget so a very wide card on a 3x phone does not
+    // allocate a backing store the GPU will refuse.
+    const budget = lf.max_pixels;
+    const wanted = rect.width * rect.height * dpr * dpr;
+    if (wanted > budget) dpr *= Math.sqrt(budget / wanted);
+    dpr = Math.max(0.5, dpr);
+
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (cv.width !== w || cv.height !== h) {
+      cv.width = w;
+      cv.height = h;
+    }
+    cv.style.width = `${rect.width}px`;
+    cv.style.height = `${rect.height}px`;
+    return dpr;
+  }
+
+  /**
+   * Wall segments converted from canvas percent to CSS pixels, cached per
+   * (geometry hash, rect). The percent -> px map is anisotropic (x by width,
+   * y by height) and that is correct: it is one linear map applied to lights,
+   * walls and plan alike, and with auto-aspect the percent grid IS the plan
+   * grid.
+   */
+  _prepareOccluders(rect) {
+    const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}`;
+    if (this._fieldOccluders && this._fieldOccluders.key === key) return this._fieldOccluders;
+
+    const walls = this._draftWalls || this._config.glow_walls || [];
+    const segs = [];
+    for (const w of walls) {
+      const ax = w.x1 / 100 * rect.width;
+      const ay = w.y1 / 100 * rect.height;
+      const bx = w.x2 / 100 * rect.width;
+      const by = w.y2 / 100 * rect.height;
+      // Sub-quarter-pixel segments cannot occlude anything but do generate
+      // degenerate sweep angles, so drop them here rather than guarding
+      // every ray cast.
+      if ((bx - ax) * (bx - ax) + (by - ay) * (by - ay) < 0.0625) continue;
+      segs.push({ ax, ay, bx, by });
+    }
+    this._fieldOccluders = { key, segs };
+    return this._fieldOccluders;
+  }
+
+  /**
+   * Describe a light as an emission point plus the affine frame that turns
+   * its glow shape into a unit primitive.
+   *
+   * The frames deliberately mirror what `_updateGlow` does to the DOM element
+   * so a config that already looks right keeps looking right:
+   *  - centred shapes (round/oval/custom) put the light at the element centre
+   *  - directional shapes put it at top-centre with the shape extending along
+   *    local +Y, rotated about that point by `direction`
+   */
+  _getFieldEmitter(entityId, gc, rect, ratio) {
+    const pos = (this._config.positions && this._config.positions[entityId]) || { x: 50, y: 50 };
+    const hasGlow = gc && gc.enabled;
+    const lf = this._config.light_field;
+
+    // A light with no glow config of its own still diffuses — that is the
+    // point of the feature — using a plain round footprint of light_field.radius.
+    const shape = hasGlow ? gc.shape : 'round';
+    const falloff = hasGlow ? gc.falloff : lf.falloff;
+    const stops = hasGlow ? gc.gradient_stops : null;
+    const scaleB = hasGlow ? gc.scale_with_brightness : true;
+    const baseIntensity = hasGlow ? gc.intensity : 0.7;
+    const width = hasGlow ? gc.width : lf.radius * 2;
+    const baseLength = hasGlow ? gc.length : lf.radius * 2;
+    const direction = hasGlow ? gc.direction : 0;
+
+    // Matches _updateGlow: length tracks brightness, width does not.
+    const length = scaleB ? baseLength * Math.max(ratio, 0.1) : baseLength;
+    const alpha = (scaleB ? baseIntensity * Math.max(ratio, 0.05) : baseIntensity) * lf.exposure;
+
+    const x = pos.x / 100 * rect.width + (hasGlow ? gc.offset_x : 0);
+    const y = pos.y / 100 * rect.height + (hasGlow ? gc.offset_y : 0);
+    const rot = direction * Math.PI / 180;
+
+    const centred = shape === 'round' || shape === 'oval' || shape === 'custom';
+    let sx, sy, footprint = null, disc = false, linear = false;
+
+    if (shape === 'round') {
+      sx = sy = width / 2; disc = true;
+    } else if (shape === 'oval') {
+      sx = width / 2; sy = length / 2; disc = true;
+    } else if (shape === 'custom') {
+      sx = sy = width / 2;
+      footprint = this._customFootprint(gc);
+      if (!footprint) disc = true;
+    } else {
+      // Directional trapezoid. Far half-width is the full configured width;
+      // the near half-width comes from the same spread/start_width maths the
+      // clip-path uses, expressed as a fraction of the far half-width.
+      sx = width / 2;
+      sy = Math.max(length, 1);
+      let spread = gc ? gc.spread : 1.5;
+      let sw = gc ? gc.start_width : 0;
+      if (shape === 'beam') spread = Math.min(spread, 1.15);
+      if (shape === 'spotlight') spread = Math.max(spread, 2.0);
+      if (shape === 'semicone') sw = sw > 0 ? sw : 0.35;
+      let near;
+      if (shape === 'bar') {
+        near = 1;
+        linear = true;
+      } else {
+        // clip-path inset: nearInset = (50 - 50/spread) * (1 - sw)
+        const coneInset = 50 - (50 / spread);
+        const nearInset = sw > 0 ? coneInset * (1 - sw) : coneInset;
+        near = (50 - nearInset) / 50;
+      }
+      near = Math.max(0.0001, Math.min(1, near));
+      footprint = [[-near, 0], [near, 0], [1, 1], [-1, 1]];
+    }
+
+    // Quantize the frame to 4px buckets. `scale_with_brightness` sweeps a
+    // light through hundreds of fractional sizes during one slider drag;
+    // snapping the frame turns that into a handful of cache hits instead of a
+    // full polygon solve per brightness step. Worst-case geometric error is
+    // 2px on an already-soft gradient edge. The bucketed values are used for
+    // BOTH the solve and the draw, so the shadows always match the shape.
+    const q = (v) => Math.max(4, Math.round(v / 4) * 4);
+    return {
+      x, y, rot, sx: q(sx), sy: q(sy),
+      centred, disc, footprint, linear, alpha, falloff, stops, shape,
+    };
+  }
+
+  /** Sample the existing polar custom_shape into a local-space polygon. */
+  _customFootprint(gc) {
+    if (!gc || !gc.custom_shape || gc.custom_shape.length < 3) return null;
+    const sorted = [...gc.custom_shape].sort((a, b) => a[0] - b[0]);
+    const pts = [];
+    const N = 72;
+    for (let i = 0; i < N; i++) {
+      const angle = (i / N) * 360;
+      const r = this._interpolateCustomRadius(sorted, angle);
+      // Polar angle 0 = forward (+Y local, i.e. "down"), increasing clockwise,
+      // matching _buildCustomShapePolygon's convention.
+      const rad = angle * Math.PI / 180;
+      pts.push([r * Math.sin(rad), r * Math.cos(rad)]);
+    }
+    return pts;
+  }
+
+  /**
+   * Ray/segment intersection in the light's local frame. The ray starts at
+   * the local origin with unit direction (ct, st); the usual
+   * ((ax-ox)*sdy - (ay-oy)*sdx)/den form collapses because the origin is (0,0).
+   * Returns the ray parameter t, or Infinity for a miss.
+   */
+  _castRay(ct, st, ax, ay, bx, by) {
+    const sdx = bx - ax;
+    const sdy = by - ay;
+    const den = ct * sdy - st * sdx;
+    if (Math.abs(den) < 1e-12) return Infinity; // parallel
+    const t = (ax * sdy - ay * sdx) / den;
+    const u = (ax * st - ay * ct) / den;
+    return (t > 1e-6 && u >= -1e-9 && u <= 1 + 1e-9) ? t : Infinity;
+  }
+
+  /** Nearest positive hit of the ray against a closed local-space polygon. */
+  _rayVsFootprint(ct, st, poly) {
+    let best = Infinity;
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      const t = this._castRay(ct, st, a[0], a[1], b[0], b[1]);
+      if (t < best) best = t;
+    }
+    return best;
+  }
+
+  /** Squared distance from the local origin to a segment. */
+  _distSqOriginToSeg(ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = ax + t * dx, py = ay + t * dy;
+    return px * px + py * py;
+  }
+
+  /**
+   * Build the visibility polygon for one light, in its local frame.
+   *
+   * Returns a flat [x0,y0,x1,y1,...] array in local coordinates, in angle
+   * order. Between two consecutive swept angles there is no occluder endpoint
+   * and no footprint vertex, so the nearest hit over that interval lies on a
+   * single segment and the straight chord we emit is exact.
+   */
+  /**
+   * Cached wrapper around the solver. The polygon depends only on geometry —
+   * position, frame, shape and walls — never on colour, brightness alpha or
+   * selection, so a colour change or a selection change repaints without
+   * re-solving anything.
+   */
+  _visibilityPolygonCached(em, segs, rect, cacheKey) {
+    if (!this._visPolyCache) this._visPolyCache = new Map();
+    const key = `${cacheKey}|${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}`
+      + `|${Math.round(em.x)},${Math.round(em.y)}|${em.sx},${em.sy}|${em.rot.toFixed(4)}|${em.shape}`;
+    const hit = this._visPolyCache.get(key);
+    if (hit) return hit;
+    const poly = this._computeVisibilityPolygon(em, segs);
+    // Plain size cap rather than true LRU: the working set is one entry per
+    // light per frame, so anything beyond a few hundred is stale by
+    // definition.
+    if (this._visPolyCache.size > 256) this._visPolyCache.clear();
+    this._visPolyCache.set(key, poly);
+    return poly;
+  }
+
+  _computeVisibilityPolygon(em, segs) {
+    const cos = Math.cos(em.rot), sin = Math.sin(em.rot);
+    const isx = 1 / em.sx, isy = 1 / em.sy;
+
+    // Map occluders into the local frame and drop anything out of reach.
+    // Exact point/segment distance, not a bounding box: the old bbox test
+    // under-reached directional shapes and silently dropped real occluders.
+    const maxR = em.disc ? 1 : Math.SQRT2;
+    const local = [];
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      const adx = s.ax - em.x, ady = s.ay - em.y;
+      const bdx = s.bx - em.x, bdy = s.by - em.y;
+      const ax = (adx * cos + ady * sin) * isx;
+      const ay = (-adx * sin + ady * cos) * isy;
+      const bx = (bdx * cos + bdy * sin) * isx;
+      const by = (-bdx * sin + bdy * cos) * isy;
+      const d2 = this._distSqOriginToSeg(ax, ay, bx, by);
+      if (d2 > maxR * maxR) continue;
+      // Light sitting exactly on a wall produces a degenerate bowtie. Nudge
+      // the segment off the origin deterministically instead.
+      if (d2 < 2.5e-7) continue;
+      local.push({ ax, ay, bx, by });
+    }
+
+    // Angle set: footprint vertices (silhouette stays vertex-exact), wall
+    // endpoints with +/- epsilon (lets the polygon round a corner), and
+    // uniform samples so curved footprints stay curved.
+    const angles = [];
+    const push = (a) => angles.push(a);
+
+    if (em.footprint) {
+      for (const v of em.footprint) push(Math.atan2(v[1], v[0]));
+    }
+    // Epsilon in LOCAL radians, chosen so its screen-space offset at the rim
+    // is ~0.4px whatever the light's size — a fixed epsilon is invisible on a
+    // small light and a visible crack on a large one.
+    const eps = Math.max(1e-5, Math.min(1e-3, 0.4 / Math.max(em.sx, em.sy, 1)));
+    for (const s of local) {
+      const a1 = Math.atan2(s.ay, s.ax);
+      const a2 = Math.atan2(s.by, s.bx);
+      push(a1 - eps); push(a1); push(a1 + eps);
+      push(a2 - eps); push(a2); push(a2 + eps);
+    }
+    // Sagitta <= 0.75px keeps a disc looking round at any size.
+    const rPx = Math.max(em.sx, em.sy);
+    const step = 2 * Math.acos(Math.max(-1, 1 - 0.75 / Math.max(rPx, 1)));
+    for (let a = -Math.PI; a < Math.PI; a += step) push(a);
+
+    // Normalize into [-PI, PI), sort, dedupe (a box shares 4 corners, so
+    // without this every corner is swept three times over).
+    for (let i = 0; i < angles.length; i++) {
+      let a = angles[i];
+      a = ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+      angles[i] = a;
+    }
+    angles.sort((p, q) => p - q);
+
+    const out = [];
+    let prev = NaN;
+    for (let i = 0; i < angles.length; i++) {
+      const a = angles[i];
+      if (Math.abs(a - prev) < 1e-7) continue;
+      prev = a;
+      const ct = Math.cos(a), st = Math.sin(a);
+      let r = em.disc ? 1 : this._rayVsFootprint(ct, st, em.footprint);
+      if (!(r < Infinity)) r = maxR;
+      for (let k = 0; k < local.length; k++) {
+        const s = local[k];
+        const t = this._castRay(ct, st, s.ax, s.ay, s.bx, s.by);
+        if (t < r) r = t;
+      }
+      out.push(r * ct, r * st);
+    }
+    return out;
+  }
+
+  /** Falloff curves as [position 0-1, alpha] pairs (mirrors _buildGlowGradientStops). */
+  _fieldGradientStops(falloff, customStops) {
+    if (customStops && customStops.length >= 2) {
+      return customStops.map(([pos, op]) => [Math.max(0, Math.min(1, pos / 100)), op]);
+    }
+    switch (falloff) {
+      case 'linear':
+        return [[0, 0.8], [0.5, 0.4], [1, 0]];
+      case 'exponential':
+        return [[0, 0.95], [0.15, 0.6], [0.4, 0.2], [0.7, 0.04], [1, 0]];
+      case 'sharp':
+        return [[0, 1], [0.2, 0.8], [0.5, 0.15], [0.75, 0], [1, 0]];
+      case 'uniform':
+        return [[0, 1], [1, 1]];
+      default:
+        return [[0, 0.9], [0.3, 0.35], [0.65, 0.08], [1, 0]];
+    }
+  }
+
+  /**
+   * Paint every lit entity onto the shared field canvas.
+   *
+   * Lights accumulate with `lighter` so overlapping colours add; the layer as
+   * a whole then composites over the plan with `mix-blend-mode` (screen by
+   * default, which tints the plan without crushing its own darks).
+   */
+  _renderLightField() {
+    if (this._fieldFailed) return;
+    const cv = this._els && this._els.lightField;
+    if (!cv || !this._hass) return;
+    const rect = this._planRect();
+    if (!rect) return;
+
+    const ctx = cv.getContext('2d');
+    if (!ctx) { this._fieldFailed = true; return; }
+
+    const dpr = this._sizeFieldCanvas(cv, rect);
+    const lf = this._config.light_field;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    // Wall drawing can be armed with diffusion switched off; then the canvas
+    // exists only to show the geometry.
+    if (!this._fieldActive) {
+      this._drawFieldWalls(ctx, rect);
+      return;
+    }
+
+    const occ = this._prepareOccluders(rect);
+    ctx.globalCompositeOperation = lf.blend === 'screen' ? 'screen' : 'lighter';
+
+    const samples = lf.samples;
+    const srcR = lf.source_radius;
+
+    for (const entityId of this._config.entities) {
+      const st = this._hass.states[entityId];
+      if (!st) continue;
+      const [domain] = entityId.split('.');
+      const isScene = domain === 'scene';
+      const isBinary = domain === 'switch' || domain === 'input_boolean' || domain === 'binary_sensor';
+      const isOn = st.state === 'on' || isScene;
+      if (!isOn) continue;
+
+      const gc = this._getGlowConfig(entityId);
+      const brightness = st.attributes.brightness || ((isScene || isBinary) ? 255 : 0);
+      const ratio = brightness / 255;
+
+      let rgb = gc && gc.color ? this._parseColorToRGB(gc.color) : null;
+      if (!rgb) rgb = this._parseColorToRGB(this._resolveEntityColor(entityId, true, st.attributes));
+      if (!rgb) rgb = { r: 255, g: 165, b: 0 };
+
+      const em = this._getFieldEmitter(entityId, gc, rect, ratio);
+      if (em.alpha <= 0.001) continue;
+
+      // Selection dimming — the CSS rule this replaces lived on .light-glow.
+      let alpha = em.alpha;
+      if (this._selectedLights && this._selectedLights.size > 0 && !this._selectedLights.has(entityId)) {
+        alpha *= 0.3;
+      }
+
+      // An area light is just the same solve from a few jittered origins,
+      // each at 1/N alpha — that is what turns a hard edge into a penumbra
+      // that widens with distance from the occluder, as it should.
+      const n = samples > 1 && srcR > 0 ? samples : 1;
+      for (let s = 0; s < n; s++) {
+        let ox = em.x, oy = em.y;
+        if (n > 1) {
+          const a = (s / n) * Math.PI * 2;
+          const rr = s === 0 ? 0 : srcR;
+          ox += Math.cos(a) * rr;
+          oy += Math.sin(a) * rr;
+        }
+        const sub = { ...em, x: ox, y: oy };
+        const poly = this._visibilityPolygonCached(sub, occ.segs, rect, `${entityId}#${s}`);
+        if (poly.length < 6) continue;
+        this._fillFieldPolygon(ctx, sub, poly, rgb, alpha / n);
+
+        if (lf.ambient > 0) {
+          const amb = {
+            ...sub,
+            sx: Math.round(sub.sx * lf.ambient_reach),
+            sy: Math.round(sub.sy * lf.ambient_reach),
+          };
+          const apoly = this._visibilityPolygonCached(amb, occ.segs, rect, `${entityId}#a${s}`);
+          if (apoly.length >= 6) {
+            this._fillFieldPolygon(ctx, amb, apoly, rgb, (alpha * lf.ambient) / n);
+          }
+        }
+      }
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    this._drawFieldWalls(ctx, rect);
+  }
+
+  /**
+   * Fill one visibility polygon with the light's gradient.
+   *
+   * Drawing happens under the light's own affine transform, so the polygon is
+   * filled in local coordinates and the gradient is created there too — which
+   * is what makes an `oval` or a wide `cone` fall off elliptically instead of
+   * circularly, for free, via the CTM.
+   *
+   * Gradient radius is SQRT2 in local units to match the CSS
+   * `radial-gradient(... farthest-corner)` the DOM renderer resolves to.
+   */
+  _fillFieldPolygon(ctx, em, poly, rgb, alpha) {
+    ctx.save();
+    ctx.translate(em.x, em.y);
+    ctx.rotate(em.rot);
+    ctx.scale(em.sx, em.sy);
+
+    const stops = this._fieldGradientStops(em.falloff, em.stops);
+    let grad;
+    if (em.linear) {
+      grad = ctx.createLinearGradient(0, 0, 0, 1);
+    } else {
+      grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.SQRT2);
+    }
+    for (const [pos, op] of stops) {
+      const a = Math.max(0, Math.min(1, op * alpha));
+      grad.addColorStop(Math.max(0, Math.min(1, pos)), `rgba(${rgb.r},${rgb.g},${rgb.b},${a.toFixed(4)})`);
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(poly[0], poly[1]);
+    for (let i = 2; i < poly.length; i += 2) ctx.lineTo(poly[i], poly[i + 1]);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Draw the wall geometry itself, so users can see what they placed. */
+  _drawFieldWalls(ctx, rect) {
+    const lf = this._config.light_field;
+    const mode = lf.show_walls;
+    const drawing = !!this._wallEditMode;
+    if (mode === 'never' && !drawing) return;
+    if (mode === 'auto' && !drawing) return;
+
+    const walls = this._draftWalls || this._config.glow_walls || [];
+    if (!walls.length) return;
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(0.5, lf.wall_width);
+    ctx.strokeStyle = lf.wall_color || (drawing ? 'rgba(120,190,255,0.95)' : 'rgba(160,170,185,0.5)');
+    ctx.beginPath();
+    for (const w of walls) {
+      ctx.moveTo(w.x1 / 100 * rect.width, w.y1 / 100 * rect.height);
+      ctx.lineTo(w.x2 / 100 * rect.width, w.y2 / 100 * rect.height);
+    }
+    ctx.stroke();
+
+    if (drawing) {
+      // Endpoint handles, so the user can see what is grabbable.
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.strokeStyle = 'rgba(60,110,170,0.9)';
+      ctx.lineWidth = 1.5;
+      for (const w of walls) {
+        for (const [px, py] of [[w.x1, w.y1], [w.x2, w.y2]]) {
+          ctx.beginPath();
+          ctx.arc(px / 100 * rect.width, py / 100 * rect.height, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  /* ======================================================================
+     WALL DRAWING
+     ----------------------------------------------------------------------
+     Placing walls by typing four numbers per wall is not a way to lay out a
+     floor plan. In wall mode the canvas becomes a drawing surface:
+
+       drag on empty space  -> draw a wall; releasing starts a chained
+                               segment from that endpoint, so tracing a room
+                               is one gesture instead of four
+       drag an endpoint     -> move that end
+       drag a wall's body   -> translate the whole wall
+       Escape / dbl-click   -> end the chain
+       Delete / long-press  -> remove the wall under the pointer
+
+     Snapping is ON while drawing (endpoint -> endpoint first, then 45-degree
+     angles, then the grid) because architecture wants right angles; Alt turns
+     it off. That is deliberately the OPPOSITE polarity to light dragging,
+     where Alt *enables* snap — an unclosed corner leaks a visible shaft of
+     light, so walls want the help by default.
+
+     Edits are applied locally first and only then reported to the editor, so
+     the shadow moves with the finger instead of after a round trip.
+     ====================================================================== */
+
+  /** Pointer position as canvas percentages. */
+  _wallPointFromEvent(e) {
+    const rect = this._els.canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    return {
+      x: (e.clientX - rect.left) / rect.width * 100,
+      y: (e.clientY - rect.top) / rect.height * 100,
+      rect,
+    };
+  }
+
+  /** The wall list the drawing UI edits (draft while dragging, else config). */
+  _wallList() {
+    return this._draftWalls || this._config.glow_walls || [];
+  }
+
+  /**
+   * Hit test in canvas percent. Endpoints win over bodies so the finer
+   * target is always reachable.
+   */
+  _hitTestWall(pt, rect) {
+    const walls = this._wallList();
+    const tolPx = 10;
+    const tx = tolPx / rect.width * 100;
+    const ty = tolPx / rect.height * 100;
+    // Work in pixels so the tolerance is isotropic on screen.
+    const toPx = (px, py) => [px / 100 * rect.width, py / 100 * rect.height];
+    const [mx, my] = toPx(pt.x, pt.y);
+
+    let bestEnd = null, bestEndD = tolPx * tolPx;
+    let bestBody = null, bestBodyD = tolPx * tolPx;
+
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      const [ax, ay] = toPx(w.x1, w.y1);
+      const [bx, by] = toPx(w.x2, w.y2);
+
+      const da = (ax - mx) * (ax - mx) + (ay - my) * (ay - my);
+      if (da < bestEndD) { bestEndD = da; bestEnd = { index: i, end: 1 }; }
+      const db = (bx - mx) * (bx - mx) + (by - my) * (by - my);
+      if (db < bestEndD) { bestEndD = db; bestEnd = { index: i, end: 2 }; }
+
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? ((mx - ax) * dx + (my - ay) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx, py = ay + t * dy;
+      const d = (px - mx) * (px - mx) + (py - my) * (py - my);
+      if (d < bestBodyD) { bestBodyD = d; bestBody = { index: i }; }
+    }
+
+    if (bestEnd) return { kind: 'endpoint', ...bestEnd };
+    if (bestBody) return { kind: 'body', ...bestBody };
+    return null;
+  }
+
+  /** Snap cascade: other endpoints, then 45-degree angles, then the grid. */
+  _snapWallPoint(pt, rect, anchor, skipIndex, disable) {
+    let x = pt.x, y = pt.y;
+    if (disable) return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+
+    // 1. Endpoint-to-endpoint. An unclosed corner is the one mistake that is
+    //    invisible while drawing and obvious once the light leaks through it.
+    const walls = this._wallList();
+    const tolPx = 11;
+    let best = null, bestD = tolPx * tolPx;
+    for (let i = 0; i < walls.length; i++) {
+      if (i === skipIndex) continue;
+      const w = walls[i];
+      for (const [ex, ey] of [[w.x1, w.y1], [w.x2, w.y2]]) {
+        const ddx = (ex - x) / 100 * rect.width;
+        const ddy = (ey - y) / 100 * rect.height;
+        const d = ddx * ddx + ddy * ddy;
+        if (d < bestD) { bestD = d; best = { x: ex, y: ey }; }
+      }
+    }
+    if (best) return best;
+
+    // 2. Angle snap against the anchor, in PIXEL space so 45 degrees is 45
+    //    degrees on screen rather than in the anisotropic percent grid.
+    if (anchor) {
+      const ax = anchor.x / 100 * rect.width, ay = anchor.y / 100 * rect.height;
+      const cx = x / 100 * rect.width, cy = y / 100 * rect.height;
+      const dx = cx - ax, dy = cy - ay;
+      const len = Math.hypot(dx, dy);
+      if (len > 4) {
+        const ang = Math.atan2(dy, dx);
+        const step = Math.PI / 4;
+        const snapped = Math.round(ang / step) * step;
+        if (Math.abs(((ang - snapped + Math.PI) % (Math.PI * 2)) - Math.PI) < 0.14) { // ~8deg
+          const nx = ax + Math.cos(snapped) * len;
+          const ny = ay + Math.sin(snapped) * len;
+          x = nx / rect.width * 100;
+          y = ny / rect.height * 100;
+          return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+        }
+      }
+    }
+
+    // 3. Grid, reusing the same pixel grid the light snapping uses.
+    const g = this._gridSize || 25;
+    if (g > 0) {
+      const gx = Math.round(x / 100 * rect.width / g) * g;
+      const gy = Math.round(y / 100 * rect.height / g) * g;
+      const cand = { x: gx / rect.width * 100, y: gy / rect.height * 100 };
+      const ddx = (cand.x - x) / 100 * rect.width;
+      const ddy = (cand.y - y) / 100 * rect.height;
+      if (ddx * ddx + ddy * ddy < 100) { x = cand.x; y = cand.y; }
+    }
+    return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+  }
+
+  /**
+   * Remember which wall is under the pointer so Delete has a target, and
+   * show a cursor that says what a press would do.
+   */
+  _trackWallHover(e) {
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return;
+    const hit = this._hitTestWall(pt, pt.rect);
+    const next = hit ? hit.index : null;
+    if (next !== this._wallHoverIndex) {
+      this._wallHoverIndex = next;
+      if (this._els.canvas) {
+        this._els.canvas.style.cursor = hit
+          ? (hit.kind === 'endpoint' ? 'grab' : 'move')
+          : 'crosshair';
+      }
+    }
+  }
+
+  _onWallPointerDown(e) {
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return false;
+    try { this._els.canvas.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may be gone */ }
+
+    // Work on a private copy for the whole gesture. Committing on pointerup
+    // means one config write per wall, not one per frame.
+    this._draftWalls = this._wallList().map(w => ({ ...w }));
+
+    // Continuing a chain takes precedence over grabbing an endpoint. The
+    // previous stroke left the pen resting on its far corner, so pressing
+    // there means "keep drawing from here" — without this the second leg of
+    // every traced room silently drags the first leg's endpoint instead.
+    // It applies only to the chain anchor, so every OTHER endpoint stays
+    // draggable, and Escape drops the anchor to make this one draggable too.
+    const anchor = this._wallChainAnchor;
+    let chaining = false;
+    if (anchor) {
+      const dx = (anchor.x - pt.x) / 100 * pt.rect.width;
+      const dy = (anchor.y - pt.y) / 100 * pt.rect.height;
+      chaining = (dx * dx + dy * dy) <= 14 * 14;
+    }
+
+    const hit = chaining ? null : this._hitTestWall(pt, pt.rect);
+
+    if (chaining) {
+      this._draftWalls.push({ x1: anchor.x, y1: anchor.y, x2: anchor.x, y2: anchor.y, _src: null, _part: null });
+      this._wallDrawState = {
+        mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
+        anchor: { x: anchor.x, y: anchor.y },
+      };
+    } else if (hit && hit.kind === 'endpoint') {
+      this._wallDrawState = { mode: 'endpoint', index: hit.index, end: hit.end, pointerId: e.pointerId, moved: false };
+    } else if (hit && hit.kind === 'body') {
+      const w = this._draftWalls[hit.index];
+      this._wallDrawState = {
+        mode: 'body', index: hit.index, pointerId: e.pointerId, moved: false,
+        grab: { x: pt.x, y: pt.y }, orig: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
+      };
+      // Long-press on a wall body deletes it — the editor is routinely used
+      // on a tablet, where a keyboard-only delete makes a mis-drawn wall
+      // impossible to remove from the plan.
+      this._wallHoldTimer = setTimeout(() => {
+        this._wallHoldTimer = null;
+        if (!this._wallDrawState || this._wallDrawState.moved) return;
+        this._deleteWallAt(hit.index);
+        this._wallDrawState = null;
+      }, 500);
+    } else {
+      const start = this._snapWallPoint(pt, pt.rect, this._wallChainAnchor || null, -1, e.altKey);
+      this._draftWalls.push({ x1: start.x, y1: start.y, x2: start.x, y2: start.y, _src: null, _part: null });
+      this._wallDrawState = {
+        mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
+        anchor: start,
+      };
+    }
+    this._invalidateWallGeometry();
+    e.preventDefault();
+    return true;
+  }
+
+  _onWallPointerMove(e) {
+    const st = this._wallDrawState;
+    if (!st || e.pointerId !== st.pointerId) return false;
+    const pt = this._wallPointFromEvent(e);
+    if (!pt) return true;
+    st.moved = true;
+    if (this._wallHoldTimer) { clearTimeout(this._wallHoldTimer); this._wallHoldTimer = null; }
+
+    const w = this._draftWalls[st.index];
+    if (!w) return true;
+
+    if (st.mode === 'draw') {
+      const p = this._snapWallPoint(pt, pt.rect, st.anchor, st.index, e.altKey);
+      w.x2 = p.x; w.y2 = p.y;
+    } else if (st.mode === 'endpoint') {
+      const anchor = st.end === 1 ? { x: w.x2, y: w.y2 } : { x: w.x1, y: w.y1 };
+      const p = this._snapWallPoint(pt, pt.rect, anchor, st.index, e.altKey);
+      if (st.end === 1) { w.x1 = p.x; w.y1 = p.y; } else { w.x2 = p.x; w.y2 = p.y; }
+    } else if (st.mode === 'body') {
+      const dx = pt.x - st.grab.x;
+      const dy = pt.y - st.grab.y;
+      w.x1 = st.orig.x1 + dx; w.y1 = st.orig.y1 + dy;
+      w.x2 = st.orig.x2 + dx; w.y2 = st.orig.y2 + dy;
+    }
+    this._invalidateWallGeometry();
+    e.preventDefault();
+    return true;
+  }
+
+  _onWallPointerUp(e) {
+    const st = this._wallDrawState;
+    if (!st || e.pointerId !== st.pointerId) return false;
+    if (this._wallHoldTimer) { clearTimeout(this._wallHoldTimer); this._wallHoldTimer = null; }
+    this._wallDrawState = null;
+    try { this._els.canvas.releasePointerCapture?.(e.pointerId); } catch (_) { /* already released */ }
+
+    const w = this._draftWalls && this._draftWalls[st.index];
+    if (!w) { this._draftWalls = null; return true; }
+
+    if (st.mode === 'draw') {
+      // A stroke shorter than ~2% of the canvas diagonal is a tap, not a
+      // wall. Without this every stray tap injects an invisible zero-length
+      // entry into the user's YAML.
+      const rect = this._els.canvas.getBoundingClientRect();
+      const dxPx = (w.x2 - w.x1) / 100 * rect.width;
+      const dyPx = (w.y2 - w.y1) / 100 * rect.height;
+      const minLen = Math.hypot(rect.width, rect.height) * 0.02;
+      if (Math.hypot(dxPx, dyPx) < minLen) {
+        this._draftWalls.splice(st.index, 1);
+        this._wallChainAnchor = null;
+        this._commitWalls(null);
+        e.preventDefault();
+        return true;
+      }
+      // Chain: the far endpoint becomes the next stroke's anchor, so tracing
+      // a room is one continuous gesture.
+      this._wallChainAnchor = { x: w.x2, y: w.y2 };
+      this._commitWalls({ op: 'add', wall: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 } });
+    } else if (!st.moved) {
+      this._draftWalls = null;
+      this._invalidateWallGeometry();
+      e.preventDefault();
+      return true;
+    } else {
+      this._commitWalls({
+        op: 'update',
+        src: w._src, part: w._part,
+        wall: { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 },
+      });
+    }
+    e.preventDefault();
+    return true;
+  }
+
+  /** Remove the wall at a normalized index and report the deletion. */
+  _deleteWallAt(index) {
+    if (!this._draftWalls) this._draftWalls = this._wallList().map(w => ({ ...w }));
+    const w = this._draftWalls[index];
+    if (!w) return;
+    this._draftWalls.splice(index, 1);
+    this._commitWalls({ op: 'delete', src: w._src, part: w._part });
+  }
+
+  /**
+   * Apply the draft locally, then tell the editor what changed.
+   *
+   * Local-first is what makes the shadows track the finger. The version bump
+   * is the fatal-if-forgotten step: both the field's occluder cache and the
+   * legacy mask cache short-circuit on a key containing it.
+   */
+  _commitWalls(delta) {
+    if (this._draftWalls) {
+      this._config.glow_walls = this._draftWalls.map(w => ({ ...w }));
+      this._draftWalls = null;
+    }
+    this._invalidateWallGeometry();
+    if (delta && this._wallEditorId && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('spatial-card-wall-delta', {
+        detail: { editorId: this._wallEditorId, ...delta },
+      }));
+    }
+  }
+
+  /** Drop every wall-derived cache and repaint. */
+  _invalidateWallGeometry() {
+    this._wallGeomVersion = this._hashWalls(this._wallList());
+    this._wallConfigVersion = (this._wallConfigVersion || 0) + 1;
+    this._wallMaskPerEntity = {};
+    if (this._wallMaskCache) this._wallMaskCache.clear();
+    this._fieldOccluders = null;
+    this._requestLightFieldDraw(true);
+    if (!this._fieldActive) this._updateAllGlows();
   }
 
   /** ---------- Light updates ---------- */
@@ -7405,6 +8768,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._refreshEntityIcons();
     this._updateCanvasElements();
     this._updateAllGlows();
+    this._requestLightFieldDraw();
     // Reposition labels synchronously so they don't flash in the wrong
     // position for 1 frame before the rAF callback would run.
     // updateLights() only toggles classes/styles on existing DOM, so layout
@@ -7624,12 +8988,38 @@ class SpatialLightColorCard extends HTMLElement {
       } else {
         yamlLines.push('background_image:');
         if (bg.url) yamlLines.push(`${indent}url: ${bg.url}`);
+        if (bg.fit) yamlLines.push(`${indent}fit: ${bg.fit}`);
         if (bg.size) yamlLines.push(`${indent}size: ${bg.size}`);
+        if (bg.rendering) yamlLines.push(`${indent}rendering: ${bg.rendering}`);
+        if (bg.auto_aspect !== undefined) yamlLines.push(`${indent}auto_aspect: ${bg.auto_aspect}`);
         if (bg.position) yamlLines.push(`${indent}position: ${bg.position}`);
         if (bg.repeat) yamlLines.push(`${indent}repeat: ${bg.repeat}`);
         if (bg.blend_mode) yamlLines.push(`${indent}blend_mode: ${bg.blend_mode}`);
         if (bg.opacity !== undefined) yamlLines.push(`${indent}opacity: ${bg.opacity}`);
       }
+    }
+
+    // Light field — only emit the keys that differ from the defaults so the
+    // YAML modal stays readable.
+    const lf = this._config.light_field;
+    if (lf && lf.enabled) {
+      const lfDefaults = this._normalizeLightField(null);
+      yamlLines.push('light_field:');
+      yamlLines.push(`${indent}enabled: true`);
+      Object.keys(lfDefaults).forEach((k) => {
+        if (k === 'enabled') return;
+        if (lf[k] === lfDefaults[k]) return;
+        const v = lf[k];
+        yamlLines.push(`${indent}${k}: ${typeof v === 'string' && v === '' ? "''" : v}`);
+      });
+    }
+
+    if (Array.isArray(this._config.glow_walls) && this._config.glow_walls.length) {
+      yamlLines.push('glow_walls:');
+      this._config.glow_walls.forEach((w) => {
+        const r = (v) => Math.round(Number(v) * 100) / 100;
+        yamlLines.push(`${indent}- { x1: ${r(w.x1)}, y1: ${r(w.y1)}, x2: ${r(w.x2)}, y2: ${r(w.y2)} }`);
+      });
     }
 
     yamlLines.push('entities:');
@@ -7740,6 +9130,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
      * leaving live dashboards stuck in reposition mode).
      */
     this._editPositionsActive = false;
+    /** Wall-drawing mode. Editor-session state, never written to config. */
+    this._wallDrawActive = false;
+    this._boundWallDelta = null;
+    this._wallHistory = [];
+    this._wallRedoStack = [];
     this._boundPreviewHello = null;
     this._expandedEntity = null;
     this._expandedCanvasElement = null;
@@ -7773,10 +9168,22 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // says hello and gets the current edit-mode state back synchronously.
     this._boundPreviewHello = (e) => {
       if (e.detail && typeof e.detail.reply === 'function') {
-        e.detail.reply(this._editorId, this._editPositionsActive);
+        e.detail.reply(this._editorId, this._editPositionsActive, this._wallDrawActive);
       }
     };
     window.addEventListener('spatial-card-preview-hello', this._boundPreviewHello);
+
+    // Walls drawn on the plan arrive as DELTAS, never as a snapshot of the
+    // card's wall list: that list is the normalizer's output, where every box
+    // has already been exploded into four segments and array shorthand has
+    // been objectified. Echoing it back would quadruple the user's list and
+    // destroy their boxes on the first drag.
+    this._boundWallDelta = (e) => {
+      const d = e.detail || {};
+      if (!d.editorId || d.editorId !== this._editorId) return;
+      this._applyWallDelta(d);
+    };
+    window.addEventListener('spatial-card-wall-delta', this._boundWallDelta);
 
     this._boundEditorKeyDown = (e) => {
       // Never steal undo/redo from text editing. This runs in the capture
@@ -7792,14 +9199,26 @@ class SpatialLightColorCardEditor extends HTMLElement {
         deepTarget.isContentEditable
       );
       if (isEditable) return;
+      // While wall drawing is armed, Ctrl+Z belongs to the wall stack —
+      // otherwise the user's last action and the thing that gets undone are
+      // two different kinds of edit.
+      const wallFirst = this._wallDrawActive;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        if (this._positionHistory.length > 0) {
+        if (wallFirst && this._wallHistory.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._undoWalls();
+        } else if (this._positionHistory.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           this._undoPositions();
         }
       } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'Z' && e.shiftKey) || (e.key === 'z' && e.shiftKey))) {
-        if (this._positionRedoStack.length > 0) {
+        if (wallFirst && this._wallRedoStack.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._redoWalls();
+        } else if (this._positionRedoStack.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           this._redoPositions();
@@ -7881,6 +9300,9 @@ class SpatialLightColorCardEditor extends HTMLElement {
     }
     if (this._boundPreviewHello) {
       window.removeEventListener('spatial-card-preview-hello', this._boundPreviewHello);
+    }
+    if (this._boundWallDelta) {
+      window.removeEventListener('spatial-card-wall-delta', this._boundWallDelta);
       this._boundPreviewHello = null;
     }
     this._positionHistory = [];
@@ -7888,6 +9310,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
     if (this._editPositionsActive) {
       this._editPositionsActive = false;
       window.dispatchEvent(new CustomEvent('spatial-card-edit-mode', {
+        detail: { editorId: this._editorId, active: false },
+      }));
+    }
+    this._wallHistory = [];
+    this._wallRedoStack = [];
+    if (this._wallDrawActive) {
+      this._wallDrawActive = false;
+      window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
         detail: { editorId: this._editorId, active: false },
       }));
     }
@@ -8016,6 +9446,119 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // Cap history at 50 entries
     if (this._positionHistory.length > 50) this._positionHistory.shift();
     this._updateUndoRedoButtons();
+  }
+
+  /**
+   * Apply one wall edit drawn on the plan.
+   *
+   * The card addresses walls by `_src` (index into the RAW config array) and
+   * `_part` (which edge of a box, or which leg of a polyline). A raw entry
+   * that is a box or polyline has to be exploded into plain segments before
+   * one of its edges can move independently — that is a real, visible change
+   * to the user's config, so it happens only when they actually drag such an
+   * edge, and never as a side effect of drawing somewhere else.
+   */
+  _applyWallDelta(d) {
+    if (!Array.isArray(this._config.glow_walls)) this._config.glow_walls = [];
+    const walls = this._config.glow_walls;
+    this._pushWallHistory();
+
+    if (d.op === 'add') {
+      walls.push({ x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) });
+      this._fireConfigChanged();
+      this._render();
+      return;
+    }
+
+    const src = d.src;
+    // A segment the card created this session has no raw index yet; the add
+    // that produced it already appended the entry, so treat it as the last.
+    const idx = (typeof src === 'number' && src >= 0 && src < walls.length) ? src : -1;
+    if (idx < 0) { this._wallHistory.pop(); return; }
+
+    const raw = walls[idx];
+    const isComposite = raw && !Array.isArray(raw) && typeof raw === 'object'
+      && ((raw.width != null && raw.height != null) || Array.isArray(raw.points));
+
+    if (isComposite) {
+      // Explode into the same segments the normalizer produces, then edit the
+      // named one, so the geometry the user sees never jumps.
+      const parts = this._explodeWall(raw);
+      if (!parts.length) { this._wallHistory.pop(); return; }
+      const partIdx = parts.findIndex(p => String(p.part) === String(d.part));
+      const segs = parts.map(p => p.seg);
+      if (d.op === 'delete') {
+        if (partIdx >= 0) segs.splice(partIdx, 1);
+      } else if (partIdx >= 0) {
+        segs[partIdx] = { x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) };
+      }
+      walls.splice(idx, 1, ...segs);
+    } else if (d.op === 'delete') {
+      walls.splice(idx, 1);
+    } else {
+      walls[idx] = { x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) };
+    }
+
+    this._fireConfigChanged();
+    this._render();
+  }
+
+  /** Split a box or polyline entry into {part, seg} pairs, matching the normalizer. */
+  _explodeWall(raw) {
+    const out = [];
+    if (Array.isArray(raw.points)) {
+      const pts = raw.points.filter(p => Array.isArray(p) && p.length >= 2).map(p => [Number(p[0]), Number(p[1])]);
+      for (let k = 0; k + 1 < pts.length; k++) {
+        out.push({ part: k, seg: { x1: pts[k][0], y1: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1] } });
+      }
+      if (raw.closed && pts.length > 2) {
+        const last = pts.length - 1;
+        out.push({ part: last, seg: { x1: pts[last][0], y1: pts[last][1], x2: pts[0][0], y2: pts[0][1] } });
+      }
+      return out;
+    }
+    const x = Number(raw.x), y = Number(raw.y), w = Number(raw.width), h = Number(raw.height);
+    if (![x, y, w, h].every(Number.isFinite)) return out;
+    out.push({ part: 'top', seg: { x1: x, y1: y, x2: x + w, y2: y } });
+    out.push({ part: 'right', seg: { x1: x + w, y1: y, x2: x + w, y2: y + h } });
+    out.push({ part: 'bottom', seg: { x1: x + w, y1: y + h, x2: x, y2: y + h } });
+    out.push({ part: 'left', seg: { x1: x, y1: y + h, x2: x, y2: y } });
+    return out;
+  }
+
+  _round2(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+  }
+
+  /**
+   * Wall undo is a SEPARATE stack from the position undo. Widening
+   * `_pushPositionHistory` would mean an unrelated position undo silently
+   * reverting wall edits, since that snapshot only captures `positions`.
+   */
+  _pushWallHistory() {
+    if (!Array.isArray(this._wallHistory)) this._wallHistory = [];
+    this._wallHistory.push(JSON.stringify(this._config.glow_walls || []));
+    if (this._wallHistory.length > 50) this._wallHistory.shift();
+    this._wallRedoStack = [];
+  }
+
+  _undoWalls() {
+    if (!this._wallHistory || !this._wallHistory.length) return false;
+    this._wallRedoStack.push(JSON.stringify(this._config.glow_walls || []));
+    this._config.glow_walls = JSON.parse(this._wallHistory.pop());
+    this._fireConfigChanged();
+    this._render();
+    return true;
+  }
+
+  _redoWalls() {
+    if (!this._wallRedoStack || !this._wallRedoStack.length) return false;
+    this._wallHistory.push(JSON.stringify(this._config.glow_walls || []));
+    this._config.glow_walls = JSON.parse(this._wallRedoStack.pop());
+    this._fireConfigChanged();
+    this._render();
+    return true;
   }
 
   _undoPositions() {
@@ -8640,9 +10183,24 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
   _renderWallItem(wall, index) {
     const isArray = Array.isArray(wall);
-    const isBox = !isArray && wall && typeof wall === 'object' &&
+    const isPoly = !isArray && wall && typeof wall === 'object' && Array.isArray(wall.points);
+    const isBox = !isArray && !isPoly && wall && typeof wall === 'object' &&
       wall.x != null && wall.y != null && wall.width != null && wall.height != null;
-    const typeLabel = isBox ? 'Box' : 'Line';
+    const typeLabel = isPoly ? 'Polyline' : (isBox ? 'Box' : 'Line');
+
+    if (isPoly) {
+      // Polylines have no fixed field set; show a read-only summary with the
+      // remove button rather than an editor that could not round-trip them.
+      const n = wall.points.length;
+      return `
+      <div class="wall-item" data-wall-index="${index}">
+        <div class="wall-main">
+          <span class="wall-type">${typeLabel}</span>
+          <span class="wall-summary">${n} point${n === 1 ? '' : 's'}${wall.closed ? ', closed' : ''}</span>
+          <button class="entity-btn remove" data-wall-index="${index}" title="Remove">&times;</button>
+        </div>
+      </div>`;
+    }
 
     // Coerce every interpolated value to a finite number (or 0). The raw config
     // could contain anything — strings, HTML, etc. — and these values are
@@ -8845,6 +10403,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const canvasElements = Array.isArray(config.canvas_elements) ? config.canvas_elements : [];
     const glow = config.glow || {};
     const glowWalls = Array.isArray(config.glow_walls) ? config.glow_walls : [];
+    // Reuse the card's normalizer so the form always shows real effective
+    // values rather than blanks for anything the user has not set yet.
+    const lfCfg = SpatialLightColorCard.prototype._normalizeLightField.call(
+      { _config: config }, config.light_field);
     const alSwitches = SpatialLightColorCard.findAdaptiveSwitches(this._hass);
 
     // Save section collapsed state before re-render
@@ -8947,23 +10509,30 @@ class SpatialLightColorCardEditor extends HTMLElement {
             </div>
             <div class="input-row">
               <label for="cfgAspectRatio">Aspect Ratio (optional, e.g. 16:9)</label>
-              <input type="text" id="cfgAspectRatio" placeholder="Empty = fixed canvas height">
-              <div class="sublabel">Keeps lights aligned with a floor-plan background at any card width. When set, Canvas Height is ignored.</div>
+              <input type="text" id="cfgAspectRatio" placeholder="Empty = match the plan image">
+              <div class="sublabel">Keeps lights aligned with a floor-plan background at any card width. When set, Canvas Height is ignored. Leave empty and the canvas takes the plan image's own ratio, so the plan is never cropped or squashed.</div>
             </div>
             <div class="input-row">
               <label>Background Image</label>
               <div id="cfgBgImageContainer"></div>
             </div>
             <div id="bgSettingsGroup" style="display:flex;flex-direction:column;gap:12px;">
+              <div class="option-row">
+                <div>
+                  <div class="label">Match canvas to image</div>
+                  <div class="sublabel" id="cfgBgDims">The canvas takes the plan's own aspect ratio, so it fills exactly &mdash; no crop, no letterbox, no squashing.</div>
+                </div>
+                <ha-switch id="cfgBgAutoAspect"></ha-switch>
+              </div>
               <div class="two-col">
                 <div class="input-row">
                   <label for="cfgBgSize">Size</label>
                   <select id="cfgBgSize">
-                    <option value="">Default (cover)</option>
-                    <option value="cover">Cover</option>
+                    <option value="">Default (fit, no distortion)</option>
                     <option value="contain">Contain</option>
-                    <option value="auto">Auto</option>
-                    <option value="100% 100%">Stretch (100% 100%)</option>
+                    <option value="cover">Cover (crops)</option>
+                    <option value="auto">Auto (native size)</option>
+                    <option value="100% 100%">Stretch (distorts)</option>
                   </select>
                 </div>
                 <div class="input-row">
@@ -9515,6 +11084,51 @@ class SpatialLightColorCardEditor extends HTMLElement {
           </div>
         </div>
 
+        <!-- Light Field Section -->
+        <div class="section${lfCfg.enabled ? '' : ' collapsed'}" id="section-light-field">
+          <div class="section-header" data-section="light-field">
+            <h3>Light Diffusion${lfCfg.enabled ? ' (on)' : ''}</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="sublabel" style="margin-bottom:8px;">Spreads each light's colour across the plan on one shared layer. Overlapping lights merge additively, and walls cast real shadows.</div>
+            <div class="option-row">
+              <div><div class="label">Enable diffusion</div><div class="sublabel">Replaces the per-light glow elements</div></div>
+              <ha-switch id="cfgLfEnabled" ${lfCfg.enabled ? 'checked' : ''}></ha-switch>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Blend over plan</div><div class="sublabel">normal suits any plan; screen suits dark blueprints; multiply suits white plans</div></div>
+              <select id="cfgLfOverPlan">
+                ${SpatialLightColorCard.LIGHT_FIELD_PLAN_BLENDS.map(m => `<option value="${m}"${lfCfg.over_plan === m ? ' selected' : ''}>${m}</option>`).join('')}
+              </select>
+            </div>
+            <div class="two-col">
+              <div class="override-row"><label>Brightness</label><input type="number" id="cfgLfExposure" value="${lfCfg.exposure}" min="0" max="4" step="0.1"></div>
+              <div class="override-row"><label>Reach (px)</label><input type="number" id="cfgLfRadius" value="${lfCfg.radius}" min="4" max="4000" step="10"></div>
+            </div>
+            <div class="two-col">
+              <div class="override-row"><label>Ambient</label><input type="number" id="cfgLfAmbient" value="${lfCfg.ambient}" min="0" max="1" step="0.05"></div>
+              <div class="override-row"><label>Soft shadows</label>
+                <select id="cfgLfSamples">
+                  ${[1, 3, 5, 9].map(n => `<option value="${n}"${lfCfg.samples === n ? ' selected' : ''}>${n === 1 ? 'Hard (1)' : n + ' samples'}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="two-col">
+              <div class="override-row"><label>Quality</label>
+                <select id="cfgLfQuality">
+                  ${SpatialLightColorCard.LIGHT_FIELD_QUALITIES.map(q => `<option value="${q}"${lfCfg.quality === q ? ' selected' : ''}>${q}</option>`).join('')}
+                </select>
+              </div>
+              <div class="override-row"><label>Show walls</label>
+                <select id="cfgLfShowWalls">
+                  ${['auto', 'always', 'never'].map(q => `<option value="${q}"${lfCfg.show_walls === q ? ' selected' : ''}>${q}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Glow Walls Section -->
         <div class="section${glowWalls.length === 0 ? ' collapsed' : ''}" id="section-glow-walls">
           <div class="section-header" data-section="glow-walls">
@@ -9522,7 +11136,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <span class="chevron">&#9660;</span>
           </div>
           <div class="section-body">
-            <div class="sublabel" style="margin-bottom:8px;">Line segments or boxes that block glow from expanding (like room walls).</div>
+            <div class="sublabel" style="margin-bottom:8px;">Line segments or boxes that block light from spreading (like room walls).</div>
+            <div class="option-row">
+              <div>
+                <div class="label">Draw walls on the plan</div>
+                <div class="sublabel">Drag on the preview to draw. Releasing continues the next wall from that corner &mdash; Esc ends the run. Drag an endpoint or a wall to move it; long-press or select + Delete removes one. Hold Alt to ignore snapping.</div>
+              </div>
+              <ha-switch id="cfgWallDrawMode" ${this._wallDrawActive ? 'checked' : ''}></ha-switch>
+            </div>
             ${glowWalls.length > 0
               ? `<div class="wall-list">${glowWalls.map((w, i) => this._renderWallItem(w, i)).join('')}</div>`
               : ''
@@ -9530,6 +11151,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <div class="add-ce-row">
               <button class="add-ce-btn" id="addWallLineBtn" title="Add a line segment wall">+ Line</button>
               <button class="add-ce-btn" id="addWallBoxBtn" title="Add a rectangular wall (box)">+ Box</button>
+              <button class="add-ce-btn" id="clearWallsBtn" title="Remove every wall">Clear</button>
             </div>
           </div>
         </div>
@@ -9661,6 +11283,19 @@ class SpatialLightColorCardEditor extends HTMLElement {
       el.value = targetVal;
     };
     setSelectVal('cfgBgSize', bgObj.size || '');
+    const bgAutoAspectEl = root.getElementById('cfgBgAutoAspect');
+    if (bgAutoAspectEl) bgAutoAspectEl.checked = bgObj.auto_aspect !== false;
+    // Report the measured plan size, so a successful probe is visible and a
+    // broken URL is not silently indistinguishable from a square image.
+    const bgDims = root.getElementById('cfgBgDims');
+    if (bgDims && bgUrl) {
+      const cached = SpatialLightColorCard._imageSizeCache.get(bgUrl);
+      if (cached && typeof cached.then !== 'function') {
+        bgDims.textContent = cached
+          ? `Detected ${cached.w} × ${cached.h}. The canvas takes this ratio, so the plan fills it exactly.`
+          : 'Could not read the image dimensions — the canvas keeps its configured height.';
+      }
+    }
     setSelectVal('cfgBgPosition', bgObj.position || '');
     setSelectVal('cfgBgRepeat', bgObj.repeat || '');
     setSelectVal('cfgBgBlendMode', bgObj.blend_mode || '');
@@ -10066,6 +11701,22 @@ class SpatialLightColorCardEditor extends HTMLElement {
       const el = root.getElementById(id);
       if (el) el.addEventListener('change', bgSettingChanged);
     });
+    const bgAutoAspect = root.getElementById('cfgBgAutoAspect');
+    if (bgAutoAspect) {
+      bgAutoAspect.addEventListener('change', () => {
+        if (typeof this._config.background_image === 'string') {
+          this._config.background_image = { url: this._config.background_image };
+        }
+        if (!this._config.background_image) this._config.background_image = {};
+        // On is the default, so record it only when the user turns it OFF.
+        if (bgAutoAspect.checked) delete this._config.background_image.auto_aspect;
+        else this._config.background_image.auto_aspect = false;
+        if (Object.keys(this._config.background_image).length === 0) {
+          this._config.background_image = null;
+        }
+        this._fireConfigChanged();
+      });
+    }
     const bgOpacitySlider = root.getElementById('cfgBgOpacity');
     const bgOpacityValLabel = root.getElementById('cfgBgOpacityValue');
     if (bgOpacitySlider) {
@@ -10658,6 +12309,78 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     // --- Glow Walls ---
     // Add wall buttons
+    // --- Light diffusion ---
+    const lfSet = (key, value) => {
+      if (!this._config.light_field || typeof this._config.light_field !== 'object') {
+        this._config.light_field = {};
+      }
+      if (value === null || value === undefined || value === '') delete this._config.light_field[key];
+      else this._config.light_field[key] = value;
+      // An empty block is noise in the saved YAML.
+      if (Object.keys(this._config.light_field).length === 0) delete this._config.light_field;
+      this._fireConfigChanged();
+    };
+    const lfSwitch = root.getElementById('cfgLfEnabled');
+    if (lfSwitch) {
+      lfSwitch.addEventListener('change', () => {
+        lfSet('enabled', lfSwitch.checked ? true : false);
+        this._render();
+      });
+    }
+    const lfNum = (id, key) => {
+      const el = root.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        const n = parseFloat(el.value);
+        lfSet(key, Number.isFinite(n) ? n : null);
+      });
+    };
+    lfNum('cfgLfExposure', 'exposure');
+    lfNum('cfgLfRadius', 'radius');
+    lfNum('cfgLfAmbient', 'ambient');
+    const lfSel = (id, key, asNumber) => {
+      const el = root.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        lfSet(key, asNumber ? parseFloat(el.value) : el.value);
+      });
+    };
+    lfSel('cfgLfOverPlan', 'over_plan');
+    lfSel('cfgLfQuality', 'quality');
+    lfSel('cfgLfShowWalls', 'show_walls');
+    lfSel('cfgLfSamples', 'samples', true);
+
+    // --- Draw walls on the plan ---
+    const wallDrawSwitch = root.getElementById('cfgWallDrawMode');
+    if (wallDrawSwitch) {
+      wallDrawSwitch.addEventListener('change', () => {
+        // Editor-session state and a broadcast only — never config, for the
+        // same reason edit-positions is not config.
+        this._wallDrawActive = wallDrawSwitch.checked;
+        if (this._wallDrawActive && this._editPositionsActive) {
+          // The two modes both claim the canvas; only one can be armed.
+          this._editPositionsActive = false;
+          window.dispatchEvent(new CustomEvent('spatial-card-edit-mode', {
+            detail: { editorId: this._editorId, active: false },
+          }));
+        }
+        window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+          detail: { editorId: this._editorId, active: this._wallDrawActive },
+        }));
+        this._render();
+      });
+    }
+    const clearWallsBtn = root.getElementById('clearWallsBtn');
+    if (clearWallsBtn) {
+      clearWallsBtn.addEventListener('click', () => {
+        if (!Array.isArray(this._config.glow_walls) || !this._config.glow_walls.length) return;
+        this._pushWallHistory();
+        this._config.glow_walls = [];
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+
     const addWallLineBtn = root.getElementById('addWallLineBtn');
     if (addWallLineBtn) {
       addWallLineBtn.addEventListener('click', () => {

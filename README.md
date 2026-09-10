@@ -28,7 +28,7 @@ Very useful when you have a lot of lights, and searching for the one you need by
 6. [Custom Colors & Backgrounds](#-custom-colors--backgrounds)
 7. [Effect Presets](#-effect-presets) — Quick-apply named light effects with filtering
 8. [Adaptive Lighting](#-adaptive-lighting) — Hand selected lights back to the Adaptive Lighting integration
-9. [Glow Effects](#-glow-effects) — Shapes, walls, custom polar shapes, per-entity overrides
+9. [Glow Effects](#-glow-effects) — Light diffusion, shapes, walls, custom polar shapes, per-entity overrides
 10. [Canvas Elements](#canvas-elements) — Links, sensors, and template elements on the canvas
 11. [Custom CSS](#-custom-css) — Global and per-entity style customization
 12. [Visual Layout Options](#-visual-options)
@@ -202,8 +202,9 @@ Position history stores up to 50 steps.
 | `title` | string | `""` | Card title. When empty, the header is hidden entirely. |
 | `entities` | list | **required** | Entities (lights, switches, input_booleans, scenes) to display. |
 | `positions` | map | `{}` | Per-entity x/y positions from 0–100 (percentage). |
-| `canvas_height` | number | `450` | Canvas height in pixels. Ignored when `aspect_ratio` is set. |
-| `aspect_ratio` | string | `null` | Optional `"W:H"` (e.g. `"16:9"`, `"1200x800"`). The canvas derives its height from its width so positions stay glued to a floor-plan background at any card width. |
+| `canvas_height` | number | `450` | Canvas height in pixels. Ignored when `aspect_ratio` is set, or when a background image supplies the ratio (see `background_image.auto_aspect`). |
+| `aspect_ratio` | string | `null` | Optional `"W:H"` (e.g. `"16:9"`, `"1200x800"`). The canvas derives its height from its width so positions stay glued to a floor-plan background at any card width. Usually unnecessary — a background image supplies its own ratio. |
+| `light_field` | map/bool | `{enabled: false}` | Shared-canvas light diffusion: colours merge additively and walls cast real shadows. See [Light Diffusion](#light-diffusion-light_field). |
 | `grid_size` | number | `25` | Grid spacing in pixels when snapping. |
 | `label_mode` | string | `"smart"` | Light label style: `smart` (compact abbreviation), `full` (alias `friendly_name`), `initials`, `entity_id`, `none`. |
 | `canvas_touch_scroll` | boolean | `true` | Vertical touch swipes on the canvas scroll the page (marquee needs a sideways drag). Set `false` to reserve all canvas touches for selection. |
@@ -313,12 +314,32 @@ Add a floorplan or texture behind your lights.
 ```yaml
 background_image:
   url: "/local/floorplan.png"
-  size: "cover"      # or "contain", "100% 100%"
-  position: "center"
-  blend_mode: "overlay" # Optional CSS blend mode
 ```
 
-> **Tip:** for floor plans, also set `aspect_ratio` to your image's ratio (e.g. `aspect_ratio: "4:3"`) and `size: "100% 100%"`. Without it, `cover` crops the image differently at each card width, so a light positioned over the sofa on desktop can drift over a wall on the phone.
+That is the whole configuration for a floor plan. The canvas measures the image
+and adopts its aspect ratio, so the plan fills the canvas **exactly** — never
+cropped, never letterboxed, never squashed — and a light placed over the sofa on
+desktop stays over the sofa on a phone.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `url` | — | Image URL (`/local/...`, `/api/image/serve/...`, or absolute) |
+| `auto_aspect` | `true` | Canvas takes the image's intrinsic aspect ratio |
+| `fit` | `contain` | `contain`, `cover` (crops), `stretch` (distorts), `native` |
+| `rendering` | `auto` | CSS `image-rendering` — use `pixelated` for hand-drawn or low-resolution plans |
+| `size` | — | Raw CSS `background-size`; overrides `fit` when set |
+| `position` / `repeat` / `blend_mode` / `opacity` | CSS defaults | Passed straight through |
+
+Auto-aspect steps aside as soon as you take control: it is skipped if you set
+`aspect_ratio`, set `canvas_height` explicitly, or set `auto_aspect: false`.
+
+```yaml
+# Pin the geometry yourself instead
+background_image:
+  url: "/local/floorplan.png"
+  auto_aspect: false
+canvas_height: 520
+```
 
 ### Light Size
 Customize the size of light circles globally or per-entity.
@@ -598,6 +619,69 @@ glow_overrides:
 
 Per-entity glow overrides for shape, direction, and intensity can also be configured in the visual editor by expanding each entity's settings.
 
+### Light Diffusion (`light_field`)
+
+The glow shapes above are decorative: each one is its own DOM element, so where
+two of them overlap the topmost simply wins and the colours never mix.
+
+`light_field` replaces them with a single shared canvas layered over the plan.
+Every light is painted onto that one surface additively, so **overlapping lights
+merge like real light** — a red pool crossing a blue pool is genuinely magenta
+and genuinely brighter — and `glow_walls` become true occluders that **cast
+shadows**, computed as exact visibility polygons rather than approximated with a
+bitmap mask.
+
+```yaml
+light_field: true      # shorthand for {enabled: true}
+```
+
+That single line is enough: every light diffuses its own colour across the plan,
+and any walls you have configured block it.
+
+```yaml
+light_field:
+  enabled: true
+  over_plan: normal    # how the layer blends with the plan
+  exposure: 1.0        # global brightness of the diffusion
+  radius: 190          # px reach for lights with no glow config of their own
+  samples: 5           # soft shadows: 1 = hard edges, 3/5/9 = penumbra
+  source_radius: 8     # px emitter size, only used when samples > 1
+  ambient: 0.15        # a wide, faint second wash
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Master switch. Off = today's per-light glow elements, unchanged |
+| `over_plan` | `normal` | `normal`, `screen`, `multiply`, `plus-lighter`, `overlay`, `soft-light`, `hard-light` |
+| `blend` | `lighter` | How lights accumulate with *each other*: `lighter` (additive) or `screen` |
+| `exposure` | `1.0` | 0–4 multiplier on the layer's alpha |
+| `radius` | `190` | px reach for a light with no `glow` config |
+| `falloff` | `smooth` | Same curves as `glow.falloff` |
+| `samples` | `1` | `1`, `3`, `5`, `9` — area-light samples for soft shadows |
+| `source_radius` | `6` | px emitter radius; only meaningful when `samples > 1` |
+| `ambient` | `0` | 0–1 second, wider, low-intensity pass |
+| `ambient_reach` | `2.5` | Reach multiplier for that pass |
+| `quality` | `auto` | `auto`, `low`, `medium`, `high` — backing-store resolution |
+| `max_pixels` | `2600000` | Backing-store budget in device pixels |
+| `show_walls` | `auto` | `auto` (only while drawing), `always`, `never` |
+| `wall_color` / `wall_width` | theme / `2` | Appearance of the drawn wall outline |
+
+**Choosing `over_plan`.** `normal` reads correctly on any plan and is the
+default. `screen` suits dark blueprints (it is a no-op over white). `multiply`
+suits white plans and is the most physically literal — a white floor under a red
+bulb really does look red — but it crushes a dark plan toward black.
+
+**Existing `glow` config still applies.** When a light has `glow` enabled, the
+field uses its shape, size, direction, colour and falloff, so cones, beams and
+ovals all diffuse and cast shadows through the new renderer. Lights without any
+glow config diffuse as a plain round pool of `radius`.
+
+Cost is modest: 12 lights against 30 wall segments with 5-sample soft shadows
+measures ~6.5 ms for a full solve and ~1.1 ms once the visibility polygons are
+cached (they are keyed on geometry only, so colour and brightness changes never
+re-solve). The card falls back to the classic renderer if a 2D canvas is
+unavailable.
+
 ### Glow Walls
 
 Glow walls are invisible line segments or boxes that block glow from expanding in certain directions — like physical walls in a room. They use 2D ray-casting to create realistic shadow masks.
@@ -624,6 +708,32 @@ glow_walls:
 ```
 
 Glow walls can also be configured in the visual editor's **Glow Walls** section.
+
+#### Drawing walls on the plan
+
+Typing four numbers per wall is a poor way to lay out a floor plan, so the editor
+can turn the preview into a drawing surface. Open the card editor, expand
+**Glow Walls**, and switch on **Draw walls on the plan**:
+
+| Gesture | Result |
+|---------|--------|
+| Drag on empty canvas | Draw a wall |
+| Release, then press at the same corner | Continue the run from there — trace a room in one gesture |
+| `Esc` | End the run (the next drag starts a fresh wall) |
+| Drag an endpoint | Move that end |
+| Drag a wall's body | Move the whole wall |
+| Long-press a wall, or hover + `Delete` | Remove it |
+| Hold `Alt` | Ignore snapping |
+| `Ctrl`/`Cmd` + `Z` | Undo the last wall edit |
+
+Snapping is **on** while drawing — endpoint-to-endpoint first, then 45° angles,
+then the grid. That polarity is deliberately the opposite of dragging lights
+(where `Alt` *enables* snap): an unclosed corner is invisible while you draw it
+and obvious later, when light leaks through the gap.
+
+Walls you draw are written back to `glow_walls` as ordinary line segments, so
+they stay editable as YAML. A `box` you drag an edge of is expanded into its four
+segments at that point, since its sides can then move independently.
 
 ---
 
