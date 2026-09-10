@@ -9971,6 +9971,20 @@ class SpatialLightColorCardEditor extends HTMLElement {
     };
     window.addEventListener('spatial-card-wall-delta', this._boundWallDelta);
 
+    // Keep the editor's idea of "is the wall editor open" in step with the
+    // card's. Without this, closing the editor left _wallDrawActive true, the
+    // next click re-broadcast a state the card was already in, and the card's
+    // dedupe guard dropped it -- so the button did nothing at all.
+    if (this._boundWallModeEcho) window.removeEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
+    this._boundWallModeEcho = (e) => {
+      const d = e.detail || {};
+      if (d.active) return;
+      if (!this._wallDrawActive) return;
+      this._wallDrawActive = false;
+      this._render();
+    };
+    window.addEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
+
     this._boundEditorKeyDown = (e) => {
       // Never steal undo/redo from text editing. This runs in the capture
       // phase on window, so check the event's deep target (composedPath()[0]
@@ -10091,6 +10105,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
     if (this._boundWallDelta) {
       window.removeEventListener('spatial-card-wall-delta', this._boundWallDelta);
       this._boundWallDelta = null;
+    }
+    if (this._boundWallModeEcho) {
+      window.removeEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
+      this._boundWallModeEcho = null;
     }
     this._positionHistory = [];
     this._positionRedoStack = [];
@@ -10710,6 +10728,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
          side. They collapse to a single column only when the SECTION (not the
          dialog) is too narrow to give each field a usable width, which is why
          .section is its own container below. */
+      .wall-draw-open-btn {
+        flex-shrink: 0;
+        border: 1px solid var(--primary-color, #03a9f4);
+        background: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+        border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600;
+        cursor: pointer; white-space: nowrap;
+      }
+      .wall-draw-open-btn:hover { filter: brightness(1.08); }
+      .wall-draw-open-btn:active { transform: scale(0.97); }
+
       .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
       @container sle-section (max-width: 400px) {
@@ -12067,9 +12096,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <div class="option-row">
               <div>
                 <div class="label">Draw walls on the plan</div>
-                <div class="sublabel">Opens a full-size editor. Drag to draw; starting on an existing corner attaches to it exactly, so runs join without gaps. <b>Shift</b>-drag a corner or a wall to move it. Long-press a wall (or hover + Delete) removes it. Esc ends a run, Alt ignores snapping.</div>
+                <div class="sublabel">Opens a full-size editor over the page &mdash; HA's preview pane is far too small to trace a plan in. Drag to draw; starting on an existing corner attaches to it exactly, so runs join without gaps. <b>Shift</b>-drag a corner or a wall to move it. Long-press a wall (or hover + Delete) removes it. Esc ends a run, Alt ignores snapping.</div>
               </div>
-              <ha-switch id="cfgWallDrawMode" ${this._wallDrawActive ? 'checked' : ''}></ha-switch>
+              <button class="wall-draw-open-btn" id="cfgWallDrawMode">
+                ${this._wallDrawActive ? 'Editor open' : 'Open editor'}
+              </button>
             </div>
             ${glowWalls.length > 0
               ? `<div class="wall-list">${glowWalls.map((w, i) => this._renderWallItem(w, i)).join('')}</div>`
@@ -13323,10 +13354,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // --- Draw walls on the plan ---
     const wallDrawSwitch = root.getElementById('cfgWallDrawMode');
     if (wallDrawSwitch) {
-      wallDrawSwitch.addEventListener('change', () => {
+      wallDrawSwitch.addEventListener('click', () => {
         // Editor-session state and a broadcast only — never config, for the
         // same reason edit-positions is not config.
-        this._wallDrawActive = wallDrawSwitch.checked;
+        this._wallDrawActive = true;
         if (this._wallDrawActive && this._editPositionsActive) {
           // The two modes both claim the canvas; only one can be armed.
           this._editPositionsActive = false;
