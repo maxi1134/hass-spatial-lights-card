@@ -817,8 +817,14 @@ Doors work on boxes and polylines too — the entity applies to every side. And
 in the wall editor an open door is drawn as a dashed line, so you can see the
 geometry without mistaking it for something that blocks.
 
-The editor's per-wall panel has a **Door sensor** picker and a **Blocks when**
-selector, and tells you the current verdict — *"Currently off — blocking
+The quickest way to make a door is inside the wall editor itself: **tap the
+wall** and the inspector below the plan shows *It's a door*, an entity picker
+and a *blocks when* selector, plus the live verdict. The selected wall is
+highlighted in gold, so on a plan with dozens of walls you can see exactly
+which one you're editing &mdash; far easier than finding it in a list.
+
+The editor form's per-wall panel has the same **Door sensor** picker and
+**Blocks when** selector, and tells you the current verdict — *"Currently off — blocking
 light."* — so you can check the wiring without leaving the dialog.
 
 #### Drawing walls on the plan
@@ -839,6 +845,7 @@ HA's editor preview pane is far too small to trace a floor plan in. **Done**
 | `Esc` | End the run (the next drag starts a fresh wall) |
 | **`Shift`**-drag a corner | Move that corner &mdash; **every wall meeting there moves with it**, so a traced room stays closed |
 | **`Shift`**-drag a wall's body | Move the whole wall |
+| **Tap** a wall | Select it &mdash; the inspector below the plan turns it into a door and picks the entity |
 | Long-press a wall, or hover + `Delete` | Remove it |
 | Hold `Alt` | Ignore snapping |
 | `Ctrl`/`Cmd` + `Z` | Undo the last wall edit |

@@ -16,13 +16,19 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.16.0 (fork-maxi1134)';
+  static BUILD = 'v1.17.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
   // one plan is measured once per dashboard. Values are {w,h}, null (failed),
   // or a Promise while the measurement is in flight.
   static _imageSizeCache = new Map();
+  /**
+   * Index of the wall selected in the wall editor. Static because HA replaces
+   * the preview card on every config change and the selection has to outlive
+   * that; the editor is a modal, so there is only ever one.
+   */
+  static _wallEditorSelection = null;
 
   constructor() {
     super();
@@ -2993,6 +2999,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._els.wallStage = this.shadowRoot.getElementById('wallEditorStage');
     this._els.wallCanvas = this.shadowRoot.getElementById('wallEditorCanvas');
     this._els.wallCount = this.shadowRoot.getElementById('wallEditorCount');
+    this._els.wallInspector = this.shadowRoot.getElementById('wallInspector');
     // Give the canvas the plan image's own aspect ratio before anything
     // measures it, so labels and the light field see the final geometry.
     this._applyBackgroundAspect();
@@ -4013,6 +4020,38 @@ class SpatialLightColorCard extends HTMLElement {
         position: absolute; inset: 0; width: 100%; height: 100%;
         display: block; pointer-events: none;
       }
+      .wall-inspector {
+        display: flex; flex-direction: column; gap: 8px;
+        width: 100%; max-width: 1400px;
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 10px; padding: 10px 12px;
+        color: #fff; font-size: 13px;
+        min-height: 22px;
+      }
+      .wall-inspector .wi-hint { color: rgba(255,255,255,0.45); font-size: 12px; }
+      .wall-inspector .wi-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .wall-inspector .wi-title { font-weight: 700; }
+      .wall-inspector .wi-coords { color: rgba(255,255,255,0.5); font-size: 12px; flex: 1; }
+      .wall-inspector .wi-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+      .wall-inspector .wi-door { display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap; }
+      .wall-inspector .wi-picker { min-width: 260px; flex: 1; }
+      .wall-inspector .wi-picker ha-entity-picker { display: block; width: 100%; }
+      .wall-inspector .wi-input,
+      .wall-inspector .wi-select {
+        background: rgba(0,0,0,0.35); color: #fff;
+        border: 1px solid rgba(255,255,255,0.2); border-radius: 6px;
+        padding: 6px 8px; font-size: 12px;
+      }
+      .wall-inspector .wi-input { width: 100%; }
+      .wall-inspector .wi-state { font-size: 12px; color: rgba(255,255,255,0.65); }
+      .wall-inspector .wi-btn {
+        border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.1);
+        color: #fff; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+      }
+      .wall-inspector .wi-btn:hover { background: rgba(255,255,255,0.18); }
+      .wall-inspector .wi-danger { border-color: rgba(255,120,120,0.5); color: #ffb4b4; }
+
       .wall-editor-hint {
         font-size: 11px; color: rgba(255,255,255,0.55); text-align: center;
         max-width: 900px; line-height: 1.6;
@@ -4492,6 +4531,7 @@ class SpatialLightColorCard extends HTMLElement {
              style="${bgStyle} aspect-ratio:${ar};">
           <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
+        <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">
           Drag to draw &mdash; starting on a corner attaches to it exactly &middot;
           <kbd>Esc</kbd> ends a run &middot;
@@ -4589,6 +4629,8 @@ class SpatialLightColorCard extends HTMLElement {
    */
   _exitWallMode() {
     if (!this._wallEditMode) return;
+    this._wallSelectedIndex = null;
+    SpatialLightColorCard._wallEditorSelection = null;
     this._wallEditMode = false;
     this._wallEditorId = null;
     this._wallChainAnchor = null;
@@ -5240,6 +5282,12 @@ class SpatialLightColorCard extends HTMLElement {
         });
       }
       this._requestWallEditorDraw();
+      if (this._wallSelectedIndex == null
+          && SpatialLightColorCard._wallEditorSelection != null
+          && this._wallList()[SpatialLightColorCard._wallEditorSelection]) {
+        this._wallSelectedIndex = SpatialLightColorCard._wallEditorSelection;
+      }
+      this._syncWallInspector();
     }
 
     // Reposition labels when hovering over lights (delegated, deferred to next
@@ -9098,6 +9146,21 @@ class SpatialLightColorCard extends HTMLElement {
       ctx.globalAlpha = 1;
     }
 
+    if (drawing && typeof this._wallSelectedIndex === 'number') {
+      const sel = walls[this._wallSelectedIndex];
+      if (sel) {
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.lineWidth = Math.max(3, lf.wall_width + 3);
+        ctx.strokeStyle = 'rgba(255,214,92,0.95)';
+        ctx.beginPath();
+        ctx.moveTo(sel.x1 / 100 * rect.width, sel.y1 / 100 * rect.height);
+        ctx.lineTo(sel.x2 / 100 * rect.width, sel.y2 / 100 * rect.height);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     if (drawing) {
       // Endpoint handles, so the user can see what is grabbable.
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
@@ -9335,6 +9398,9 @@ class SpatialLightColorCard extends HTMLElement {
         mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
         anchor: start,
       };
+      // Remember what the press landed on: pointerup uses it to select, and
+      // a stationary hold uses it to delete.
+      this._wallDrawState.overWall = hit ? hit.index : null;
       // Touch has no Shift, so a stationary hold on an existing wall must
       // still delete it. The pending draft stroke is discarded first.
       if (hit) this._armWallHoldDelete(hit.index, this._draftWalls.length - 1);
@@ -9375,6 +9441,168 @@ class SpatialLightColorCard extends HTMLElement {
     }
     if (best) return best;
     return this._snapWallPoint(pt, pt.rect, this._wallChainAnchor || null, -1, disableSnap);
+  }
+
+  /**
+   * Select a wall (or clear the selection) and refresh the inspector.
+   *
+   * Mirrored onto a static because HA replaces the preview card after every
+   * config change: without it, ticking "it's a door" would deselect the wall
+   * before you could choose an entity. Only one wall editor can be open at a
+   * time, so a single static is the right scope.
+   */
+  _selectWall(index) {
+    const walls = this._wallList();
+    const next = (typeof index === 'number' && walls[index]) ? index : null;
+    this._wallSelectedIndex = next;
+    SpatialLightColorCard._wallEditorSelection = next;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  /**
+   * Populate the wall editor's inspector for the selected wall.
+   *
+   * Built imperatively rather than through _renderAll, because re-rendering
+   * the card would destroy and recreate the open <dialog> on every selection.
+   */
+  _syncWallInspector() {
+    const host = this._els && this._els.wallInspector;
+    if (!host) return;
+    const walls = this._wallList();
+    const idx = this._wallSelectedIndex;
+    const w = (typeof idx === 'number') ? walls[idx] : null;
+
+    if (!w) {
+      host.innerHTML = '<div class="wi-hint">Tap a wall to make it a door</div>';
+      return;
+    }
+
+    const door = w._door || null;
+    const isDoor = !!(door && door.entity);
+    const state = isDoor && this._hass ? this._hass.states[door.entity] : null;
+    const blocking = this._wallBlocks(w);
+    const esc = (v) => this._escapeHtml(String(v == null ? '' : v));
+
+    host.innerHTML = `
+      <div class="wi-row">
+        <span class="wi-title">Wall ${idx + 1}</span>
+        <span class="wi-coords">(${Math.round(w.x1)}, ${Math.round(w.y1)}) &rarr; (${Math.round(w.x2)}, ${Math.round(w.y2)})</span>
+        <button class="wi-btn wi-danger" id="wiDelete">Delete</button>
+        <button class="wi-btn" id="wiClose">&times;</button>
+      </div>
+      <div class="wi-row">
+        <label class="wi-check">
+          <input type="checkbox" id="wiIsDoor" ${isDoor ? 'checked' : ''}>
+          <span>It's a door</span>
+        </label>
+        <div class="wi-door" id="wiDoorFields" style="display:${isDoor ? 'flex' : 'none'};">
+          <div class="wi-picker" id="wiPickerSlot"></div>
+          <select class="wi-select" id="wiBlocksWhen">
+            <option value="closed"${door && door.blocks_when === 'open' ? '' : ' selected'}>blocks when closed</option>
+            <option value="open"${door && door.blocks_when === 'open' ? ' selected' : ''}>blocks when open</option>
+          </select>
+          <span class="wi-state">${isDoor
+            ? (state ? `${esc(state.state)} &mdash; ${blocking ? 'blocking' : 'light passes'}` : 'entity not found &mdash; blocking')
+            : ''}</span>
+        </div>
+      </div>
+    `;
+
+    const close = host.querySelector('#wiClose');
+    if (close) close.addEventListener('click', () => this._selectWall(null));
+    const del = host.querySelector('#wiDelete');
+    if (del) {
+      del.addEventListener('click', () => {
+        const target = this._wallSelectedIndex;
+        this._selectWall(null);
+        if (typeof target === 'number') this._deleteWallAt(target);
+      });
+    }
+    const isDoorBox = host.querySelector('#wiIsDoor');
+    if (isDoorBox) {
+      isDoorBox.addEventListener('change', () => {
+        if (isDoorBox.checked) {
+          // Ticked with no entity yet: reveal the picker but write nothing,
+          // since a door without an entity would just be a solid wall.
+          host.querySelector('#wiDoorFields').style.display = 'flex';
+          this._mountWallEntityPicker();
+        } else {
+          this._applyWallDoor(null);
+        }
+      });
+    }
+    const when = host.querySelector('#wiBlocksWhen');
+    if (when) {
+      when.addEventListener('change', () => {
+        const cur = this._selectedWall();
+        const ent = cur && cur._door ? cur._door.entity : '';
+        if (ent) this._applyWallDoor({ entity: ent, blocks_when: when.value });
+      });
+    }
+    if (isDoor) this._mountWallEntityPicker();
+  }
+
+  _selectedWall() {
+    const walls = this._wallList();
+    const idx = this._wallSelectedIndex;
+    return (typeof idx === 'number') ? walls[idx] : null;
+  }
+
+  /**
+   * Put an ha-entity-picker in the inspector, falling back to a plain text
+   * field. The wall editor only opens from the card editor, where HA has
+   * already upgraded ha-entity-picker -- but a text field beats a blank space
+   * if that ever stops being true.
+   */
+  _mountWallEntityPicker() {
+    const slot = this._els && this._els.wallInspector && this._els.wallInspector.querySelector('#wiPickerSlot');
+    if (!slot || slot.dataset.mounted) return;
+    const w = this._selectedWall();
+    const current = (w && w._door && w._door.entity) || '';
+    const apply = (val) => {
+      const v = (val || '').trim();
+      const cur = this._selectedWall();
+      const when = (cur && cur._door && cur._door.blocks_when) || 'closed';
+      this._applyWallDoor(v ? { entity: v, blocks_when: when } : null);
+    };
+
+    if (typeof customElements !== 'undefined' && customElements.get('ha-entity-picker')) {
+      const picker = document.createElement('ha-entity-picker');
+      picker.hass = this._hass;
+      picker.allowCustomEntity = true;
+      picker.value = current;
+      picker.addEventListener('value-changed', (ev) => apply(ev.detail && ev.detail.value));
+      slot.appendChild(picker);
+    } else {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'wi-input';
+      input.placeholder = 'binary_sensor.door';
+      input.value = current;
+      input.addEventListener('change', () => apply(input.value));
+      slot.appendChild(input);
+    }
+    slot.dataset.mounted = '1';
+  }
+
+  /** Write the door config for the selected wall and report it to the editor. */
+  _applyWallDoor(door) {
+    const idx = this._wallSelectedIndex;
+    if (typeof idx !== 'number') return;
+    this._draftWalls = this._wallList().map((w) => ({ ...w }));
+    const w = this._draftWalls[idx];
+    if (!w) { this._draftWalls = null; return; }
+    const from = { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 };
+    const src = w._src;
+    const part = w._part;
+    w._door = door ? { entity: door.entity, blocks_when: door.blocks_when === 'open' ? 'open' : 'closed' } : null;
+    this._commitWalls({
+      op: 'update', src, part, from,
+      wall: from,
+      door: w._door,
+    });
+    this._syncWallInspector();
   }
 
   /**
@@ -9480,7 +9708,13 @@ class SpatialLightColorCard extends HTMLElement {
       if (Math.hypot(dxPx, dyPx) < minLen) {
         this._draftWalls.splice(st.index, 1);
         this._wallChainAnchor = null;
+        // The tap gesture was previously wasted. Use it to SELECT the wall
+        // under the pointer, which is the only practical way to attach a door
+        // to one wall out of dozens -- hunting it down in the editor's list is
+        // not.
+        const hitNow = st.overWall != null ? { index: st.overWall } : null;
         this._commitWalls(null);
+        this._selectWall(hitNow ? hitNow.index : null);
         e.preventDefault();
         return true;
       }
@@ -10506,23 +10740,25 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const isComposite = raw && !Array.isArray(raw) && typeof raw === 'object'
       && ((raw.width != null && raw.height != null) || Array.isArray(raw.points));
 
-    if (isComposite) {
-      // Explode into the same segments the normalizer produces, then edit the
-      // named one, so the geometry the user sees never jumps.
-      const parts = this._explodeWall(raw);
-      if (!parts.length) { this._wallHistory.pop(); return; }
-      const partIdx = parts.findIndex(p => String(p.part) === String(d.part));
-      const segs = parts.map(p => p.seg);
-      if (d.op === 'delete') {
+    if (d.op === 'delete') {
+      if (isComposite) {
+        // Explode into the same segments the normalizer produces, then drop
+        // the named one, so the geometry the user sees never jumps.
+        const parts = this._explodeWall(raw);
+        if (!parts.length) { this._wallHistory.pop(); return; }
+        const partIdx = parts.findIndex(p => String(p.part) === String(d.part));
+        const segs = parts.map(p => p.seg);
         if (partIdx >= 0) segs.splice(partIdx, 1);
-      } else if (partIdx >= 0) {
-        segs[partIdx] = { x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) };
+        walls.splice(idx, 1, ...segs);
+      } else {
+        walls.splice(idx, 1);
       }
-      walls.splice(idx, 1, ...segs);
-    } else if (d.op === 'delete') {
-      walls.splice(idx, 1);
-    } else {
-      walls[idx] = { x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) };
+    } else if (!this._applyOneWallUpdate(walls, d)) {
+      // Shared with the update-many path, so geometry AND door edits are
+      // written the same way whichever route they arrive by. Writing this
+      // inline is what silently dropped door config.
+      this._wallHistory.pop();
+      return;
     }
 
     this._fireConfigChanged();
@@ -10556,6 +10792,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
       x1: this._round2(item.wall.x1), y1: this._round2(item.wall.y1),
       x2: this._round2(item.wall.x2), y2: this._round2(item.wall.y2),
     };
+    // A door edit arrives on the same update op. `door: null` clears it;
+    // undefined means "geometry only, leave the door alone".
+    if (item.door !== undefined) {
+      if (item.door && item.door.entity) {
+        next.entity = item.door.entity;
+        if (item.door.blocks_when === 'open') next.blocks_when = 'open';
+      }
+    } else if (raw && !Array.isArray(raw) && typeof raw === 'object') {
+      if (typeof raw.entity === 'string' && raw.entity) next.entity = raw.entity;
+      if (raw.blocks_when === 'open') next.blocks_when = 'open';
+    }
 
     if (isComposite) {
       const parts = this._explodeWall(raw);
