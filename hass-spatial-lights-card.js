@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.15.0 (fork-maxi1134)';
+  static BUILD = 'v1.16.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -1013,6 +1013,16 @@ class SpatialLightColorCard extends HTMLElement {
   _normalizeGlowWalls(walls) {
     if (!Array.isArray(walls)) return [];
     const segments = [];
+    // A wall may be a DOOR: an entity decides whether it currently blocks
+    // light. Carried onto every emitted segment so a box or polyline door
+    // propagates to all four of its sides.
+    const doorOf = (wall) => {
+      if (!wall || typeof wall !== 'object' || Array.isArray(wall)) return null;
+      const entity = typeof wall.entity === 'string' && wall.entity.trim() ? wall.entity.trim() : '';
+      if (!entity) return null;
+      const when = typeof wall.blocks_when === 'string' ? wall.blocks_when.trim().toLowerCase() : '';
+      return { entity, blocks_when: when === 'open' ? 'open' : 'closed' };
+    };
     // `_src` is the index into the RAW config array and `_part` names which
     // edge of a box a segment came from. Drawing on the plan needs this to map
     // a picked segment back to the entry the user actually authored — a box
@@ -1034,6 +1044,7 @@ class SpatialLightColorCard extends HTMLElement {
       }
 
       if (typeof wall !== 'object') continue;
+      const door = doorOf(wall);
 
       // Polyline: {points: [[x,y], ...], closed?: bool}
       if (Array.isArray(wall.points) && wall.points.length >= 2) {
@@ -1041,11 +1052,11 @@ class SpatialLightColorCard extends HTMLElement {
           .map((pt) => Array.isArray(pt) ? [Number(pt[0]), Number(pt[1])] : null)
           .filter((pt) => pt && pt.every(Number.isFinite));
         for (let k = 0; k + 1 < pts.length; k++) {
-          segments.push({ x1: pts[k][0], y1: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1], _src: i, _part: k });
+          segments.push({ x1: pts[k][0], y1: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1], _src: i, _part: k, _door: door });
         }
         if (wall.closed && pts.length > 2) {
           const last = pts.length - 1;
-          segments.push({ x1: pts[last][0], y1: pts[last][1], x2: pts[0][0], y2: pts[0][1], _src: i, _part: last });
+          segments.push({ x1: pts[last][0], y1: pts[last][1], x2: pts[0][0], y2: pts[0][1], _src: i, _part: last, _door: door });
         }
         continue;
       }
@@ -1055,10 +1066,10 @@ class SpatialLightColorCard extends HTMLElement {
         const x = Number(wall.x), y = Number(wall.y);
         const w = Number(wall.width), h = Number(wall.height);
         if ([x, y, w, h].every(Number.isFinite)) {
-          segments.push({ x1: x, y1: y, x2: x + w, y2: y, _src: i, _part: 'top' });
-          segments.push({ x1: x + w, y1: y, x2: x + w, y2: y + h, _src: i, _part: 'right' });
-          segments.push({ x1: x + w, y1: y + h, x2: x, y2: y + h, _src: i, _part: 'bottom' });
-          segments.push({ x1: x, y1: y + h, x2: x, y2: y, _src: i, _part: 'left' });
+          segments.push({ x1: x, y1: y, x2: x + w, y2: y, _src: i, _part: 'top', _door: door });
+          segments.push({ x1: x + w, y1: y, x2: x + w, y2: y + h, _src: i, _part: 'right', _door: door });
+          segments.push({ x1: x + w, y1: y + h, x2: x, y2: y + h, _src: i, _part: 'bottom', _door: door });
+          segments.push({ x1: x, y1: y + h, x2: x, y2: y, _src: i, _part: 'left', _door: door });
         }
         continue;
       }
@@ -1068,11 +1079,70 @@ class SpatialLightColorCard extends HTMLElement {
         const x1 = Number(wall.x1), y1 = Number(wall.y1);
         const x2 = Number(wall.x2), y2 = Number(wall.y2);
         if ([x1, y1, x2, y2].every(Number.isFinite)) {
-          segments.push({ x1, y1, x2, y2, _src: i, _part: null });
+          segments.push({ x1, y1, x2, y2, _src: i, _part: null, _door: door });
         }
       }
     }
     return segments;
+  }
+
+  /**
+   * Is a door-controlled wall currently blocking light?
+   *
+   * The awkward part is that "open" is spelled differently per domain, and a
+   * door binary_sensor reads 'on' when the door is OPEN -- so a wall that
+   * blocks when the door is shut blocks on state 'off'. Getting that backwards
+   * would be a confusing default, hence the explicit table.
+   *
+   * An unavailable or unknown entity blocks: a wall is the safe assumption,
+   * and a plan that silently springs a hole because a sensor dropped off the
+   * network is worse than one that stays solid.
+   */
+  _wallBlocks(seg) {
+    const door = seg && seg._door;
+    if (!door || !door.entity) return true;
+    const st = this._hass && this._hass.states[door.entity];
+    if (!st) return true;
+    const state = String(st.state).toLowerCase();
+    if (state === 'unavailable' || state === 'unknown') return true;
+
+    const [domain] = door.entity.split('.');
+    let isOpen;
+    if (domain === 'cover') {
+      // 'opening' counts as open: light is already getting through.
+      isOpen = state === 'open' || state === 'opening';
+      if (!isOpen && Number.isFinite(Number(st.attributes && st.attributes.current_position))) {
+        isOpen = Number(st.attributes.current_position) > 0;
+      }
+    } else {
+      // binary_sensor (device_class door/window/garage/opening), switch,
+      // input_boolean, light: 'on' means open. 'open' accepted for anything
+      // reporting cover-style states.
+      isOpen = state === 'on' || state === 'open';
+    }
+    return door.blocks_when === 'open' ? isOpen : !isOpen;
+  }
+
+  /**
+   * Compact signature of which doors are currently blocking, for cache keys.
+   * Cheap to build and stable, so it can be recomputed per frame.
+   */
+  _wallDoorStateKey() {
+    const walls = this._config.glow_walls || [];
+    let sig = '';
+    for (let i = 0; i < walls.length; i++) {
+      if (walls[i] && walls[i]._door) sig += this._wallBlocks(walls[i]) ? '1' : '0';
+    }
+    return sig;
+  }
+
+  /** Entity ids that gate any wall, for change detection and cache keys. */
+  _wallDoorEntities() {
+    const out = [];
+    for (const w of (this._config.glow_walls || [])) {
+      if (w && w._door && w._door.entity && !out.includes(w._door.entity)) out.push(w._door.entity);
+    }
+    return out;
   }
 
   /**
@@ -1774,6 +1844,12 @@ class SpatialLightColorCard extends HTMLElement {
     // (its manual_control attribute changes as lights get touched).
     const alId = this._alSwitchId || (this._config.adaptive_lighting && this._config.adaptive_lighting.switch);
     if (alId && prev.states[alId] !== next.states[alId]) return true;
+    // Door-controlled walls: opening a door changes what the light reaches, so
+    // its sensor has to be watched or nothing would redraw.
+    const doors = this._wallDoorEntities();
+    for (let i = 0; i < doors.length; i++) {
+      if (prev.states[doors[i]] !== next.states[doors[i]]) return true;
+    }
     return false;
   }
 
@@ -8181,7 +8257,7 @@ class SpatialLightColorCard extends HTMLElement {
     const glowW = Math.max(8, Math.round(glowWRaw / 8) * 8);
     const glowH = Math.max(8, Math.round(glowHRaw / 8) * 8);
 
-    const versionKey = `${(pos.x * 10) | 0},${(pos.y * 10) | 0},${glowW | 0},${glowH | 0},${canvasW | 0},${canvasH | 0},${gc.shape},${gc.direction || 0},${this._wallConfigVersion || 0}`;
+    const versionKey = `${(pos.x * 10) | 0},${(pos.y * 10) | 0},${glowW | 0},${glowH | 0},${canvasW | 0},${canvasH | 0},${gc.shape},${gc.direction || 0},${this._wallConfigVersion || 0},${this._wallDoorStateKey()}`;
     const cached = this._wallMaskPerEntity[entityId];
     if (cached && cached.versionKey === versionKey) {
       // Reuse previous mask URL — skip all computation
@@ -8200,6 +8276,8 @@ class SpatialLightColorCard extends HTMLElement {
     const relevantWalls = [];
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
+      // A door standing open is not an occluder here either.
+      if (!this._wallBlocks(w)) continue;
       // Cohen–Sutherland style rejection: both endpoints on the same
       // side of the bounding box → wall is entirely outside glow reach
       if (w.x1 < pos.x - reachPctX && w.x2 < pos.x - reachPctX) continue;
@@ -8472,7 +8550,9 @@ class SpatialLightColorCard extends HTMLElement {
    * grid.
    */
   _prepareOccluders(rect) {
-    const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}`;
+    // The door states belong in the cache key: without them, opening a door
+    // would recompute nothing and the shadow would not move.
+    const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}|${this._wallDoorStateKey()}`;
     if (this._fieldOccluders && this._fieldOccluders.key === key) return this._fieldOccluders;
 
     let walls = this._draftWalls || this._config.glow_walls || [];
@@ -8498,6 +8578,8 @@ class SpatialLightColorCard extends HTMLElement {
       // degenerate sweep angles, so drop them here rather than guarding
       // every ray cast.
       if ((bx - ax) * (bx - ax) + (by - ay) * (by - ay) < 0.0625) continue;
+      // A door standing open is simply not an occluder.
+      if (!this._wallBlocks(w)) continue;
       segs.push({ ax, ay, bx, by });
     }
     this._fieldOccluders = { key, segs };
@@ -8693,7 +8775,8 @@ class SpatialLightColorCard extends HTMLElement {
    */
   _visibilityPolygonCached(em, segs, rect, cacheKey) {
     if (!this._visPolyCache) this._visPolyCache = new Map();
-    const key = `${cacheKey}|${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}`
+    const key = `${cacheKey}|${this._wallGeomVersion || 0}|${this._wallDoorStateKey()}`
+      + `|${rect.width | 0}x${rect.height | 0}`
       + `|${Math.round(em.x)},${Math.round(em.y)}|${em.sx},${em.sy}|${em.rot.toFixed(4)}|${em.shape}`;
     const hit = this._visPolyCache.get(key);
     if (hit) return hit;
@@ -8986,13 +9069,34 @@ class SpatialLightColorCard extends HTMLElement {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(0.5, lf.wall_width);
-    ctx.strokeStyle = lf.wall_color || (drawing ? 'rgba(120,190,255,0.95)' : 'rgba(160,170,185,0.5)');
+    const solidColor = lf.wall_color || (drawing ? 'rgba(120,190,255,0.95)' : 'rgba(160,170,185,0.5)');
+
+    // Solid walls and open doors are drawn separately: a door standing open
+    // still needs to be visible as geometry, but must not look like something
+    // that blocks light.
+    ctx.strokeStyle = solidColor;
+    ctx.setLineDash([]);
     ctx.beginPath();
     for (const w of walls) {
+      if (!this._wallBlocks(w)) continue;
       ctx.moveTo(w.x1 / 100 * rect.width, w.y1 / 100 * rect.height);
       ctx.lineTo(w.x2 / 100 * rect.width, w.y2 / 100 * rect.height);
     }
     ctx.stroke();
+
+    const openDoors = walls.filter((w) => !this._wallBlocks(w));
+    if (openDoors.length) {
+      ctx.setLineDash([6, 5]);
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      for (const w of openDoors) {
+        ctx.moveTo(w.x1 / 100 * rect.width, w.y1 / 100 * rect.height);
+        ctx.lineTo(w.x2 / 100 * rect.width, w.y2 / 100 * rect.height);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
 
     if (drawing) {
       // Endpoint handles, so the user can see what is grabbable.
@@ -9871,7 +9975,10 @@ class SpatialLightColorCard extends HTMLElement {
       yamlLines.push('glow_walls:');
       this._config.glow_walls.forEach((w) => {
         const r = (v) => Math.round(Number(v) * 100) / 100;
-        yamlLines.push(`${indent}- { x1: ${r(w.x1)}, y1: ${r(w.y1)}, x2: ${r(w.x2)}, y2: ${r(w.y2)} }`);
+        const door = w._door
+          ? `, entity: ${w._door.entity}${w._door.blocks_when === 'open' ? ', blocks_when: open' : ''}`
+          : '';
+        yamlLines.push(`${indent}- { x1: ${r(w.x1)}, y1: ${r(w.y1)}, x2: ${r(w.x2)}, y2: ${r(w.y2)}${door} }`);
       });
     }
 
@@ -11288,6 +11395,24 @@ class SpatialLightColorCardEditor extends HTMLElement {
       return Number.isFinite(n) ? n : 0;
     };
 
+    // Door metadata + a live readout, so "is this blocking right now?" is
+    // answerable without closing the editor.
+    const doorEntity = (!isArray && wall && typeof wall === 'object' && typeof wall.entity === 'string')
+      ? wall.entity : '';
+    const doorWhen = (!isArray && wall && typeof wall === 'object' && wall.blocks_when === 'open')
+      ? 'open' : 'closed';
+    let doorNote = '';
+    if (doorEntity) {
+      const st = this._hass && this._hass.states[doorEntity];
+      if (!st) {
+        doorNote = ' <b>Entity not found &mdash; treated as a solid wall.</b>';
+      } else {
+        const blocking = SpatialLightColorCard.prototype._wallBlocks.call(
+          { _hass: this._hass }, { _door: { entity: doorEntity, blocks_when: doorWhen } });
+        doorNote = ` Currently <b>${st.state}</b> &mdash; ${blocking ? 'blocking light' : 'letting light through'}.`;
+      }
+    }
+
     let summary, vals;
     if (isArray) {
       vals = { x1: num(wall[0]), y1: num(wall[1]), x2: num(wall[2]), y2: num(wall[3]) };
@@ -11303,11 +11428,23 @@ class SpatialLightColorCardEditor extends HTMLElement {
     return `
       <div class="wall-item" data-wall-index="${index}">
         <div class="wall-main">
-          <span class="wall-type">${typeLabel}</span>
+          <span class="wall-type">${typeLabel}${doorEntity ? ' &middot; door' : ''}</span>
           <span class="wall-summary">${summary}</span>
           <button class="entity-btn remove" data-wall-index="${index}" title="Remove">&times;</button>
         </div>
         <div class="wall-fields">
+          <div class="override-row" style="grid-column:1/-1;">
+            <label>Door sensor (optional)</label>
+            <ha-entity-picker class="wall-entity-picker" data-wall-index="${index}" data-no-domain-filter allow-custom-entity></ha-entity-picker>
+            <div class="sublabel">Leave empty for a permanent wall. With an entity, the wall only blocks light in the chosen state &mdash; so an open door lets light through.${doorNote}</div>
+          </div>
+          <div class="override-row">
+            <label>Blocks when</label>
+            <select data-wall-index="${index}" data-wall-key="blocks_when">
+              <option value="closed"${doorWhen === 'open' ? '' : ' selected'}>Closed / off</option>
+              <option value="open"${doorWhen === 'open' ? ' selected' : ''}>Open / on</option>
+            </select>
+          </div>
           ${isBox ? `
             <div class="two-col">
               <div class="override-row"><label>X (%)</label><input type="number" data-wall-index="${index}" data-wall-key="x" value="${vals.x}" step="1"></div>
@@ -13560,6 +13697,47 @@ class SpatialLightColorCardEditor extends HTMLElement {
         const v = parseFloat(inp.value);
         if (Number.isFinite(v)) wall[key] = v;
         this._fireConfigChanged();
+      });
+    });
+
+    // Door sensor per wall: which entity gates it, and in which state it
+    // blocks. An array-form wall is promoted to object form first, since
+    // shorthand has nowhere to put an entity.
+    const wallToObject = (idx) => {
+      let wall = this._config.glow_walls[idx];
+      if (Array.isArray(wall)) {
+        wall = { x1: wall[0], y1: wall[1], x2: wall[2], y2: wall[3] };
+        this._config.glow_walls[idx] = wall;
+      }
+      return wall;
+    };
+    root.querySelectorAll('.wall-entity-picker').forEach((picker) => {
+      const idx = parseInt(picker.dataset.wallIndex, 10);
+      if (isNaN(idx)) return;
+      const w = this._config.glow_walls && this._config.glow_walls[idx];
+      picker.value = (w && !Array.isArray(w) && typeof w.entity === 'string') ? w.entity : '';
+      const apply = (val) => {
+        if (!Array.isArray(this._config.glow_walls) || !this._config.glow_walls[idx]) return;
+        const wall = wallToObject(idx);
+        if (val) wall.entity = val;
+        else { delete wall.entity; delete wall.blocks_when; }
+        this._fireConfigChanged();
+        this._render();
+      };
+      picker.addEventListener('value-changed', (ev) => apply(ev.detail && ev.detail.value));
+      picker.addEventListener('change', () => apply(picker.value));
+    });
+    root.querySelectorAll('.wall-fields select[data-wall-key="blocks_when"]').forEach((sel) => {
+      const idx = parseInt(sel.dataset.wallIndex, 10);
+      if (isNaN(idx)) return;
+      sel.addEventListener('change', () => {
+        if (!Array.isArray(this._config.glow_walls) || !this._config.glow_walls[idx]) return;
+        const wall = wallToObject(idx);
+        // 'closed' is the default, so it need not be written.
+        if (sel.value === 'open') wall.blocks_when = 'open';
+        else delete wall.blocks_when;
+        this._fireConfigChanged();
+        this._render();
       });
     });
 

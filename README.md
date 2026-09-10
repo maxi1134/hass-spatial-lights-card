@@ -780,6 +780,47 @@ Glow walls can also be configured in the visual editor's **Glow Walls** section.
 >   show_walls: always
 > ```
 
+#### Doors — walls that open
+
+Give a wall an `entity` and it only blocks light in one state, so an open door
+lets light spill into the next room:
+
+```yaml
+glow_walls:
+  - { x1: 40, y1: 20, x2: 40, y2: 45, entity: binary_sensor.hallway_door }
+```
+
+A wall with no `entity` is permanent, as before.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `entity` | — | The entity that gates this wall. Any domain. |
+| `blocks_when` | `closed` | `closed` blocks while the entity reads closed/off; `open` inverts it |
+
+**What counts as open**, per domain:
+
+| Domain | Open when |
+|---|---|
+| `binary_sensor` (door, window, garage, opening) | state is `on` — a door sensor reads `on` when the door *is* open |
+| `switch`, `input_boolean`, `light` | state is `on` |
+| `cover` | state is `open` or `opening`, or `current_position > 0` |
+
+So `blocks_when: closed` (the default) means the wall blocks light when the
+door is shut — which is what you almost always want, and is why the default
+isn't simply "blocks when off".
+
+An **unavailable, unknown or missing** entity blocks. A wall is the safe
+assumption: a plan that silently springs a hole because a sensor dropped off
+the network is worse than one that stays solid.
+
+Doors work on boxes and polylines too — the entity applies to every side. And
+in the wall editor an open door is drawn as a dashed line, so you can see the
+geometry without mistaking it for something that blocks.
+
+The editor's per-wall panel has a **Door sensor** picker and a **Blocks when**
+selector, and tells you the current verdict — *"Currently off — blocking
+light."* — so you can check the wiring without leaving the dialog.
+
 #### Drawing walls on the plan
 
 Typing four numbers per wall is a poor way to lay out a floor plan, so the editor
