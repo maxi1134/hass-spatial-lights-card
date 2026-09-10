@@ -11,6 +11,12 @@ class SpatialLightColorCard extends HTMLElement {
   static COLOR_TOLERANCE = 30;
   // Tolerance (Kelvin) for grouping live temperatures and matching active temp presets.
   static TEMP_TOLERANCE = 100;
+  /**
+   * Build marker. Bumped whenever this fork changes, and printed to the
+   * console on load, because "is the browser serving a cached copy?" is
+   * otherwise unanswerable and wastes a debugging round trip every time.
+   */
+  static BUILD = 'fork-maxi1134 2026-09-10 wall-modal';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -5053,13 +5059,34 @@ class SpatialLightColorCard extends HTMLElement {
       if (overlay) {
         if (typeof overlay.showModal === 'function') {
           if (!overlay.open) {
-            try { overlay.showModal(); } catch (_) { /* already open */ }
+            try {
+              overlay.showModal();
+            } catch (err) {
+              // Never silent: a swallowed failure here looks exactly like
+              // "the modal just does not open" with nothing to go on.
+              console.warn('[spatial-lights-card] wall editor showModal() failed:', err);
+              overlay.setAttribute('open', '');
+            }
           }
         } else {
-          // No <dialog> support: fall back to the plain layered overlay, which
-          // still works wherever no ancestor creates a containing block.
+          console.warn('[spatial-lights-card] <dialog> unsupported; wall editor may be confined.');
           overlay.setAttribute('open', '');
         }
+        // Confirm it actually reached the top layer. If an ancestor still has
+        // it boxed in, the editor is unusable and the user needs to know why
+        // rather than see a mysteriously tiny panel.
+        requestAnimationFrame(() => {
+          if (!overlay.isConnected) return;
+          const box = overlay.getBoundingClientRect();
+          const vw = window.innerWidth || 0;
+          if (box.width > 0 && vw > 0 && box.width < vw * 0.9) {
+            console.warn(
+              `[spatial-lights-card] wall editor is confined to ${Math.round(box.width)}x`
+              + `${Math.round(box.height)} instead of the ${vw}px viewport - an ancestor is `
+              + 'acting as its containing block. Build: ' + SpatialLightColorCard.BUILD
+            );
+          }
+        });
         // Escape reaches the dialog before the card's key handler. The first
         // one should end the run in progress, not close the editor.
         overlay.addEventListener('cancel', (ev) => {
@@ -5084,8 +5111,11 @@ class SpatialLightColorCard extends HTMLElement {
         });
       }
       this._requestWallEditorDraw();
-      // Reposition labels when hovering over lights (delegated, deferred to next frame
-      // so :hover pseudo-class is fully applied before we check it)
+    }
+
+    // Reposition labels when hovering over lights (delegated, deferred to next
+    // frame so the :hover pseudo-class is fully applied before we check it).
+    if (this._els.canvas) {
       this._els.canvas.addEventListener('pointerover', (e) => {
         const light = e.target.closest('.light');
         if (light && e.pointerType === 'mouse') {
@@ -13553,8 +13583,11 @@ if (!window.customCards.some(c => c && c.type === 'spatial-light-color-card')) {
 }
 
 // Console banner — helps users include version info when reporting issues.
+// SpatialLightColorCard.BUILD is also readable from the console, which is the
+// quickest way to tell whether a browser or HACS is serving a cached copy:
+//   document.querySelector('spatial-light-color-card').constructor.BUILD
 console.info(
-  '%c spatial-light-color-card %c WIP ',
+  `%c spatial-light-color-card %c ${SpatialLightColorCard.BUILD} `,
   'color: #fff; background: #6366f1; font-weight: 700; border-radius: 3px 0 0 3px; padding: 2px 6px;',
   'color: #6366f1; background: #1e1b4b; border-radius: 0 3px 3px 0; padding: 2px 6px;'
 );
