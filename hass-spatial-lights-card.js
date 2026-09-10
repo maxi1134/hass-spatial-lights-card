@@ -2910,6 +2910,9 @@ class SpatialLightColorCard extends HTMLElement {
     // Cache refs once
     this._els.canvas = this.shadowRoot.getElementById('canvas');
     this._els.lightField = this.shadowRoot.getElementById('lightField');
+    // A render means this card is alive, so any teardown latch from a previous
+    // disconnect is stale; leaving it set would suppress a genuine user close.
+    this._wallEditorTeardown = false;
     this._els.wallOverlay = this.shadowRoot.getElementById('wallEditorOverlay');
     this._els.wallStage = this.shadowRoot.getElementById('wallEditorStage');
     this._els.wallCanvas = this.shadowRoot.getElementById('wallEditorCanvas');
@@ -4809,6 +4812,7 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** ---------- Events ---------- */
   connectedCallback() {
+    this._wallEditorTeardown = false;
     // Now that the tree is in a document, a wall editor that could not open
     // during a detached render can finally be promoted to the top layer.
     if (this._wallEditMode) {
@@ -5022,9 +5026,15 @@ class SpatialLightColorCard extends HTMLElement {
       this._els.wallCanvas.width = 0;
       this._els.wallCanvas.height = 0;
     }
-    if (this._els && this._els.wallOverlay && this._els.wallOverlay.open) {
-      try { this._els.wallOverlay.close(); } catch (_) { /* already gone */ }
-    }
+    // Deliberately NOT closing the dialog here. Removing the element from the
+    // document already takes it out of the top layer, and removal does not
+    // fire 'close' -- whereas calling close() DOES, which ran _exitWallMode
+    // and told the editor the user had dismissed the editor. HA replaces the
+    // preview card after every config change, so drawing a single wall tore
+    // the modal down: draw -> save -> preview replaced -> old card's teardown
+    // "closes" the dialog -> editor clears its state -> the replacement card
+    // asks the editor and is told wall mode is off.
+    this._wallEditorTeardown = true;
     if (this._wallHoldTimer) {
       clearTimeout(this._wallHoldTimer);
       this._wallHoldTimer = null;
@@ -5136,7 +5146,12 @@ class SpatialLightColorCard extends HTMLElement {
             this._invalidateWallGeometry();
           }
         });
-        overlay.addEventListener('close', () => this._exitWallMode());
+        overlay.addEventListener('close', () => {
+          // Only a real dismissal should leave wall mode. A close that came
+          // from DOM teardown or a re-render is not the user's decision.
+          if (this._wallEditorTeardown) return;
+          this._exitWallMode();
+        });
       }
 
       const done = this.shadowRoot.getElementById('wallEditorDone');
