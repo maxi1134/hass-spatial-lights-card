@@ -9865,11 +9865,44 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
   _editorStyles() {
     return `
-      :host { display: block; }
-      .card-config { display: flex; flex-direction: column; gap: 16px; }
+      /* The editor's width is set by Home Assistant's edit-card dialog, which
+         is typically much narrower than the viewport — so the responsive
+         breakpoints below are CONTAINER queries, not media queries. A media
+         query would read the window and lay out two columns inside a 400px
+         panel. */
+      :host { display: block; container-type: inline-size; container-name: sle-editor; }
+
+      .card-config {
+        display: grid; grid-template-columns: minmax(0, 1fr);
+        gap: 16px; align-items: start;
+      }
+
+      /* Widen the dialog and the settings flow into columns instead of every
+         field stretching to twice its useful width. Each section keeps its own
+         single-column internals, so nothing reflows inside them. */
+      @container sle-editor (min-width: 820px) {
+        .card-config { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @container sle-editor (min-width: 1260px) {
+        .card-config { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
+      /* Sections with lists, per-entity panels or a textarea stay full width —
+         they are tall and dense, and squeezing them into a narrow column is
+         worse than the whitespace it saves. */
+      @container sle-editor (min-width: 820px) {
+        #section-entities,
+        #section-canvas-elements,
+        #section-positions,
+        #section-presets,
+        #section-custom-css { grid-column: 1 / -1; }
+      }
       .section {
         border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
         border-radius: 8px; overflow: hidden;
+        /* Its own container so paired-field rows respond to the width the
+           section actually got, which differs from the editor's once the
+           sections themselves are laid out in columns. */
+        container-type: inline-size; container-name: sle-section;
       }
       .section-header {
         padding: 12px 16px; background: var(--secondary-background-color, #fafafa);
@@ -9990,8 +10023,20 @@ class SpatialLightColorCardEditor extends HTMLElement {
         background: var(--card-background-color, #fff); box-sizing: border-box;
         outline: none; cursor: pointer;
       }
+      /* Paired fields keep their fixed track count — auto-fit would invent
+         extra empty tracks on a wide panel and leave the pair huddled to one
+         side. They collapse to a single column only when the SECTION (not the
+         dialog) is too narrow to give each field a usable width, which is why
+         .section is its own container below. */
       .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+      @container sle-section (max-width: 400px) {
+        .two-col { grid-template-columns: minmax(0, 1fr); }
+        .three-col { grid-template-columns: 1fr 1fr; }
+      }
+      @container sle-section (max-width: 260px) {
+        .three-col { grid-template-columns: minmax(0, 1fr); }
+      }
       .slider-row { display: flex; align-items: center; gap: 12px; }
       .slider-row input[type="range"] {
         flex: 1; -webkit-appearance: none; appearance: none; height: 6px;
