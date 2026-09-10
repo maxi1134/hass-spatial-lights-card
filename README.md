@@ -675,7 +675,7 @@ light_field:
 | `ambient_reach` | `2.5` | Reach multiplier for that pass |
 | `quality` | `auto` | `auto`, `low`, `medium`, `high` — backing-store resolution |
 | `max_pixels` | `2600000` | Backing-store budget in device pixels |
-| `show_walls` | `auto` | `auto` (only while drawing), `always`, `never` |
+| `show_walls` | `auto` | `auto` (only while drawing), `always` (also on the live dashboard), `never` |
 | `wall_color` / `wall_width` | theme / `2` | Appearance of the drawn wall outline |
 
 **Choosing `over_plan`.** `normal` reads correctly on any plan and is the
@@ -726,6 +726,16 @@ glow_walls:
 ```
 
 Glow walls can also be configured in the visual editor's **Glow Walls** section.
+
+> **Seeing your walls afterwards.** Walls are invisible on a live dashboard by
+> default — they are occluders, not decoration. Set `light_field.show_walls:
+> always` to draw them permanently. That works even with `light_field` disabled
+> (i.e. using the classic per-light glow), so you can always check the geometry
+> you drew:
+> ```yaml
+> light_field:
+>   show_walls: always
+> ```
 
 #### Drawing walls on the plan
 

@@ -1114,7 +1114,18 @@ class SpatialLightColorCard extends HTMLElement {
    * geometry they are placing even with diffusion switched off.
    */
   get _fieldCanvasNeeded() {
-    return this._fieldActive || (this._wallEditMode && SpatialLightColorCard._canvas2dOk());
+    if (this._fieldActive) return true;
+    if (!SpatialLightColorCard._canvas2dOk()) return false;
+    // Also needed while drawing walls, so the user can see the geometry they
+    // are placing even with diffusion switched off...
+    if (this._wallEditMode) return true;
+    // ...and for `show_walls: always` with the LEGACY glow renderer, which has
+    // no canvas of its own. Without this, a user who drew walls on the legacy
+    // renderer had no way to see them outside edit mode at all, which reads as
+    // "the walls disappeared".
+    const lf = this._config && this._config.light_field;
+    return !!(lf && lf.show_walls === 'always'
+      && Array.isArray(this._config.glow_walls) && this._config.glow_walls.length);
   }
 
   /** Memoized feature test — a card in a context without 2D canvas falls back. */
@@ -8439,8 +8450,10 @@ class SpatialLightColorCard extends HTMLElement {
     const lf = this._config.light_field;
     const mode = lf.show_walls;
     const drawing = !!this._wallEditMode;
-    if (mode === 'never' && !drawing) return;
-    if (mode === 'auto' && !drawing) return;
+    // 'always' draws them on the live dashboard too; 'auto' only while the
+    // user is actively placing them; 'never' not at all (edit mode still
+    // shows them, or drawing would be blind).
+    if (!drawing && mode !== 'always') return;
 
     const walls = this._draftWalls || this._config.glow_walls || [];
     if (!walls.length) return;
