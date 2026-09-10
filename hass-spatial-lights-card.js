@@ -2907,7 +2907,7 @@ class SpatialLightColorCard extends HTMLElement {
           this._updateAllGlows();
           // Geometry changed, so every cached occluder set and polygon is
           // stale — force past the coalescing guard.
-          this._requestLightFieldDraw(true);
+          this._requestLightFieldDraw();
           return;
         }
         this._glowResizeLast = now;
@@ -2915,7 +2915,7 @@ class SpatialLightColorCard extends HTMLElement {
         this._glowResizeTimer = setTimeout(() => {
           this._glowResizeTimer = null;
           this._updateAllGlows();
-          this._requestLightFieldDraw(true);
+          this._requestLightFieldDraw();
         }, 150);
       });
       this._canvasObserver.observe(this._els.canvas);
@@ -4528,7 +4528,7 @@ class SpatialLightColorCard extends HTMLElement {
           if (this._els.colorWheel) this._requestColorWheelDraw(true);
           this._refreshEntityIcons();
           this._updateAllGlows();
-          this._requestLightFieldDraw(true);
+          this._requestLightFieldDraw();
         }
       };
       document.addEventListener('visibilitychange', this._boundVisibilityChange);
@@ -7860,7 +7860,7 @@ class SpatialLightColorCard extends HTMLElement {
   _invalidateLightField() {
     this._fieldOccluders = null;
     if (this._visPolyCache) this._visPolyCache.clear();
-    this._requestLightFieldDraw(true);
+    this._requestLightFieldDraw();
   }
 
   /**
@@ -7897,15 +7897,17 @@ class SpatialLightColorCard extends HTMLElement {
    * the "already pending" guard would then deadlock every later request —
    * including the one the visibilitychange handler fires on the way back.
    * Whichever callback wins cancels the other.
+   *
+   * There is no `force` parameter: every draw is a full repaint from current
+   * state, so coalescing two requests into one loses nothing. An earlier
+   * version tracked a sticky force flag that nothing ever read.
    */
-  _requestLightFieldDraw(force) {
+  _requestLightFieldDraw() {
     if (!this._fieldCanvasNeeded || this._fieldFailed) return;
-    if (force) this._lightFieldPendingForce = true;
     if (this._lightFieldFrame != null || this._lightFieldTimer != null) return;
 
     const run = () => {
       this._clearLightFieldSchedule();
-      this._lightFieldPendingForce = false;
       try {
         this._renderLightField();
       } catch (err) {
@@ -8098,9 +8100,21 @@ class SpatialLightColorCard extends HTMLElement {
       gradRy = 0.7;
     }
 
+    // Cached here rather than recomputed per sweep; the polygon solver uses it
+    // as the occluder reach bound.
+    let footprintMaxR = Math.SQRT2;
+    if (footprint) {
+      let m = 0;
+      for (const v of footprint) {
+        const d = Math.hypot(v[0], v[1]);
+        if (d > m) m = d;
+      }
+      if (m > 0) footprintMaxR = m;
+    }
+
     return {
       x, y, rot, sx: q(sx), sy: q(sy),
-      centred, disc, footprint, linear, alpha, falloff, stops, shape,
+      centred, disc, footprint, footprintMaxR, linear, alpha, falloff, stops, shape,
       gradRx, gradRy,
     };
   }
@@ -8199,7 +8213,13 @@ class SpatialLightColorCard extends HTMLElement {
     // Map occluders into the local frame and drop anything out of reach.
     // Exact point/segment distance, not a bounding box: the old bbox test
     // under-reached directional shapes and silently dropped real occluders.
-    const maxR = em.disc ? 1 : Math.SQRT2;
+    // Reach bound must come from the ACTUAL footprint, not an assumed unit box.
+    // SQRT2 is right for the trapezoid/rectangle footprints (vertices at
+    // [+-1, 1]) but _normalizeCustomShape clamps custom_shape radii to [0, 2],
+    // so a `shape: custom` footprint can reach local radius 2 — and any wall
+    // between SQRT2 and that was culled here while _rayVsFootprint still
+    // returned the full radius, drawing the polygon straight through it.
+    const maxR = em.disc ? 1 : (em.footprintMaxR || Math.SQRT2);
     const local = [];
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
@@ -8834,7 +8854,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._wallMaskPerEntity = {};
     if (this._wallMaskCache) this._wallMaskCache.clear();
     this._fieldOccluders = null;
-    this._requestLightFieldDraw(true);
+    this._requestLightFieldDraw();
     if (!this._fieldActive) this._updateAllGlows();
   }
 
