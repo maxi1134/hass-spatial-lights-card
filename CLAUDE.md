@@ -265,6 +265,23 @@ It is a **`<dialog>` opened with `showModal()`**, NOT a `position: fixed` div. T
 
 **Right-click deletes a wall (mouse only).** Handled in the POINTERDOWN handlers, not on `contextmenu`: only pointerdown carries both `pointerType` and `button`, so "mouse only" is a fact rather than a guess -- Android's long-press raises `contextmenu` with nothing to distinguish it from a real right-click, and binding there would delete a wall twice over since the hold timer already handles touch. It also fixed a live bug: the overlay stage's pointerdown listener had NO button guard, so a right-click was starting a draw. `_handleWallRightClick` repairs the selection index before removing, since indices shift down past the removal.
 
+**The mode survives the preview rebuild, and that takes a handshake field.** HA recreates the preview
+card on EVERY config change — including the one a light-drag commit causes — and the rebuilt card
+asks any live editor for state via `spatial-card-preview-hello`. That reply carried `editPositions` and
+`wallActive` but NOT the mode, so dropping a lamp flipped the modal straight back to Walls. The editor
+now remembers `_wallDrawMode`, hands it back on the reply, and updates it when the card's own header
+switch broadcasts a change — the card's wall-mode handler dedupes on `active`+`editorId`, so that echo
+cannot loop.
+
+**Sizing: the stage's HEIGHT drives, the width follows from the ratio.** `height: min(95vh - chrome,
+95vw / ar)` with an `aspect-ratio` means the width is derived and cannot disagree with the plan's shape;
+capping the width instead let `max-height` fight `aspect-ratio` and skewed it. `--we-chrome` is
+MEASURED by `_sizeWallEditor`, not assumed: the wall inspector appears and disappears with the
+selection, so the non-stage height is not a constant. The dialog is `width: fit-content` so a portrait
+plan no longer sits in a band of empty backdrop, and the hint line carries `width: 0; min-width: 100%`
+so its max-content width does not set the dialog's — without that a 1:2 plan got a 916px dialog around
+a 287px stage.
+
 **The modal has two modes.** `_wallEditorMode` is `'walls'` or `'lights'`, arriving on the `spatial-card-wall-mode` event's `mode` field and switchable from the header. In lights mode the canvas light handles become the subject: bigger, labelled, and hit-tested by `_hitTestLightOnStage` (they are canvas drawings, not DOM markers, so hit testing is ours). Dragging writes `_config.positions` and commits on pointerup over the EXISTING `spatial-card-positions-changed` channel the editor already listens on, so no new protocol. Positions feed the field's emitter, so a drag clears `_fieldOccluders` and `_visPolyCache`.
 
 **List selection highlights the plan.** The editor's `toggleExpand` broadcasts `spatial-card-highlight-entity`; the card honours it only inside the editor preview and toggles `.light.editor-highlight` (gold, deliberately not the selection colour). `_applyEditorHighlight` re-runs after every `_renderAll`, since that rebuilds the markers.

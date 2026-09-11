@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.25.1 (fork-maxi1134)';
+  static BUILD = 'v1.26.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -4384,9 +4384,11 @@ class SpatialLightColorCard extends HTMLElement {
          escape. Top-layer elements ignore ancestor containing blocks,
          overflow and stacking entirely. */
       .wall-editor-overlay {
-        border: 0; margin: 0; padding: 14px;
-        max-width: none; max-height: none;
-        width: 100vw; height: 100vh;
+        border: 0; margin: auto; padding: 14px;
+        /* 95% of the viewport at most, in both axes, and only as wide as the
+           stage inside it actually needs. */
+        width: fit-content; height: auto;
+        max-width: 95vw; max-height: 95vh;
         position: fixed; inset: 0;
         background: rgba(0,0,0,0.9); backdrop-filter: blur(10px);
         color: #fff;
@@ -4402,7 +4404,7 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-editor-overlay::backdrop { background: rgba(0,0,0,0.6); }
       .wall-editor-head {
         display: flex; align-items: center; gap: 14px; width: 100%;
-        max-width: 1400px; padding: 0 4px;
+        padding: 0 4px; box-sizing: border-box;
       }
       .wall-editor-title { font-size: 15px; font-weight: 600; color: #fff; }
       .wall-editor-count { font-size: 12px; color: rgba(255,255,255,0.6); flex: 1; }
@@ -4425,9 +4427,16 @@ class SpatialLightColorCard extends HTMLElement {
          wide plan fills the width and a tall one fills the height. */
       .wall-editor-stage {
         position: relative;
-        max-width: min(96vw, 1400px);
-        max-height: calc(100vh - 130px);
-        width: 96vw;
+        /* As large as the plan's own ratio allows inside 95% of the viewport.
+           Width is computed from the height budget rather than pinned, so a
+           tall plan stops being given width it cannot use -- which is what
+           left a portrait plan floating in a band of empty backdrop. The
+           second term is the width a stage of that height would need, and min
+           picks whichever limit binds. --we-ar is the plan ratio as a plain
+           number, emitted beside the aspect-ratio so it can be used in calc. */
+        height: min(calc(95vh - var(--we-chrome, 150px)), calc(95vw / var(--we-ar, 1.6)));
+        width: auto;
+        max-width: 95vw;
         background-color: #f4f1ea;
         border: 1px solid rgba(255,255,255,0.18);
         border-radius: 6px;
@@ -4497,6 +4506,10 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-editor-hint {
         font-size: 11px; color: rgba(255,255,255,0.55); text-align: center;
         max-width: 900px; line-height: 1.6;
+        /* Zero intrinsic width, full rendered width: the hint is a long line,
+           and without this its max-content width sets the dialog's, so a
+           narrow portrait plan got a dialog three times wider than its stage. */
+        width: 0; min-width: 100%; box-sizing: border-box; white-space: normal;
       }
       .wall-editor-hint kbd {
         background: rgba(255,255,255,0.14); border-radius: 4px; padding: 1px 5px;
@@ -4889,7 +4902,7 @@ class SpatialLightColorCard extends HTMLElement {
           <button class="wall-editor-btn" id="wallEditorDone">Done</button>
         </div>
         <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
-             style="${bgStyle} aspect-ratio:${ar};">
+             style="${bgStyle} aspect-ratio:${ar}; --we-ar:${this._wallEditorAspectNumber()};">
           <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
@@ -4902,6 +4915,46 @@ class SpatialLightColorCard extends HTMLElement {
             + '<kbd>Alt</kbd> ignores snapping'}</div>
       </dialog>
     `;
+  }
+
+  /**
+   * Tell the stage how much height everything else in the dialog is using, so
+   * it can size itself against the remainder. Measured rather than assumed:
+   * the wall inspector appears and disappears with the selection, so the
+   * chrome height is not a constant, and a stale guess either wastes space or
+   * pushes the dialog past 95vh.
+   */
+  _sizeWallEditor() {
+    const dlg = this.shadowRoot && this.shadowRoot.getElementById('wallEditorOverlay');
+    const stage = this.shadowRoot && this.shadowRoot.getElementById('wallEditorStage');
+    if (!dlg || !stage || !dlg.open) return;
+    let chrome = 0;
+    for (const child of dlg.children) {
+      if (child === stage) continue;
+      chrome += child.getBoundingClientRect().height;
+    }
+    const cs = getComputedStyle(dlg);
+    chrome += parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    // One gap per gap, i.e. one fewer than the number of children.
+    const gap = parseFloat(cs.rowGap || cs.gap) || 0;
+    chrome += gap * Math.max(0, dlg.children.length - 1);
+    const next = `${Math.ceil(chrome)}px`;
+    if (dlg.style.getPropertyValue('--we-chrome') !== next) {
+      dlg.style.setProperty('--we-chrome', next);
+    }
+  }
+
+  /**
+   * The same ratio as a plain number, which CSS calc() needs: aspect-ratio
+   * accepts "W / H" but calc cannot multiply by it.
+   */
+  _wallEditorAspectNumber() {
+    const parts = String(this._wallEditorAspect()).split('/');
+    const w = parseFloat(parts[0]);
+    const h = parseFloat(parts[1]);
+    return (Number.isFinite(w) && Number.isFinite(h) && h > 0)
+      ? Math.round((w / h) * 1e4) / 1e4
+      : 1.6;
   }
 
   /** The stage must match the plan's shape, or drawn walls would be skewed. */
@@ -5106,6 +5159,7 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _requestWallEditorDraw() {
+    this._sizeWallEditor();
     if (!this._wallEditMode) return;
     if (this._wallEditorFrame != null) return;
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
@@ -5470,7 +5524,7 @@ class SpatialLightColorCard extends HTMLElement {
         // is invoked synchronously during dispatch).
         window.dispatchEvent(new CustomEvent('spatial-card-preview-hello', {
           detail: {
-            reply: (editorId, active, wallActive) => {
+            reply: (editorId, active, wallActive, wallMode) => {
               this._editPositionsMode = !!active;
               this._editorId = active ? editorId : null;
               // The preview card is recreated on every config change, so wall
@@ -5480,7 +5534,11 @@ class SpatialLightColorCard extends HTMLElement {
               // does not exist yet. Flag it for a re-render below.
               this._wallEditMode = !!wallActive;
               this._wallEditorId = wallActive ? editorId : null;
-              if (wallActive) this._wallModeNeedsRender = true;
+              if (wallActive) {
+                // Restore the MODE as well as the fact of being open.
+                this._wallEditorMode = (wallMode === 'lights') ? 'lights' : 'walls';
+                this._wallModeNeedsRender = true;
+              }
             },
           },
         }));
@@ -5735,6 +5793,13 @@ class SpatialLightColorCard extends HTMLElement {
       const setMode = (mode) => {
         if (this._wallEditorMode === mode) return;
         this._wallEditorMode = mode;
+        // Keep the editor's memory in step, or the next preview-card rebuild
+        // restores whichever mode the editor last opened.
+        if (typeof window !== 'undefined' && this._wallEditorId) {
+          window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
+            detail: { editorId: this._wallEditorId, active: true, mode },
+          }));
+        }
         this._wallSelectedIndex = null;
         SpatialLightColorCard._wallEditorSelection = null;
         this._lightStageSelected = null;
@@ -9861,6 +9926,9 @@ class SpatialLightColorCard extends HTMLElement {
   _syncWallInspector() {
     const host = this._els && this._els.wallInspector;
     if (!host) return;
+    // Showing or clearing the inspector changes the dialog's chrome height, so
+    // the stage has to be re-measured against the new remainder.
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => this._sizeWallEditor());
 
     if (this._wallEditorMode === 'lights') {
       const id = this._lightStageSelected;
@@ -10811,7 +10879,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // says hello and gets the current edit-mode state back synchronously.
     this._boundPreviewHello = (e) => {
       if (e.detail && typeof e.detail.reply === 'function') {
-        e.detail.reply(this._editorId, this._editPositionsActive, this._wallDrawActive);
+        // The mode goes back too. HA recreates the preview card on EVERY
+        // config change, including the one a light-drag commit causes, so
+        // without this the rebuilt card defaults to 'walls' and the modal
+        // flips out of Lights the instant you drop a lamp.
+        e.detail.reply(this._editorId, this._editPositionsActive, this._wallDrawActive,
+          this._wallDrawMode === 'lights' ? 'lights' : 'walls');
       }
     };
     window.addEventListener('spatial-card-preview-hello', this._boundPreviewHello);
@@ -10835,7 +10908,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
     if (this._boundWallModeEcho) window.removeEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
     this._boundWallModeEcho = (e) => {
       const d = e.detail || {};
-      if (d.active) return;
+      if (d.active) {
+        // The card's own Walls/Lights switch is authoritative while the modal
+        // is open; remember it so the next handshake restores the same mode.
+        if (d.mode === 'lights' || d.mode === 'walls') this._wallDrawMode = d.mode;
+        return;
+      }
       if (!this._wallDrawActive) return;
       this._wallDrawActive = false;
       this._render();
@@ -14484,6 +14562,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
             detail: { editorId: this._editorId, active: false },
           }));
         }
+        this._wallDrawMode = 'walls';
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: this._wallDrawActive, mode: 'walls' },
         }));
@@ -14506,6 +14585,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
             detail: { editorId: this._editorId, active: false },
           }));
         }
+        this._wallDrawMode = 'lights';
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: true, mode: 'lights' },
         }));

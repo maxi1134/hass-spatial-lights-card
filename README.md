@@ -1012,6 +1012,11 @@ Open it from the card editor, from either end:
 A **Walls / Lights** switch in its header moves between the two modes without
 closing it, and **Done** (or a second `Esc`) closes it.
 
+It sizes itself to your plan: at most 95% of the viewport in either
+direction, as tall as will fit, and only as wide as the plan's own shape
+needs — so a portrait plan gets a portrait editor rather than a narrow strip
+in the middle of a wide empty one.
+
 ### Drawing walls
 
 Typing four numbers per wall is a poor way to lay out a floor plan, so the
