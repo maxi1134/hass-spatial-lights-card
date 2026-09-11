@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.21.0 (fork-maxi1134)';
+  static BUILD = 'v1.22.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -1453,29 +1453,33 @@ class SpatialLightColorCard extends HTMLElement {
    * gradient reads left to right -- so the plain slider plumbing needs no
    * reversing. Saturation is `100 - tint`.
    */
-  _colorBarsHTML(avgState) {
+  _colorBarsHTML(avgState, tempRange) {
     const rgb = Array.isArray(avgState && avgState.color) ? avgState.color : [255, 165, 0];
     const hsv = SpatialLightColorCard.rgbToHsv(rgb[0], rgb[1], rgb[2]);
     const hue = Math.round(hsv.h);
     const tint = Math.round(100 - hsv.s);
     const huePct = (hue / 359) * 100;
+    const bright = Number.isFinite(avgState && avgState.brightness) ? avgState.brightness : 128;
+    const brightPct = Math.min(100, Math.max(0, (bright / 255) * 100));
+    const range = tempRange || { min: 2000, max: 6500 };
+    const temp = this._clampTemperature(
+      Number.isFinite(avgState && avgState.temperature) ? avgState.temperature : 4000, range);
+    const tempPct = (range.max > range.min)
+      ? Math.min(100, Math.max(0, ((temp - range.min) / (range.max - range.min)) * 100))
+      : 0;
+    const bar = (cls, id, min, max, value, pct, label, extra = '') => `
+          <div class="color-bar-slot">
+            <input type="range" class="color-bar-input ${cls}" id="${id}"
+                   min="${min}" max="${max}" value="${value}" aria-label="${label}"
+                   style="--slider-percent:${pct}%;--slider-ratio:${pct / 100};${extra}">
+          </div>`;
     return `
         <div class="color-bars" id="colorBars">
-          <div class="color-bar-slot">
-            <div class="color-bar preview" id="colorPreviewBar" role="img"
-                 aria-label="Current color" style="--bar-preview:rgb(${rgb.join(',')});"></div>
-          </div>
-          <div class="color-bar-slot">
-            <input type="range" class="color-bar-input tint" id="tintSlider"
-                   min="0" max="100" value="${tint}"
-                   aria-label="Saturation" aria-valuetext="${100 - tint}% saturated"
-                   style="--bar-hue:${hue};--slider-percent:${tint}%;--slider-ratio:${tint / 100};">
-          </div>
-          <div class="color-bar-slot">
-            <input type="range" class="color-bar-input hue" id="hueSlider"
-                   min="0" max="359" value="${hue}" aria-label="Hue"
-                   style="--slider-percent:${huePct}%;--slider-ratio:${huePct / 100};">
-          </div>
+          ${bar('brightness', 'brightnessSlider', 0, 255, Math.round(bright), brightPct,
+                'Brightness', `--bar-preview:rgb(${rgb.join(',')});`)}
+          ${bar('tint', 'tintSlider', 0, 100, tint, tint, 'Saturation', `--bar-hue:${hue};`)}
+          ${bar('hue', 'hueSlider', 0, 359, hue, huePct, 'Hue')}
+          ${bar('temp', 'temperatureSlider', range.min, range.max, temp, tempPct, 'Color temperature')}
         </div>`;
   }
 
@@ -3267,7 +3271,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._els.temperatureSlider = this.shadowRoot.getElementById('temperatureSlider');
     this._els.temperatureValue = this.shadowRoot.getElementById('temperatureValue');
     this._els.colorBars = this.shadowRoot.getElementById('colorBars');
-    this._els.colorPreviewBar = this.shadowRoot.getElementById('colorPreviewBar');
     this._els.hueSlider = this.shadowRoot.getElementById('hueSlider');
     this._els.tintSlider = this.shadowRoot.getElementById('tintSlider');
     this._els.yamlModal = this.shadowRoot.getElementById('yamlModal');
@@ -3999,6 +4002,11 @@ class SpatialLightColorCard extends HTMLElement {
         cursor: pointer; touch-action: none;
       }
       .color-bar-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+      /* Capability gating sets the disabled property on the brightness and
+         temperature bars individually (a light may do colour but not
+         temperature), so they mute on their own rather than via the
+         whole-block .disabled class. */
+      .color-bar-input:disabled { opacity: 0.4; cursor: not-allowed; }
       /* Literal stops rather than var()-driven ones: iOS caches var()-resolved
          gradients on pseudo-elements and the spectrum would stop updating. */
       /* Vendor track pseudo-elements get their OWN rules, never a shared
@@ -4014,6 +4022,31 @@ class SpatialLightColorCard extends HTMLElement {
         height: var(--color-bar-h, 34px); border-radius: 9px;
         background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
           #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
+      }
+      /* Brightness: the bar carries the light's CURRENT colour, so the whole
+         row doubles as the preview it replaced. The axis is position only --
+         no ramp -- because a ramp would read as a second colour control. */
+      .color-bar-input.brightness::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      .color-bar-input.brightness::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      /* Temperature: the same warm-to-cool ramp the old slider used, in the
+         bar shape. A visual affordance, not a precise readout. */
+      .color-bar-input.temp::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
+          #87ceeb 70%, #4d9fff 100%);
+      }
+      .color-bar-input.temp::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
+          #87ceeb 70%, #4d9fff 100%);
       }
       .color-bar-input.tint::-webkit-slider-runnable-track {
         height: var(--color-bar-h, 34px); border-radius: 9px;
@@ -4043,7 +4076,6 @@ class SpatialLightColorCard extends HTMLElement {
       .color-bars.disabled {
         opacity: 0.35; pointer-events: none; filter: grayscale(0.7);
       }
-      .slider:disabled { opacity: 0.4; cursor: not-allowed; }
       .controls-floating.no-rgb-support .presets-area .color-preset,
       .controls-below.no-rgb-support .presets-area .color-preset {
         opacity: 0.35; pointer-events: none;
@@ -4137,8 +4169,6 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .effect-preset:hover .effect-label { opacity: 1; }
 
-      .slider-group { display:flex; flex-direction:column; gap:10px; min-width: 0; width: 100%; }
-      .slider-row { display:flex; align-items:center; gap:8px; width:100%; padding: 2px 0; }
 
       /* Power toggle: group on/off for the controlled lights. Anchors the
          presets row (beside the wheel on mobile, under the sliders on
@@ -4166,68 +4196,6 @@ class SpatialLightColorCard extends HTMLElement {
         box-shadow: 0 0 0 2px var(--accent-primary, #6366f1), 0 0 0 4px color-mix(in srgb, var(--accent-primary) 35%, transparent);
       }
 
-      .slider {
-        flex:1; -webkit-appearance:none; appearance:none;
-        --slider-height: 24px;
-        --slider-thumb-size: 26px;
-        --slider-track-radius: 9999px;
-        --slider-percent: 50%;
-        --slider-ratio: 0.5;
-        --slider-fill: var(--accent-primary);
-        height: var(--slider-height);
-        border-radius: var(--slider-track-radius);
-        background:
-          linear-gradient(to right, var(--slider-fill) 0%, var(--slider-fill) 100%),
-          linear-gradient(to right, var(--slider-track, var(--surface-tertiary)) 0%, var(--slider-track, var(--surface-tertiary)) 100%);
-        background-size:
-          calc((100% - var(--slider-thumb-size)) * var(--slider-ratio) + (var(--slider-thumb-size) / 2)) 100%,
-          100% 100%;
-        background-repeat: no-repeat, no-repeat;
-        background-position: left center, left center;
-        outline:none; position:relative; cursor:pointer;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.12), var(--shadow-sm);
-      }
-      .slider.temperature {
-        background:
-          linear-gradient(to right,
-            rgba(255,255,255,0.18) 0%,
-            rgba(255,255,255,0.18) 100%),
-          linear-gradient(to right,
-            #ff9944 0%,
-            #ffd480 30%,
-            #ffffff 50%,
-            #87ceeb 70%,
-            #4d9fff 100%),
-          linear-gradient(to right, var(--slider-track, var(--surface-tertiary)) 0%, var(--slider-track, var(--surface-tertiary)) 100%);
-        background-size:
-          calc((100% - var(--slider-thumb-size)) * var(--slider-ratio) + (var(--slider-thumb-size) / 2)) 100%,
-          100% 100%,
-          100% 100%;
-        background-repeat: no-repeat, no-repeat, no-repeat;
-        background-position: left center, left center, left center;
-      }
-      .slider::-webkit-slider-thumb {
-        -webkit-appearance:none; width:var(--slider-thumb-size); height:var(--slider-thumb-size); border-radius:9999px;
-        background: var(--text-primary); border:3px solid var(--surface-primary); box-shadow: 0 3px 10px rgba(0,0,0,0.35);
-        transition: transform var(--transition-fast), box-shadow var(--transition-fast);
-        transform: scale(1.05);
-        margin-top: 0;
-      }
-      .slider::-webkit-slider-thumb:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.35); }
-      .slider::-moz-range-thumb {
-        width:var(--slider-thumb-size); height:var(--slider-thumb-size); border-radius:9999px; background: var(--text-primary);
-        border:3px solid var(--surface-primary); box-shadow: 0 3px 10px rgba(0,0,0,0.35);
-        transition: transform var(--transition-fast), box-shadow var(--transition-fast);
-        transform: scale(1.05);
-      }
-      .slider::-moz-range-thumb:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.35); }
-      .slider::-moz-range-track {
-        height: 100%;
-        border-radius: var(--slider-track-radius);
-        background: var(--slider-track);
-        border: none;
-      }
-      .slider-value { font-size: 13px; color: var(--text-secondary); min-width: 56px; text-align:right; font-weight: 700; letter-spacing: 0.01em; align-self:center; }
 
       .modal-overlay {
         position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px);
@@ -4274,7 +4242,6 @@ class SpatialLightColorCard extends HTMLElement {
           margin-left: 0; /* Reset desktop alignment offset */
           justify-content: center;
         }
-        .slider-group { order: 3; flex: 1 1 100%; min-width: 0; }
       }
 
       .empty-state {
@@ -4719,17 +4686,7 @@ class SpatialLightColorCard extends HTMLElement {
     const presetsHtml = this._renderPresetsContent();
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
-        ${this._colorBarsHTML(avgState)}
-        <div class="slider-group">
-          <div class="slider-row">
-            <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
-            <span class="slider-value" id="brightnessValue">${Math.round((avgState.brightness/255)*100)}%</span>
-          </div>
-          <div class="slider-row">
-            <input type="range" class="slider temperature" id="temperatureSlider" min="${tempRange.min}" max="${tempRange.max}" value="${clampedTemp}" aria-label="Color temperature" style="--slider-percent:${tempPercent}%;--slider-ratio:${tempPercent/100};">
-            <span class="slider-value" id="temperatureValue">${clampedTemp}K</span>
-          </div>
-        </div>
+        ${this._colorBarsHTML(avgState, tempRange)}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
           <div class="preset-separator power-separator" aria-hidden="true"></div>
@@ -4750,17 +4707,7 @@ class SpatialLightColorCard extends HTMLElement {
     const presetsHtml = this._renderPresetsContent();
     return `
       <div class="controls-below ${(this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) ? 'visible' : ''}" id="controlsBelow" role="region" aria-label="Light controls">
-        ${this._colorBarsHTML(avgState)}
-        <div class="slider-group">
-          <div class="slider-row">
-            <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
-            <span class="slider-value" id="brightnessValue">${Math.round((avgState.brightness/255)*100)}%</span>
-          </div>
-          <div class="slider-row">
-            <input type="range" class="slider temperature" id="temperatureSlider" min="${tempRange.min}" max="${tempRange.max}" value="${clampedTemp}" aria-label="Color temperature" style="--slider-percent:${tempPercent}%;--slider-ratio:${tempPercent/100};">
-            <span class="slider-value" id="temperatureValue">${clampedTemp}K</span>
-          </div>
-        </div>
+        ${this._colorBarsHTML(avgState, tempRange)}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
           <div class="preset-separator power-separator" aria-hidden="true"></div>
@@ -5077,11 +5024,11 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._els.tintSlider) this._els.tintSlider.value = String(tint);
       }
       this._syncColorBars();
-      if (rgb && this._els.colorPreviewBar) {
-        // The swatch shows the light's ACTUAL colour, which is not always what
-        // the two bars reconstruct: a dim or warm-white light has a value the
-        // bars cannot express with V pinned to 100.
-        this._els.colorPreviewBar.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
+      if (rgb && this._els.brightnessSlider) {
+        // The brightness bar shows the light's ACTUAL colour, which is not
+        // always what the two colour bars reconstruct: a dim or warm-white
+        // light has a value they cannot express with V pinned to 100.
+        this._els.brightnessSlider.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
       }
     }
 
@@ -7598,9 +7545,10 @@ class SpatialLightColorCard extends HTMLElement {
       if (hueEl) tintEl.style.setProperty('--bar-hue', String(Math.round(parseFloat(hueEl.value) || 0)));
       tintEl.setAttribute('aria-valuetext', `${Math.round(100 - (parseFloat(tintEl.value) || 0))}% saturated`);
     }
-    if (this._els.colorPreviewBar) {
+    // The brightness bar IS the preview: it carries the current colour.
+    if (this._els.brightnessSlider) {
       const rgb = this._colorBarsRGB();
-      this._els.colorPreviewBar.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
+      this._els.brightnessSlider.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
     }
   }
 

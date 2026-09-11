@@ -117,8 +117,27 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 
 ## 7. Color Picker (bars)
 
-Three stacked full-width bars replace the old colour wheel: the colour as it stands, a **tint** bar from
-the pure hue to white, and the **hue** spectrum.
+Four stacked full-width bars are the whole control surface: **brightness** (the track carries the
+light's current colour, the axis is brightness), **tint** (the pure hue to white), **hue** (the
+spectrum), and **temperature** (the warm-to-cool ramp). They replaced both the colour wheel AND the
+separate brightness/temperature sliders, so `.slider` and its rules are gone from the card's
+stylesheet — the editor has its own copies and is unaffected.
+
+The brightness bar doubles as the preview: its track is painted with the ACTUAL averaged colour, not
+the two colour bars' reconstruction, because a dim or warm-white light has a value they cannot express
+with V pinned to 100. It deliberately carries no ramp — a dark-to-colour gradient would read as a
+second colour control rather than a brightness axis.
+
+`brightnessSlider` and `temperatureSlider` KEPT their ids when they moved into the bars, so every
+existing consumer (`_updateControlValues`'s sync, `_bindSliderGesture`'s commit, `_scheduleSliderCommit`,
+`_applyTemperaturePreset`) keeps working untouched. Capability gating sets the disabled property on
+those two individually — a light may do colour but not temperature — so
+`.color-bar-input:disabled` mutes them on their own, separately from the whole-block
+`.color-bars.disabled` that `caps.rgb` drives.
+
+The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements any more; every write to
+them is already element-guarded, so they are inert rather than broken and would light up again if the
+labels ever came back.
 
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use

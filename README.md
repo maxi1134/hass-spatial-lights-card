@@ -122,29 +122,26 @@ The more-info panel is the standard Home Assistant entity dialog where you can s
 
 ### Colour bars
 
-The colour picker is three stacked full-width bars:
+The controls are four stacked full-width bars:
 
-1. **Preview** — the colour the selected lights are showing right now.
+1. **Brightness** — the bar is filled with the colour the lights are showing
+   right now; sliding left to right sets the brightness.
 2. **Tint** — the pure hue on the left running to white on the right.
 3. **Hue** — the full spectrum.
+4. **Temperature** — warm on the left, cool on the right.
 
 - **Tap/click** anywhere along a bar to jump straight to that value.
 - **Drag** to sweep; the lights follow live, throttled to about seven updates a
   second so a long drag doesn't flood the connection.
-- **Arrow keys** step either bar once it has focus.
+- **Arrow keys** step whichever bar has focus.
 - On mobile, starting a vertical scroll on a bar releases it so the page can
-  scroll — the same behaviour the brightness and temperature sliders have.
+  scroll, rather than the bar swallowing the gesture.
 
-The bars run the full width of the controls, so there is no magnifier or
-full-screen picker any more: there is nothing left to aim at.
-
-### Brightness & Temperature Sliders
-
-- **Drag** horizontally along a slider to adjust the value smoothly.
-- **Tap/click** anywhere on the slider track to jump to that value.
-- The brightness slider ranges from 0–255 (displayed as a percentage).
-- The temperature slider range depends on the light's capabilities (in Kelvin).
-- On mobile, if you start scrolling vertically while touching a slider, the slider releases so you can scroll the page.
+These four replaced the colour wheel and the separate brightness and
+temperature sliders. There is no magnifier or full-screen picker any more
+either: a bar running the full width of the controls has nothing left to aim
+at. The numeric readouts (the brightness percentage and the Kelvin value) went
+with the old sliders — ask if you want them back.
 
 ### Color Presets & Live Colors
 
