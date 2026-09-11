@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.20.0 (fork-maxi1134)';
+  static BUILD = 'v1.20.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -109,7 +109,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._colorWheelActive = false;
     this._colorWheelObserver = null;
     this._canvasObserver = null;
-    this._planBoxObserver = null;
     this._glowResizeTimer = null;   // trailing debounce for resize-driven glow updates
     this._glowResizeLast = 0;
     this._colorWheelFrame = null;
@@ -1822,12 +1821,7 @@ class SpatialLightColorCard extends HTMLElement {
         canvas.style.aspectRatio = '';
         canvas.style.height = '';
       }
-      // ...but a quarter turn still has to turn the BOX, whatever gave it its
-      // shape. Without this the canvas keeps its old proportions while every
-      // coordinate rotates into it, which shears the layout instead of
-      // turning it -- and leaves _planScale below 1, shrinking percent-sized
-      // pools rather than preserving them.
-      this._applyRotatedBoxFallback(canvas);
+      this._warnIfRotatedWithoutRatio();
       return;
     }
 
@@ -1838,9 +1832,8 @@ class SpatialLightColorCard extends HTMLElement {
       if (!live || !this._wantsAutoAspect()) return;
       if (this._config.background_image.url !== url) return;
       if (!dims || !(dims.w > 0) || !(dims.h > 0)) {
-        // The plan failed to load, so there is no ratio to adopt -- but a
-        // quarter turn still has to turn the box, or the layout shears.
-        this._applyRotatedBoxFallback(live);
+        // The plan failed to load, so there is no ratio to adopt.
+        this._warnIfRotatedWithoutRatio();
         return;
       }
       // A quarter turn makes a landscape plan portrait. The probe measures the
@@ -3282,7 +3275,6 @@ class SpatialLightColorCard extends HTMLElement {
       });
       this._canvasObserver.observe(this._els.canvas);
     }
-    this._observePlanBox();
 
     this._attachEventListeners();
     if ((showControls || this._config.always_show_controls) && this._els.colorWheel) {
@@ -5455,10 +5447,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._canvasObserver.disconnect();
       this._canvasObserver = null;
     }
-    if (this._planBoxObserver) {
-      this._planBoxObserver.disconnect();
-      this._planBoxObserver = null;
-    }
+
     if (this._glowResizeTimer) {
       clearTimeout(this._glowResizeTimer);
       this._glowResizeTimer = null;
@@ -9633,79 +9622,29 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
-   * Turn the canvas box for a quarter turn when nothing else supplies a ratio
-   * -- i.e. the shape comes from `canvas_height` and there is no
-   * `aspect_ratio` and no usable plan image (none configured, or its probe
-   * failed).
+   * A quarter turn needs a ratio to turn. The plan image supplies one (its
+   * intrinsic size, swapped in _applyBackgroundAspect) and so does an explicit
+   * `aspect_ratio` (swapped by _viewAspectRatio). With neither -- no plan
+   * image, or one that failed to load, or `auto_aspect: false` -- the canvas
+   * is a fixed `canvas_height` box with no shape of its own to turn, so the
+   * markers rotate inside an unturned box and the layout looks stretched.
    *
-   * The unrotated box is (column width W) x (canvas_height H). A quarter turn
-   * has to invert that, so the turned box is H : W -- and since W is still
-   * fixed by the dashboard column, the height becomes W*(W/H). Measured from
-   * the WRAPPER, not the canvas: the canvas' own width is what we are about to
-   * change, so reading it back would be circular.
+   * Synthesising a box from canvas_height was tried and removed: the ratio
+   * would be width-derived, so it had to be measured and re-measured, and the
+   * observer doing that overwrote the perfectly good ratio the plan image had
+   * already supplied -- turning a 26:9 plan into a 3:4 one. Saying what to set
+   * is better than guessing, and `aspect_ratio` is exactly the knob for it.
    */
-  _applyRotatedBoxFallback(canvas) {
-    canvas = canvas || (this._els && this._els.canvas);
-    if (!canvas) return;
-    // Only when nothing else gives the canvas its shape. An explicit
-    // `aspect_ratio` is already turned by _viewAspectRatio in the stylesheet,
-    // and overriding it here squashed a configured 3:1 plan to the
-    // canvas_height ratio instead.
-    if (this._viewAspectRatio()) {
-      if (canvas.dataset.rotBox) {
-        canvas.style.aspectRatio = '';
-        canvas.style.height = '';
-        delete canvas.dataset.rotBox;
-      }
-      return;
-    }
-    if (!this._planRotationSwapsAxes()) {
-      if (canvas.dataset.rotBox) {
-        canvas.style.aspectRatio = '';
-        canvas.style.height = '';
-        delete canvas.dataset.rotBox;
-      }
-      return;
-    }
-    const host = canvas.parentElement;
-    const w = host ? host.getBoundingClientRect().width : 0;
-    const h = Number(this._config && this._config.canvas_height) || 450;
-    // Width 0 means the card is not laid out yet -- HA sets config and hass on
-    // a card BEFORE appending it, so the first _renderAll legitimately runs
-    // detached. The wrapper observer below re-runs this the moment a real
-    // width exists, so bailing here is a deferral rather than a miss.
-    if (!(w > 0) || !(h > 0)) return;
-    // Idempotent for a given width: re-applying the same ratio is a no-op, so
-    // the observer cannot drive itself round a loop.
-    const ratio = `${h} / ${w}`;
-    if (canvas.style.aspectRatio === ratio) return;
-    canvas.style.aspectRatio = ratio;
-    canvas.style.height = 'auto';
-    canvas.dataset.rotBox = '1';
-    this._onCanvasGeometryChanged();
-  }
-
-  /**
-   * Watch the WRAPPER, so the rotated box survives the two things that broke a
-   * one-shot measurement in _renderAll: a detached first render (width 0, and
-   * nothing ever re-ran it) and a later column resize (the ratio is derived
-   * from the width, so it goes stale the moment the width changes).
-   *
-   * The wrapper is the right thing to observe: its width does not depend on
-   * the canvas height we are about to set, so reading it is not circular.
-   */
-  _observePlanBox() {
-    if (this._planBoxObserver) {
-      this._planBoxObserver.disconnect();
-      this._planBoxObserver = null;
-    }
-    const canvas = this._els && this._els.canvas;
-    const host = canvas && canvas.parentElement;
-    if (!host || typeof window === 'undefined' || !('ResizeObserver' in window)) return;
-    this._planBoxObserver = new ResizeObserver(() => {
-      this._applyRotatedBoxFallback(this._els && this._els.canvas);
-    });
-    this._planBoxObserver.observe(host);
+  _warnIfRotatedWithoutRatio() {
+    if (!this._planRotationSwapsAxes() || this._rotRatioWarned) return;
+    // An explicit aspect_ratio IS a ratio source -- this branch is reached
+    // whenever there is no background image, which includes that case.
+    if (this._viewAspectRatio()) return;
+    this._rotRatioWarned = true;
+    console.warn('[spatial-lights-card] plan_rotation is a quarter turn but nothing '
+      + 'gives the plan a shape to turn: there is no usable background_image and no '
+      + 'aspect_ratio. Positions will rotate inside the unturned canvas_height box, '
+      + 'which looks stretched. Set aspect_ratio to the unrotated plan W:H to fix it.');
   }
 
   /** A screen rect expressed in plan axes: dimensions swap on a quarter turn. */
@@ -10950,13 +10889,7 @@ class SpatialLightColorCard extends HTMLElement {
         ar = this._planRotationSwapsAxes() ? { w: dims.h, h: dims.w } : { w: dims.w, h: dims.h };
       }
     }
-    // The canvas_height arm has to turn too, and on the same terms as
-    // _applyRotatedBoxFallback: the turned box is canvas_height : W, so at the
-    // assumed ~500px column the height becomes 500 * (500 / canvas_height).
-    const ch = (this._config && this._config.canvas_height) || 450;
-    const h = ar
-      ? 500 * (ar.h / ar.w)
-      : (this._planRotationSwapsAxes() ? 500 * (500 / ch) : ch);
+    const h = ar ? 500 * (ar.h / ar.w) : ((this._config && this._config.canvas_height) || 450);
     return Math.max(3, Math.ceil(h / 50) + 1);
   }
   // Hint to the modern grid/sections layout: full-width works best because

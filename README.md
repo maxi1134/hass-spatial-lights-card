@@ -807,6 +807,11 @@ Two things change shape, unavoidably, on a quarter turn:
   same part of the room; plain pixel sizes are left alone, because a pixel is a
   pixel.
 
+The turn needs a ratio to turn: your plan image supplies one automatically. If
+you have no background image (or `auto_aspect: false`), set `aspect_ratio` to
+the plan's unrotated `W:H` and every orientation lines up — the card logs a
+warning naming this if it is missing.
+
 Icons keep their own upright orientation — `icon_rotation` is not touched, the
 same way map labels stay level when you turn a map.
 

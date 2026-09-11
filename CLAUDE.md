@@ -253,18 +253,18 @@ sheared into it; `_applyRotatedBoxFallback` turns it from the WRAPPER's width (r
 width would be circular — it is what we are about to change) and is guarded on `_viewAspectRatio()` being
 null, a guard whose first version was missing and squashed a configured 3:1 plan to 77x13.
 
-**`_applyRotatedBoxFallback` must be observer-driven, not measured once.** Its ratio is derived from the
-wrapper's WIDTH, which makes a single measurement inside `_renderAll` wrong three ways: HA sets config and
-hass on a card BEFORE appending it, so that render sees width 0 and nothing ever retried; the ratio then
-goes stale on any column resize (sidebar collapse, window resize, phone rotation); and a configured image
-whose probe FAILS keeps `_wantsAutoAspect()` true, so the early-return holding the only call site was never
-reached. A `ResizeObserver` on the wrapper fixes the first two together — the wrapper's width does not
-depend on the canvas height being set, so reading it is not circular, and re-applying the same ratio is a
-no-op so it cannot drive itself round a loop — and the probe's failure branch calls it too. `getCardSize`'s
-`canvas_height` arm has to turn on the same terms, or masonry reserves the unturned height for exactly the
-configs this path turns. And `_rotatePlan` normalizes the BASE as well as the step, because the editor's
-`setConfig` copies the raw Lovelace config verbatim: a hand-written `plan_rotation: 45` would otherwise
-accumulate to 135 instead of snapping to a quarter.
+**The turned box comes from the plan's own ratio, and nothing else.** Two sources supply it and both
+already swap: the plan image's intrinsic size (`_applyBackgroundAspect`, applied inline after the async
+probe) and an explicit `aspect_ratio` (`_viewAspectRatio`, applied by the stylesheet). With neither, a
+quarter turn has no shape to turn, and `_warnIfRotatedWithoutRatio` says so once rather than guessing.
+
+Synthesising a box from `canvas_height` was built and then removed, and the reason is worth keeping.
+That ratio is width-derived, so it could not be computed once — it needed a wrapper `ResizeObserver` to
+survive HA's detached first render and later column resizes. That observer then fired after the image
+probe resolved and **overwrote the perfectly good ratio the plan had already supplied**, rendering a 26:9
+plan as 3:4 (`450 / 600`, i.e. `canvas_height / width`). The guard only knew about explicit `aspect_ratio`,
+not about the image. An image ratio is width-independent, so once it is the only source the whole observer
+disappears and resizes cannot stale it. Guessing a shape was strictly worse than asking for one.
 
 The undo stacks stay valid across a rotation precisely because nothing they snapshot changes.
 
