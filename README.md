@@ -762,7 +762,7 @@ presents them as one **Light Projection** section with a *Renderer* choice:
 
 Switching renderer changes nothing about your `glow` config; the diffused
 renderer reads all of it. The only two glow keys it ignores are `blur` and
-`edge_softness` (it models soft edges with `samples`/`source_radius` instead),
+`edge_softness` (there is no field equivalent: `samples`/`source_radius` soften SHADOW edges, not a glow's own edge, so `falloff: uniform` and soft `custom` shapes still want the classic renderer),
 and the editor greys those out as *classic only*. `light_field.radius` applies
 only to lights that have no `glow` config of their own.
 
