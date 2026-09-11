@@ -273,7 +273,7 @@ card with no `glow:` block plus a per-entity `intensity` would then take the car
 defaults (cone, 60x80 px) and shrink from a `light_field.radius` pool to a sliver.
 
 **The gate lives in `_renderLightField`'s entity loop, NOT in `_fieldActive`.** That getter is read
-at eleven sites and every one means "the field is the painter"; putting projection in it would swap
+at eight sites and every one means "the field is the painter"; putting projection in it would swap
 renderers per light and strip the blend mode from a walls-only canvas instead of stopping the thing
 that paints. Walls are unaffected -- `_drawFieldWalls` runs after the loop.
 

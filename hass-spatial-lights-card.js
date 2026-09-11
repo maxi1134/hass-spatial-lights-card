@@ -1407,7 +1407,7 @@ class SpatialLightColorCard extends HTMLElement {
   /**
    * WHICH RENDERER owns diffusion -- deliberately NOT "is light projected".
    *
-   * It is read at eleven sites (the canvas markup, the `.light-glow` and
+   * It is read at eight sites (the canvas markup, the `.light-glow` and
    * `.light-halo` gating, `_updateAllGlows`' short-circuit, the blend tokens,
    * the wall editor) and every one of them means "the field is the painter".
    * Adding the master switch here would swap renderers per light and strip the
