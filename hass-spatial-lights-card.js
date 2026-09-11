@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.20.1 (fork-maxi1134)';
+  static BUILD = 'v1.21.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -106,15 +106,9 @@ class SpatialLightColorCard extends HTMLElement {
 
     /** Animation frame / batching */
     this._raf = null;
-    this._colorWheelActive = false;
-    this._colorWheelObserver = null;
     this._canvasObserver = null;
     this._glowResizeTimer = null;   // trailing debounce for resize-driven glow updates
     this._glowResizeLast = 0;
-    this._colorWheelFrame = null;
-    this._colorWheelLastSize = null;
-    this._colorWheelCancel = null;
-    this._colorWheelGesture = null;    // { pointerId, isTouch, startScroll: {x,y}, scrolled, pendingColor }
 
     /**
      * Live color application throttle. Mouse drags on the mini wheel used to
@@ -128,11 +122,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._sliderCommitTimers = { brightness: null, temperature: null };
 
     /** Large color wheel (long-press) */
-    this._largeColorWheelOpen = false;
-    this._largeColorWheelOpenedAt = 0;
-    this._colorWheelLongPressTimer = null;
-    this._colorWheelLongPressStart = null;
-    this._colorWheelLongPressed = false;
     this._largeWheelGesture = null;
 
     /** Cached DOM refs (stable after first render) */
@@ -145,14 +134,8 @@ class SpatialLightColorCard extends HTMLElement {
       brightnessValue: null,
       temperatureSlider: null,
       temperatureValue: null,
-      colorWheel: null,
       yamlModal: null,
       yamlOutput: null,
-      colorWheelOverlay: null,
-      colorWheelLarge: null,
-      colorWheelMagnifier: null,
-      colorWheelMagnifierCanvas: null,
-      colorWheelPreviewSwatch: null,
       announcer: null,
     };
     this._announceTimer = null;
@@ -1419,6 +1402,81 @@ class SpatialLightColorCard extends HTMLElement {
       offset_x: off.x,
       offset_y: off.y,
     };
+  }
+
+  /**
+   * HSV <-> RGB. The picker is HSV with V pinned to 100: hue runs the spectrum
+   * and "tint" walks the pure hue to white, which is what the two bars draw.
+   * HSL cannot express that axis -- dropping HSL saturation goes to grey, not
+   * white -- so the maths is HSV even though the CSS gradients use hsl() for
+   * the fully-saturated end (where the two models agree).
+   */
+  static hsvToRgb(h, s, v) {
+    const hh = (((Number(h) || 0) % 360) + 360) % 360 / 60;
+    const ss = Math.max(0, Math.min(1, (Number(s) || 0) / 100));
+    const vv = Math.max(0, Math.min(1, (Number(v) || 0) / 100));
+    const c = vv * ss;
+    const x = c * (1 - Math.abs((hh % 2) - 1));
+    const m = vv - c;
+    let r = 0, g = 0, b = 0;
+    if (hh < 1) { r = c; g = x; }
+    else if (hh < 2) { r = x; g = c; }
+    else if (hh < 3) { g = c; b = x; }
+    else if (hh < 4) { g = x; b = c; }
+    else if (hh < 5) { r = x; b = c; }
+    else { r = c; b = x; }
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+  }
+
+  static rgbToHsv(r, g, b) {
+    const rr = Math.max(0, Math.min(255, Number(r) || 0)) / 255;
+    const gg = Math.max(0, Math.min(255, Number(g) || 0)) / 255;
+    const bb = Math.max(0, Math.min(255, Number(b) || 0)) / 255;
+    const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      if (max === rr) h = ((gg - bb) / d) % 6;
+      else if (max === gg) h = (bb - rr) / d + 2;
+      else h = (rr - gg) / d + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+    }
+    return { h, s: max === 0 ? 0 : (d / max) * 100, v: max * 100 };
+  }
+
+  /**
+   * The picker, as three stacked bars: the colour as it stands, a tint bar
+   * from the pure hue to white, and the hue spectrum.
+   *
+   * `tint` is 0 at the vivid end and 100 at white, which is the direction the
+   * gradient reads left to right -- so the plain slider plumbing needs no
+   * reversing. Saturation is `100 - tint`.
+   */
+  _colorBarsHTML(avgState) {
+    const rgb = Array.isArray(avgState && avgState.color) ? avgState.color : [255, 165, 0];
+    const hsv = SpatialLightColorCard.rgbToHsv(rgb[0], rgb[1], rgb[2]);
+    const hue = Math.round(hsv.h);
+    const tint = Math.round(100 - hsv.s);
+    const huePct = (hue / 359) * 100;
+    return `
+        <div class="color-bars" id="colorBars">
+          <div class="color-bar-slot">
+            <div class="color-bar preview" id="colorPreviewBar" role="img"
+                 aria-label="Current color" style="--bar-preview:rgb(${rgb.join(',')});"></div>
+          </div>
+          <div class="color-bar-slot">
+            <input type="range" class="color-bar-input tint" id="tintSlider"
+                   min="0" max="100" value="${tint}"
+                   aria-label="Saturation" aria-valuetext="${100 - tint}% saturated"
+                   style="--bar-hue:${hue};--slider-percent:${tint}%;--slider-ratio:${tint / 100};">
+          </div>
+          <div class="color-bar-slot">
+            <input type="range" class="color-bar-input hue" id="hueSlider"
+                   min="0" max="359" value="${hue}" aria-label="Hue"
+                   style="--slider-percent:${huePct}%;--slider-ratio:${huePct / 100};">
+          </div>
+        </div>`;
   }
 
   /** Parse a CSS color string to {r, g, b}. Returns null if unparseable. */
@@ -3157,9 +3215,7 @@ class SpatialLightColorCard extends HTMLElement {
     // The shadow DOM is about to be wiped — the new canvas elements will be
     // blank, so any cached "last drawn at this size" key from the previous
     // render is now stale. Without clearing this, the cache check in
-    // `drawColorWheel` would short-circuit and leave the new canvas empty.
-    this._colorWheelLastSize = null;
-    this._colorWheelZeroRetries = 0;
+    // the freshly rendered controls need their values pushed in.
 
     const controlContext = this._getControlContext();
     const avgState = controlContext.avgState;
@@ -3186,7 +3242,6 @@ class SpatialLightColorCard extends HTMLElement {
         ${this._renderYamlModal()}
         <div class="sr-announcer" aria-live="polite"></div>
       </ha-card>
-      ${this._renderLargeColorWheel()}
       ${this._renderWallEditorOverlay()}
     `;
 
@@ -3211,7 +3266,10 @@ class SpatialLightColorCard extends HTMLElement {
     this._els.brightnessValue = this.shadowRoot.getElementById('brightnessValue');
     this._els.temperatureSlider = this.shadowRoot.getElementById('temperatureSlider');
     this._els.temperatureValue = this.shadowRoot.getElementById('temperatureValue');
-    this._els.colorWheel = this.shadowRoot.getElementById('colorWheelMini');
+    this._els.colorBars = this.shadowRoot.getElementById('colorBars');
+    this._els.colorPreviewBar = this.shadowRoot.getElementById('colorPreviewBar');
+    this._els.hueSlider = this.shadowRoot.getElementById('hueSlider');
+    this._els.tintSlider = this.shadowRoot.getElementById('tintSlider');
     this._els.yamlModal = this.shadowRoot.getElementById('yamlModal');
     this._els.yamlOutput = this.shadowRoot.getElementById('yamlOutput');
     // Populate the YAML modal contents via textContent (NOT innerHTML) so that
@@ -3220,23 +3278,8 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._els.yamlOutput) {
       this._els.yamlOutput.textContent = this._generateYAML();
     }
-    this._els.colorWheelOverlay = this.shadowRoot.getElementById('colorWheelOverlay');
-    this._els.colorWheelLarge = this.shadowRoot.getElementById('colorWheelLarge');
-    this._els.colorWheelMagnifier = this.shadowRoot.getElementById('colorWheelMagnifier');
-    this._els.colorWheelMagnifierCanvas = this.shadowRoot.getElementById('colorWheelMagnifierCanvas');
-    this._els.colorWheelPreviewSwatch = this.shadowRoot.getElementById('colorWheelPreviewSwatch');
     this._els.announcer = this.shadowRoot.querySelector('.sr-announcer');
 
-    if (this._colorWheelObserver) {
-      this._colorWheelObserver.disconnect();
-      this._colorWheelObserver = null;
-    }
-    if (this._els.colorWheel && typeof window !== 'undefined' && 'ResizeObserver' in window) {
-      this._colorWheelObserver = new ResizeObserver(() => {
-        this._requestColorWheelDraw(true);
-      });
-      this._colorWheelObserver.observe(this._els.colorWheel);
-    }
 
     // Watch the main canvas so glow walls re-render when its size changes
     // (initial layout flush, browser resize, dashboard tab becoming visible).
@@ -3277,13 +3320,7 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     this._attachEventListeners();
-    if ((showControls || this._config.always_show_controls) && this._els.colorWheel) {
-      const raf = typeof requestAnimationFrame === 'function'
-        ? requestAnimationFrame
-        : (cb) => setTimeout(cb, 16);
-      raf(() => {
-        this._requestColorWheelDraw(true);
-      });
+    if ((showControls || this._config.always_show_controls) && this._els.colorBars) {
       this._updateControlValues(controlContext);
     }
     this._syncOverlayState();
@@ -3295,7 +3332,7 @@ class SpatialLightColorCard extends HTMLElement {
     // with the post-layout size, so glow walls get a definitive recompute as
     // soon as the canvas is laid out — no extra rAF needed here.
     // ha-icon often upgrades over several frames as the MDI iconset loads;
-    // and the color-wheel canvas needs the parent controls box to be laid
+    // and the colour bars need the parent controls box to be laid
     // out before it has a non-zero size. Both can be intermittent on cold
     // loads. Run a short rAF-chained recovery — each call is idempotent and
     // bails as soon as everything is rendered.
@@ -3303,12 +3340,6 @@ class SpatialLightColorCard extends HTMLElement {
     const recoveryTick = () => {
       if (recoveryTicks++ >= 8 || !this.shadowRoot) return;
       this._refreshEntityIcons();
-      // Force-redraw the wheel each tick. `drawColorWheel` skips when the
-      // canvas size hasn't changed, so this is a no-op once the wheel is
-      // painted. When the parent controls box transitions from
-      // `display: none` → `display: grid` (selection arrives), the canvas
-      // gets a real size and the next tick paints it.
-      if (this._els.colorWheel) this._requestColorWheelDraw(true);
       requestAnimationFrame(recoveryTick);
     };
     requestAnimationFrame(recoveryTick);
@@ -3924,8 +3955,9 @@ class SpatialLightColorCard extends HTMLElement {
         position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
         background: var(--controls-bg, rgba(20,20,20,0.95)); backdrop-filter: var(--controls-backdrop, blur(16px) saturate(160%));
         border: 1px solid var(--border-medium); border-radius: var(--radius-lg, 12px); padding: 16px 20px;
-        display: grid; grid-template-columns: auto 1fr; grid-template-rows: 1fr auto;
-        gap: 12px 20px; align-items: center; box-shadow: var(--shadow-md);
+        display: flex; flex-direction: column;
+        gap: 12px; align-items: stretch; box-shadow: var(--shadow-md);
+        min-width: min(420px, 86vw);
         opacity: 0; pointer-events: none; transition: opacity var(--transition-base);
         z-index: 50;
       }
@@ -3935,22 +3967,81 @@ class SpatialLightColorCard extends HTMLElement {
         padding: 20px; border-top: 1px solid var(--border-subtle); background: var(--controls-below-bg, var(--surface-secondary));
         backdrop-filter: var(--controls-below-backdrop, none);
         display: none;
-        grid-template-columns: auto 1fr; grid-template-rows: 1fr auto;
-        gap: 12px 24px; align-items: center; justify-content: center;
+        flex-direction: column;
+        gap: 12px; align-items: stretch; justify-content: center;
       }
-      .controls-below.visible { display: grid; }
+      .controls-below.visible { display: flex; }
 
-      .color-wheel-mini {
-        width: 128px; height: 128px; border-radius: 9999px; cursor: pointer;
-        border: 2px solid var(--border-subtle); box-shadow: var(--shadow-sm); flex-shrink: 0;
-        grid-column: 1; grid-row: 1 / 3; align-self: start;
+      /* The colour picker: three stacked full-width bars. Full width is the
+         point -- a bar you can hit anywhere along is easier to aim than a
+         128px wheel, which is why the wheel needed a long-press magnifier and
+         these do not. */
+      .color-bars {
+        display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0;
+      }
+      .color-bar-slot {
+        background: var(--surface-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 14px; padding: 7px;
+        display: flex; align-items: center;
+      }
+      .color-bar, .color-bar-input {
+        display: block; width: 100%; height: var(--color-bar-h, 34px);
+        border-radius: 9px; min-width: 0;
+      }
+      .color-bar.preview {
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      .color-bar-input {
+        -webkit-appearance: none; appearance: none;
+        background: transparent; margin: 0; padding: 0; border: 0;
+        cursor: pointer; touch-action: none;
+      }
+      .color-bar-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+      /* Literal stops rather than var()-driven ones: iOS caches var()-resolved
+         gradients on pseudo-elements and the spectrum would stop updating. */
+      /* Vendor track pseudo-elements get their OWN rules, never a shared
+         selector list: a browser that does not recognise one selector in a
+         list throws away the whole rule, so pairing -webkit- with -moz- here
+         leaves both engines with no track at all. */
+      .color-bar-input.hue::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
+          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
+      }
+      .color-bar-input.hue::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
+          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
+      }
+      .color-bar-input.tint::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
+      }
+      .color-bar-input.tint::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
+      }
+      /* A thin upright bar, taller than the track so it reads as a position
+         marker rather than a blob sitting on the colour. */
+      .color-bar-input::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        margin-top: -5px; border-radius: 5px;
+        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        border: 1px solid rgba(0,0,0,0.15);
+      }
+      .color-bar-input::-moz-range-thumb {
+        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        border-radius: 5px; border: 1px solid rgba(0,0,0,0.15);
+        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
       }
       /* H7: capability gating — keep the layout slot occupied so selection
          changes don't reflow, but visually mute and block interaction when
          no controlled light supports the relevant control. */
-      .color-wheel-mini.disabled {
-        opacity: 0.35; cursor: not-allowed; pointer-events: none;
-        filter: grayscale(0.7);
+      .color-bars.disabled {
+        opacity: 0.35; pointer-events: none; filter: grayscale(0.7);
       }
       .slider:disabled { opacity: 0.4; cursor: not-allowed; }
       .controls-floating.no-rgb-support .presets-area .color-preset,
@@ -4046,7 +4137,7 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .effect-preset:hover .effect-label { opacity: 1; }
 
-      .slider-group { display:flex; flex-direction:column; gap:10px; min-width: 240px; grid-column: 2; grid-row: 1; }
+      .slider-group { display:flex; flex-direction:column; gap:10px; min-width: 0; width: 100%; }
       .slider-row { display:flex; align-items:center; gap:8px; width:100%; padding: 2px 0; }
 
       /* Power toggle: group on/off for the controlled lights. Anchors the
@@ -4164,16 +4255,16 @@ class SpatialLightColorCard extends HTMLElement {
 
       @media (max-width: 768px) {
         .controls-floating {
-          display: flex; flex-wrap: wrap; justify-content: center;
+          display: flex; flex-direction: column; align-items: stretch;
           gap: 12px;
           left: 16px; right: 16px; width: auto; transform: none;
         }
         .controls-below.visible {
-          display: flex; flex-wrap: wrap; justify-content: center;
+          display: flex; flex-direction: column; align-items: stretch;
           gap: 12px;
         }
         .light { --light-size: ${Math.min(this._config.light_size, 50)}px; }
-        .color-wheel-mini { order: 1; flex-shrink: 0; align-self: start; }
+        .color-bars { order: 1; width: 100%; }
         .presets-row {
           order: 2; flex: 0 1 auto; align-self: center;
           max-width: calc(100% - 140px); /* 128px wheel + 12px gap */
@@ -4323,59 +4414,6 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-editor-hint kbd {
         background: rgba(255,255,255,0.14); border-radius: 4px; padding: 1px 5px;
         font-family: inherit; font-size: 10px;
-      }
-
-      .color-wheel-overlay {
-        position: fixed; inset: 0; background: rgba(0,0,0,0.88); backdrop-filter: blur(12px);
-        display: none; flex-direction: column; align-items: center; justify-content: center;
-        z-index: 1000; padding: 24px; gap: 20px;
-      }
-      .color-wheel-overlay.visible { display: flex; }
-      .color-wheel-large-wrap {
-        position: relative; display: flex; align-items: center; justify-content: center;
-      }
-      .color-wheel-large {
-        width: min(75vmin, 380px); height: min(75vmin, 380px);
-        border-radius: 9999px; cursor: crosshair;
-        border: 3px solid rgba(255,255,255,0.15);
-        box-shadow: 0 0 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05);
-        touch-action: none;
-      }
-      .color-wheel-footer {
-        display: flex; align-items: center; gap: 16px;
-      }
-      .color-wheel-preview-swatch {
-        width: 44px; height: 44px; border-radius: 9999px;
-        border: 2.5px solid rgba(255,255,255,0.25);
-        box-shadow: var(--shadow-md); transition: background-color 60ms ease, border-color 200ms ease;
-        background: var(--surface-tertiary);
-      }
-      .color-wheel-done-btn {
-        padding: 10px 32px; border: 1px solid rgba(255,255,255,0.12);
-        background: var(--surface-elevated); color: var(--text-primary);
-        font-size: 14px; font-weight: 600; font-family: var(--font-sans);
-        border-radius: var(--radius-lg); cursor: pointer;
-        transition: background var(--transition-fast), transform var(--transition-fast);
-      }
-      .color-wheel-done-btn:hover { background: var(--surface-tertiary); }
-      .color-wheel-done-btn:active { transform: scale(0.96); }
-      .color-wheel-hint {
-        font-size: 12px; color: var(--text-tertiary); text-align: center;
-        pointer-events: none; margin-top: -8px;
-      }
-      /* Magnifier loupe */
-      .color-wheel-magnifier {
-        position: fixed; width: 110px; height: 110px; border-radius: 9999px;
-        border: 3px solid #fff; box-shadow: 0 4px 24px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1);
-        pointer-events: none; display: none; overflow: hidden; z-index: 1010;
-        transition: border-color 60ms ease;
-      }
-      .color-wheel-magnifier.visible { display: block; }
-      .color-wheel-magnifier canvas {
-        width: 100%; height: 100%; border-radius: 9999px; display: block;
-      }
-      .color-wheel-magnifier-crosshair {
-        position: absolute; inset: 0; pointer-events: none;
       }
 
       :host(.overlay-active) .light,
@@ -4681,7 +4719,7 @@ class SpatialLightColorCard extends HTMLElement {
     const presetsHtml = this._renderPresetsContent();
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
-        <canvas id="colorWheelMini" class="color-wheel-mini" width="256" height="256" role="img" aria-label="Color picker"></canvas>
+        ${this._colorBarsHTML(avgState)}
         <div class="slider-group">
           <div class="slider-row">
             <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
@@ -4712,7 +4750,7 @@ class SpatialLightColorCard extends HTMLElement {
     const presetsHtml = this._renderPresetsContent();
     return `
       <div class="controls-below ${(this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) ? 'visible' : ''}" id="controlsBelow" role="region" aria-label="Light controls">
-        <canvas id="colorWheelMini" class="color-wheel-mini" width="256" height="256" role="img" aria-label="Color picker"></canvas>
+        ${this._colorBarsHTML(avgState)}
         <div class="slider-group">
           <div class="slider-row">
             <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
@@ -4746,25 +4784,6 @@ class SpatialLightColorCard extends HTMLElement {
       </div>
     `;
   }
-
-  _renderLargeColorWheel() {
-    return `
-      <div class="color-wheel-overlay" id="colorWheelOverlay">
-        <div class="color-wheel-large-wrap">
-          <canvas class="color-wheel-large" id="colorWheelLarge" width="512" height="512"></canvas>
-        </div>
-        <div class="color-wheel-footer">
-          <div class="color-wheel-preview-swatch" id="colorWheelPreviewSwatch"></div>
-          <button class="color-wheel-done-btn" id="colorWheelDoneBtn">Done</button>
-        </div>
-        <div class="color-wheel-hint">Drag to pick a color</div>
-        <div class="color-wheel-magnifier" id="colorWheelMagnifier">
-          <canvas id="colorWheelMagnifierCanvas" width="220" height="220"></canvas>
-        </div>
-      </div>
-    `;
-  }
-
   /**
    * Full-size wall editor.
    *
@@ -5043,6 +5062,28 @@ class SpatialLightColorCard extends HTMLElement {
 
     const brightnessActive = this._activeSliderGesture === 'brightness';
     const temperatureActive = this._activeSliderGesture === 'temperature';
+    const colorActive = this._activeSliderGesture === 'color';
+
+    // The colour bars follow the lights, except while the user is dragging
+    // them: a live apply round-trips through hass and returns as state, so
+    // writing it back mid-drag would make the thumb stutter against the finger.
+    if (!colorActive && (this._els.hueSlider || this._els.tintSlider)) {
+      const rgb = Array.isArray(avgState?.color) ? avgState.color : null;
+      if (rgb) {
+        const hsv = SpatialLightColorCard.rgbToHsv(rgb[0], rgb[1], rgb[2]);
+        const hue = Math.round(hsv.h);
+        const tint = Math.round(100 - hsv.s);
+        if (this._els.hueSlider) this._els.hueSlider.value = String(hue);
+        if (this._els.tintSlider) this._els.tintSlider.value = String(tint);
+      }
+      this._syncColorBars();
+      if (rgb && this._els.colorPreviewBar) {
+        // The swatch shows the light's ACTUAL colour, which is not always what
+        // the two bars reconstruct: a dim or warm-white light has a value the
+        // bars cannot express with V pinned to 100.
+        this._els.colorPreviewBar.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
+      }
+    }
 
     if (this._els.brightnessSlider) {
       // Don't clobber the slider position while the user is actively dragging
@@ -5087,8 +5128,8 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._els.temperatureSlider) {
       this._els.temperatureSlider.disabled = !caps.color_temp;
     }
-    if (this._els.colorWheel) {
-      this._els.colorWheel.classList.toggle('disabled', !caps.rgb);
+    if (this._els.colorBars) {
+      this._els.colorBars.classList.toggle('disabled', !caps.rgb);
     }
     // Toggle classes on the controls container so preset rows can be dimmed.
     const containers = [this._els.controlsFloating, this._els.controlsBelow].filter(Boolean);
@@ -5123,6 +5164,11 @@ class SpatialLightColorCard extends HTMLElement {
         this._els.brightnessValue.textContent = `${pct}%`;
       } else if (el.id === 'temperatureSlider' && this._els.temperatureValue) {
         this._els.temperatureValue.textContent = `${el.value}K`;
+      } else if (el.id === 'hueSlider' || el.id === 'tintSlider') {
+        this._syncColorBars();
+        // Throttled, so dragging the length of the bar does not become a
+        // service call per frame.
+        this._applyColorWheelSelectionLive(this._colorBarsRGB());
       }
     };
 
@@ -5137,6 +5183,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     const gestureKind = el.id === 'brightnessSlider' ? 'brightness'
       : el.id === 'temperatureSlider' ? 'temperature'
+      : (el.id === 'hueSlider' || el.id === 'tintSlider') ? 'color'
       : null;
 
     el.addEventListener('pointerdown', (e) => {
@@ -5153,6 +5200,9 @@ class SpatialLightColorCard extends HTMLElement {
       // Mark gesture active so `_updateControlValues` skips clobbering this
       // slider while the user's finger is down.
       if (gestureKind) this._activeSliderGesture = gestureKind;
+      // A new colour gesture must always be able to commit, even if it lands
+      // on the same colour a previous one did.
+      if (gestureKind === 'color') this._lastLiveWheelRgb = null;
 
       // Immediate update on tap start
       this._applyPointerValue(el, e.clientX);
@@ -5199,6 +5249,20 @@ class SpatialLightColorCard extends HTMLElement {
         } else if (el.id === 'temperatureSlider') {
           this._pendingTemperature = parseInt(el.value, 10);
           this._handleTemperatureChange();
+        } else if (el.id === 'hueSlider' || el.id === 'tintSlider') {
+          // The release commit is authoritative: drop any queued trailing live
+          // apply first so a stale colour cannot land after the final one.
+          this._cancelLiveWheelThrottle();
+          const rgb = this._colorBarsRGB();
+          // If the trailing live apply already sent exactly this colour there
+          // is nothing left to say. The commit exists to guarantee the FINAL
+          // value lands, not to send it a second time. `_lastLiveWheelRgb` is
+          // cleared at pointerdown, so it can never suppress a fresh gesture
+          // whose colour merely happens to match an older one.
+          if (this._lastLiveWheelRgb !== String(rgb)) {
+            this._applyColorWheelSelection(rgb);
+          }
+          this._lastLiveWheelRgb = null;
         }
       }
     };
@@ -5374,7 +5438,6 @@ class SpatialLightColorCard extends HTMLElement {
           // Tab just became visible. While hidden, browsers throttle rAF and
           // the ha-icon iconset may have been buffering. Force a full refresh
           // of the canvas-y bits and icons so nothing is left stale.
-          if (this._els.colorWheel) this._requestColorWheelDraw(true);
           this._refreshEntityIcons();
           this._updateAllGlows();
           this._requestLightFieldDraw();
@@ -5439,10 +5502,6 @@ class SpatialLightColorCard extends HTMLElement {
       clearTimeout(this._iconRehydrateHandle);
       this._iconRehydrateHandle = null;
     }
-    if (this._colorWheelObserver) {
-      this._colorWheelObserver.disconnect();
-      this._colorWheelObserver = null;
-    }
     if (this._canvasObserver) {
       this._canvasObserver.disconnect();
       this._canvasObserver = null;
@@ -5451,11 +5510,6 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._glowResizeTimer) {
       clearTimeout(this._glowResizeTimer);
       this._glowResizeTimer = null;
-    }
-    if (this._colorWheelFrame) {
-      const cancel = this._colorWheelCancel || (typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout);
-      cancel(this._colorWheelFrame);
-      this._colorWheelFrame = null;
     }
     this._clearLightFieldSchedule();
     if (this._wallStageObserver) {
@@ -5500,12 +5554,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._pendingTap = null;
     this._longPressTriggered = false;
     this._moreInfoOpen = false;
-    this._largeColorWheelOpen = false;
-    if (this._colorWheelLongPressTimer) {
-      clearTimeout(this._colorWheelLongPressTimer);
-      this._colorWheelLongPressTimer = null;
-    }
-    this._colorWheelLongPressed = false;
     this._largeWheelGesture = null;
     this._cancelLiveWheelThrottle();
     for (const kind of Object.keys(this._sliderCommitTimers)) {
@@ -5679,115 +5727,27 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     // Controls events
-    if (this._els.colorWheel) {
-      this._els.colorWheel.addEventListener('pointerdown', (e) => {
-        const isTouchLike = e.pointerType === 'touch' || e.pointerType === 'pen' || !e.pointerType;
-        this._colorWheelActive = true;
-        this._colorWheelLongPressed = false;
-        this._colorWheelGesture = {
-          pointerId: e.pointerId,
-          isTouch: isTouchLike,
-          startScroll: this._getScrollPosition(),
-          scrolled: false,
-          pendingColor: null,
-          longPressActive: true,  // defer all color application while long-press might fire
-        };
-        e.preventDefault();
-        try { e.target.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may already be gone */ }
-
-        // Long-press detection for large color wheel
-        if (this._colorWheelLongPressTimer) clearTimeout(this._colorWheelLongPressTimer);
-        this._colorWheelLongPressStart = { x: e.clientX, y: e.clientY };
-        const longPressDelay = isTouchLike ? 400 : 600;
-        this._colorWheelLongPressTimer = setTimeout(() => {
-          this._colorWheelLongPressTimer = null;
-          this._colorWheelLongPressed = true;
-          this._colorWheelActive = false;
-          e.target.releasePointerCapture?.(e.pointerId);
-          if (navigator.vibrate) navigator.vibrate(30);
-          this._openLargeColorWheel();
-        }, longPressDelay);
-
-        // Always store as pending — never apply immediately during long-press window
-        const color = this._getColorWheelColorAtEvent(e);
-        if (color) this._colorWheelGesture.pendingColor = color;
+    // The colour bars are ordinary range inputs, so they reuse the slider
+    // gesture (pointer capture, the vertical-scroll heuristic, the commit on
+    // release) rather than carrying a bespoke pointer state machine of their
+    // own. That is most of why the wheel's magnifier and long-press overlay
+    // are gone: a full-width bar needs no aiming aid.
+    this._bindSliderGesture(this._els.hueSlider);
+    this._bindSliderGesture(this._els.tintSlider);
+    [this._els.hueSlider, this._els.tintSlider].forEach((el) => {
+      if (!el) return;
+      // Keyboard and programmatic changes still have to reach the lights.
+      el.addEventListener('input', () => {
+        this._syncColorBars();
+        this._applyColorWheelSelectionLive(this._colorBarsRGB());
       });
-      this._els.colorWheel.addEventListener('pointermove', (e) => {
-        if (this._colorWheelActive) {
-          const gesture = this._colorWheelGesture;
-          if (!gesture || (gesture.pointerId !== undefined && gesture.pointerId !== e.pointerId)) return;
+      // Deliberately NO `change` commit: a pointer drag ends in
+      // _bindSliderGesture's own authoritative commit, and a `change` here
+      // would fire alongside it and send the same colour twice. Keyboard
+      // changes still land, because the live apply is a leading+TRAILING
+      // throttle -- the last value always goes out.
+    });
 
-          // Cancel long-press if finger/pointer moved too far
-          if (this._colorWheelLongPressTimer && this._colorWheelLongPressStart) {
-            const dx = e.clientX - this._colorWheelLongPressStart.x;
-            const dy = e.clientY - this._colorWheelLongPressStart.y;
-            if (Math.sqrt(dx * dx + dy * dy) > 8) {
-              clearTimeout(this._colorWheelLongPressTimer);
-              this._colorWheelLongPressTimer = null;
-              gesture.longPressActive = false;
-              // Now that long-press is cancelled, apply the deferred pending color (mouse only)
-              if (!gesture.isTouch && gesture.pendingColor) {
-                this._applyColorWheelSelectionLive(gesture.pendingColor);
-              }
-            }
-          }
-
-          const scrollPos = this._getScrollPosition();
-          if (scrollPos.x !== gesture.startScroll.x || scrollPos.y !== gesture.startScroll.y) {
-            gesture.scrolled = true;
-            if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
-            return;
-          }
-
-          const color = this._getColorWheelColorAtEvent(e);
-          if (!color) return;
-
-          if (gesture.isTouch) {
-            gesture.pendingColor = color;
-          } else if (!gesture.longPressActive) {
-            // Only apply live for mouse after long-press window has passed
-            e.preventDefault();
-            this._applyColorWheelSelectionLive(color);
-          } else {
-            gesture.pendingColor = color;
-          }
-        }
-      });
-      this._els.colorWheel.addEventListener('pointerup', (e) => {
-        // Cancel any pending long-press timer
-        if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
-
-        this._colorWheelActive = false;
-        e.target.releasePointerCapture?.(e.pointerId);
-
-        // If long press triggered, don't apply color from mini wheel
-        if (this._colorWheelLongPressed) {
-          this._colorWheelLongPressed = false;
-          this._colorWheelGesture = null;
-          return;
-        }
-
-        const gesture = this._colorWheelGesture;
-        this._colorWheelGesture = null;
-        if (!gesture || gesture.pointerId !== e.pointerId) return;
-
-        // Apply pending color on release (for both touch and mouse with deferred long-press).
-        // The release commit is authoritative: drop any queued trailing live apply first.
-        if (!gesture.scrolled) {
-          this._cancelLiveWheelThrottle();
-          const color = this._getColorWheelColorAtEvent(e) || gesture.pendingColor;
-          if (color) this._applyColorWheelSelection(color);
-        }
-      });
-      this._els.colorWheel.addEventListener('pointercancel', (e) => {
-        if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
-        this._colorWheelActive = false;
-        this._colorWheelLongPressed = false;
-        e.target.releasePointerCapture?.(e.pointerId);
-        this._colorWheelGesture = null;
-        this._cancelLiveWheelThrottle();
-      });
-    }
     // Preset click and highlight handlers (color + temperature)
     this._bindPresetHandlers();
     if (this._els.brightnessSlider) {
@@ -5913,12 +5873,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._selectedLights.clear();
     updatedSelection.forEach(entity => this._selectedLights.add(entity));
     this.updateLights();
-    const shouldDrawWheel =
-      (this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) &&
-      Boolean(this._els.colorWheel);
-    if (shouldDrawWheel) {
-      this._requestColorWheelDraw();
-    }
   }
 
   /** ---------- Keyboard ---------- */
@@ -5969,7 +5923,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     // Undo/Redo — only when card is focused (or has selection), to avoid
     // hijacking these chords across the rest of the dashboard.
-    const cardEngaged = isOurCard || this._selectedLights.size > 0 || this._editPositionsMode || this._largeColorWheelOpen;
+    const cardEngaged = isOurCard || this._selectedLights.size > 0 || this._editPositionsMode;
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       if (!cardEngaged) return;
       e.preventDefault();
@@ -5982,11 +5936,6 @@ class SpatialLightColorCard extends HTMLElement {
     }
     // Escape → deselect and close panels
     if (e.key === 'Escape') {
-      // Close large color wheel first if open
-      if (this._largeColorWheelOpen) {
-        this._closeLargeColorWheel();
-        return;
-      }
       // Only intercept Escape if there's something for us to close/clear,
       // otherwise let Escape behave normally for the rest of the dashboard.
       if (!cardEngaged && this._selectedLights.size === 0 && !this._yamlModalOpen && !this._moreInfoOpen) return;
@@ -6012,7 +5961,6 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectedLights.clear();
       this._config.entities.forEach(ent => this._selectedLights.add(ent));
       this.updateLights();
-      if (this._els.colorWheel) this._requestColorWheelDraw();
     }
 
     // H18: Enter selects the focused light (toggles its membership in the
@@ -6823,14 +6771,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._pendingTap = null;
     this._longPressTriggered = false;
     // Color-wheel gesture state
-    if (this._colorWheelLongPressTimer) {
-      clearTimeout(this._colorWheelLongPressTimer);
-      this._colorWheelLongPressTimer = null;
-    }
-    this._colorWheelLongPressed = false;
-    this._colorWheelLongPressStart = null;
-    this._colorWheelGesture = null;
-    this._colorWheelActive = false;
     this._cancelLiveWheelThrottle();
     this._suppressPresetClick = false;
     // H12: commit any pending slider value so end-of-gesture survives DOM rebuild.
@@ -6865,7 +6805,7 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _syncOverlayState() {
-    const overlayActive = this._yamlModalOpen || this._moreInfoOpen || this._largeColorWheelOpen;
+    const overlayActive = this._yamlModalOpen || this._moreInfoOpen;
     this.classList.toggle('overlay-active', overlayActive);
   }
 
@@ -6876,27 +6816,6 @@ class SpatialLightColorCard extends HTMLElement {
     const y = typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset || 0;
     return { x, y };
   }
-
-  _getColorWheelColorAtEvent(e) {
-    const canvas = this._els.colorWheel;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    // Clamp to canvas bounds — Firefox throws IndexSizeError when sx === width.
-    const px = Math.max(0, Math.min(canvas.width - 1, Math.floor(x)));
-    const py = Math.max(0, Math.min(canvas.height - 1, Math.floor(y)));
-    let imageData;
-    try { imageData = ctx.getImageData(px, py, 1, 1); }
-    catch (_) { return null; }
-    const [r, g, b, a] = imageData.data;
-    if (a === 0) return null; // click outside painted area
-    return [r, g, b];
-  }
-
   _hexToRgb(hex) {
     if (!hex) return null;
     const h = hex.replace('#', '');
@@ -7656,6 +7575,35 @@ class SpatialLightColorCard extends HTMLElement {
     });
   }
 
+  /** The colour the two bars currently describe. */
+  _colorBarsRGB() {
+    const hue = this._els.hueSlider ? parseFloat(this._els.hueSlider.value) : 0;
+    const tint = this._els.tintSlider ? parseFloat(this._els.tintSlider.value) : 0;
+    // Value is tint (0 vivid .. 100 white); saturation is its complement.
+    return SpatialLightColorCard.hsvToRgb(hue, 100 - tint, 100);
+  }
+
+  /**
+   * Push the bars' own state back into their appearance: the preview swatch,
+   * and the tint track, whose gradient starts at the currently chosen hue.
+   * Called while dragging, so it touches styles only -- never the values,
+   * which would fight the user's finger.
+   */
+  _syncColorBars() {
+    const hueEl = this._els.hueSlider;
+    const tintEl = this._els.tintSlider;
+    if (hueEl) this._updateSliderVisual(hueEl);
+    if (tintEl) {
+      this._updateSliderVisual(tintEl);
+      if (hueEl) tintEl.style.setProperty('--bar-hue', String(Math.round(parseFloat(hueEl.value) || 0)));
+      tintEl.setAttribute('aria-valuetext', `${Math.round(100 - (parseFloat(tintEl.value) || 0))}% saturated`);
+    }
+    if (this._els.colorPreviewBar) {
+      const rgb = this._colorBarsRGB();
+      this._els.colorPreviewBar.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
+    }
+  }
+
   _applyColorWheelSelection(rgb, { announce = true } = {}) {
     const controlled = this._selectedLights.size > 0
       ? [...this._selectedLights]
@@ -7692,6 +7640,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._liveWheelPendingRgb = rgb;
       return;
     }
+    this._lastLiveWheelRgb = String(rgb);
     this._applyColorWheelSelection(rgb, { announce: false });
     this._liveWheelTimer = setTimeout(() => {
       this._liveWheelTimer = null;
@@ -7713,337 +7662,6 @@ class SpatialLightColorCard extends HTMLElement {
     }
     this._liveWheelPendingRgb = null;
   }
-
-  /** ---------- Large color wheel (long-press) ---------- */
-  _openLargeColorWheel() {
-    this._largeColorWheelOpen = true;
-    this._largeColorWheelOpenedAt = Date.now();
-    // The overlay close-on-backdrop logic uses `_largeWheelBackdropArmed`,
-    // which only flips true on a fresh pointerdown directly on the backdrop.
-    // The long-press release that opened this overlay isn't a pointerdown on
-    // the overlay (the original pointerdown was on the mini wheel before the
-    // overlay even existed), so the synthesized click is automatically ignored.
-    this._largeWheelBackdropArmed = false;
-    const overlay = this._els.colorWheelOverlay;
-    if (!overlay) return;
-
-    overlay.classList.add('visible');
-    this._syncOverlayState();
-
-    // Set initial swatch color from current light state
-    const swatch = this._els.colorWheelPreviewSwatch;
-    if (swatch) {
-      const controlled = this._getControlledEntities();
-      let initColor = null;
-      for (const id of controlled) {
-        const st = this._hass?.states?.[id];
-        if (st && st.state === 'on' && Array.isArray(st.attributes.rgb_color)) {
-          initColor = st.attributes.rgb_color;
-          break;
-        }
-      }
-      if (initColor) {
-        swatch.style.background = `rgb(${initColor[0]},${initColor[1]},${initColor[2]})`;
-      }
-    }
-
-    // Draw the large color wheel
-    const canvas = this._els.colorWheelLarge;
-    if (canvas) {
-      const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
-      raf(() => this._drawLargeColorWheel(canvas));
-    }
-
-    this._bindLargeColorWheelEvents();
-  }
-
-  _closeLargeColorWheel() {
-    this._largeColorWheelOpen = false;
-    const overlay = this._els.colorWheelOverlay;
-    if (!overlay) return;
-
-    overlay.classList.remove('visible');
-    this._syncOverlayState();
-
-    // Hide magnifier
-    const mag = this._els.colorWheelMagnifier;
-    if (mag) mag.classList.remove('visible');
-    this._largeWheelGesture = null;
-  }
-
-  _drawLargeColorWheel(canvas) {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
-    const fallbackSize = 512;
-    const cssSize = Math.max(rect.width, rect.height) > 0
-      ? Math.min(rect.width || fallbackSize, rect.height || fallbackSize)
-      : fallbackSize;
-
-    const MAX_CANVAS_SIZE = 4096;
-    let pixelSize = Math.max(1, Math.round(cssSize * dpr));
-    if (!Number.isFinite(pixelSize) || pixelSize > MAX_CANVAS_SIZE || pixelSize < 1) {
-      pixelSize = Math.min(fallbackSize, MAX_CANVAS_SIZE);
-    }
-
-    canvas.width = pixelSize;
-    canvas.height = pixelSize;
-    ctx.clearRect(0, 0, pixelSize, pixelSize);
-
-    const radius = pixelSize / 2;
-    const imageData = ctx.createImageData(pixelSize, pixelSize);
-    const data = imageData.data;
-
-    const hslToRgb = (h, s, l) => {
-      if (s === 0) { const val = Math.round(l * 255); return [val, val, val]; }
-      const hue2rgb = (p, q, t) => {
-        if (t < 0) t += 1; if (t > 1) t -= 1;
-        if (t < 1/6) return p + (q-p)*6*t;
-        if (t < 1/2) return q;
-        if (t < 2/3) return p + (q-p)*(2/3-t)*6;
-        return p;
-      };
-      const q = l < 0.5 ? l*(1+s) : l+s-l*s;
-      const p = 2*l-q;
-      return [Math.round(hue2rgb(p,q,h+1/3)*255), Math.round(hue2rgb(p,q,h)*255), Math.round(hue2rgb(p,q,h-1/3)*255)];
-    };
-
-    for (let y = 0; y < pixelSize; y++) {
-      for (let x = 0; x < pixelSize; x++) {
-        const dx = x + 0.5 - radius;
-        const dy = y + 0.5 - radius;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        if (dist > radius) continue;
-
-        const sat = Math.min(1, dist / radius);
-        const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
-        const lightness = 0.45 + (1-sat) * 0.35;
-        const [r, g, b] = hslToRgb(hue/360, sat, lightness);
-
-        const idx = (y * pixelSize + x) * 4;
-        data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-
-    ctx.save();
-    ctx.lineWidth = Math.max(1, 1.5 * dpr);
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-    ctx.beginPath();
-    ctx.arc(radius, radius, radius - ctx.lineWidth / 2, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  _getLargeWheelColorAtEvent(e) {
-    const canvas = this._els.colorWheelLarge;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    // Clamp to canvas bounds — Firefox throws IndexSizeError when sx === width.
-    const px = Math.max(0, Math.min(canvas.width - 1, Math.floor(x)));
-    const py = Math.max(0, Math.min(canvas.height - 1, Math.floor(y)));
-    let imageData;
-    try { imageData = ctx.getImageData(px, py, 1, 1); }
-    catch (_) { return null; }
-    const [r, g, b, a] = imageData.data;
-    if (a === 0) return null;
-    return [r, g, b];
-  }
-
-  _updateMagnifier(e) {
-    const canvas = this._els.colorWheelLarge;
-    const magnifier = this._els.colorWheelMagnifier;
-    const magCanvas = this._els.colorWheelMagnifierCanvas;
-    if (!canvas || !magnifier || !magCanvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    // Position magnifier above the touch/pointer point
-    const magSize = 110;
-    const offset = 80;
-    let magX = e.clientX - magSize / 2;
-    let magY = e.clientY - magSize - offset;
-
-    // Keep on screen - flip below if too high
-    if (magY < 8) magY = e.clientY + offset / 2;
-    if (magX < 8) magX = 8;
-    if (magX + magSize > window.innerWidth - 8) magX = window.innerWidth - magSize - 8;
-
-    magnifier.style.left = magX + 'px';
-    magnifier.style.top = magY + 'px';
-    magnifier.classList.add('visible');
-
-    // Draw zoomed view on magnifier canvas
-    const magCtx = magCanvas.getContext('2d');
-    if (!magCtx) return;
-
-    const zoom = 6;
-    const srcSize = magCanvas.width / zoom;
-    const sx = canvasX - srcSize / 2;
-    const sy = canvasY - srcSize / 2;
-
-    magCtx.clearRect(0, 0, magCanvas.width, magCanvas.height);
-    magCtx.imageSmoothingEnabled = false;
-
-    // Clip to circle
-    magCtx.save();
-    magCtx.beginPath();
-    magCtx.arc(magCanvas.width / 2, magCanvas.height / 2, magCanvas.width / 2, 0, Math.PI * 2);
-    magCtx.clip();
-
-    magCtx.drawImage(canvas, sx, sy, srcSize, srcSize, 0, 0, magCanvas.width, magCanvas.height);
-    magCtx.restore();
-
-    // Draw crosshair
-    const cx = magCanvas.width / 2;
-    const cy = magCanvas.height / 2;
-    magCtx.save();
-    magCtx.strokeStyle = 'rgba(255,255,255,0.85)';
-    magCtx.lineWidth = 1.5;
-
-    // Horizontal arms
-    magCtx.beginPath();
-    magCtx.moveTo(cx - 14, cy); magCtx.lineTo(cx - 5, cy);
-    magCtx.moveTo(cx + 5, cy); magCtx.lineTo(cx + 14, cy);
-    magCtx.stroke();
-
-    // Vertical arms
-    magCtx.beginPath();
-    magCtx.moveTo(cx, cy - 14); magCtx.lineTo(cx, cy - 5);
-    magCtx.moveTo(cx, cy + 5); magCtx.lineTo(cx, cy + 14);
-    magCtx.stroke();
-
-    // Center dot
-    magCtx.fillStyle = 'rgba(255,255,255,0.95)';
-    magCtx.beginPath();
-    magCtx.arc(cx, cy, 2, 0, Math.PI * 2);
-    magCtx.fill();
-
-    // Dark outline for visibility on bright colors
-    magCtx.strokeStyle = 'rgba(0,0,0,0.4)';
-    magCtx.lineWidth = 0.75;
-    magCtx.beginPath();
-    magCtx.moveTo(cx - 14, cy); magCtx.lineTo(cx - 5, cy);
-    magCtx.moveTo(cx + 5, cy); magCtx.lineTo(cx + 14, cy);
-    magCtx.moveTo(cx, cy - 14); magCtx.lineTo(cx, cy - 5);
-    magCtx.moveTo(cx, cy + 5); magCtx.lineTo(cx, cy + 14);
-    magCtx.stroke();
-
-    magCtx.restore();
-
-    // Update magnifier border color to match selected color
-    const color = this._getLargeWheelColorAtEvent(e);
-    if (color) {
-      magnifier.style.borderColor = `rgb(${color[0]},${color[1]},${color[2]})`;
-    }
-  }
-
-  _bindLargeColorWheelEvents() {
-    const canvas = this._els.colorWheelLarge;
-    const overlay = this._els.colorWheelOverlay;
-    const doneBtn = this.shadowRoot?.getElementById('colorWheelDoneBtn');
-    const swatch = this._els.colorWheelPreviewSwatch;
-
-    if (!canvas) return;
-
-    // Avoid double-binding
-    if (canvas._largeBound) return;
-    canvas._largeBound = true;
-
-    canvas.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      try { e.target.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may already be gone */ }
-
-      const color = this._getLargeWheelColorAtEvent(e);
-      this._largeWheelGesture = { pointerId: e.pointerId, pendingColor: color };
-
-      // Only update swatch preview — don't send to lights yet
-      if (color && swatch) {
-        swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
-        swatch.style.borderColor = `rgba(255,255,255,0.5)`;
-      }
-      this._updateMagnifier(e);
-    });
-
-    canvas.addEventListener('pointermove', (e) => {
-      if (!this._largeWheelGesture || this._largeWheelGesture.pointerId !== e.pointerId) return;
-      e.preventDefault();
-
-      const color = this._getLargeWheelColorAtEvent(e);
-      if (color) {
-        this._largeWheelGesture.pendingColor = color;
-        // Only update swatch preview — don't send to lights during drag
-        if (swatch) swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
-      }
-      this._updateMagnifier(e);
-    });
-
-    canvas.addEventListener('pointerup', (e) => {
-      e.target.releasePointerCapture?.(e.pointerId);
-
-      // Apply the final selected color to lights only if pointer ended inside the wheel
-      const gesture = this._largeWheelGesture;
-      this._largeWheelGesture = null;
-      if (gesture && gesture.pendingColor) {
-        const color = this._getLargeWheelColorAtEvent(e);
-        if (color) {
-          this._applyColorWheelSelection(color);
-          if (swatch) swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
-        }
-      }
-
-      // Hide magnifier
-      const mag = this._els.colorWheelMagnifier;
-      if (mag) mag.classList.remove('visible');
-    });
-
-    canvas.addEventListener('pointercancel', (e) => {
-      e.target.releasePointerCapture?.(e.pointerId);
-      this._largeWheelGesture = null;
-
-      const mag = this._els.colorWheelMagnifier;
-      if (mag) mag.classList.remove('visible');
-    });
-
-    // Close on backdrop click — but only when a deliberate pointerdown landed
-    // on the overlay backdrop itself. The long-press that opened this overlay
-    // was a pointerdown on the mini wheel; the synthesized click after the
-    // user's release also targets the backdrop, but we never saw a backdrop
-    // pointerdown for it, so this check filters it out. Movement / no-movement
-    // doesn't matter — what matters is that a pointer was deliberately put
-    // down on the backdrop here.
-    if (overlay) {
-      overlay.addEventListener('pointerdown', (e) => {
-        // Only count pointers that land directly on the backdrop, not on the
-        // canvas, swatch, hint, or done button.
-        if (e.target === overlay) {
-          this._largeWheelBackdropArmed = true;
-        }
-      });
-      overlay.addEventListener('click', (e) => {
-        if (e.target !== overlay) return;
-        if (!this._largeWheelBackdropArmed) return;
-        this._largeWheelBackdropArmed = false;
-        this._closeLargeColorWheel();
-      });
-    }
-
-    // Done button
-    if (doneBtn) {
-      doneBtn.addEventListener('click', () => this._closeLargeColorWheel());
-    }
-  }
-
   _applyTemperaturePreset(kelvin) {
     const controlled = this._selectedLights.size > 0
       ? [...this._selectedLights]
@@ -8190,135 +7808,6 @@ class SpatialLightColorCard extends HTMLElement {
     this._hass.callService('light', 'turn_on', { entity_id: targets, color_temp_kelvin: k })
       .catch(err => console.warn('[spatial-light-card] light.turn_on (color_temp) failed:', err));
   }
-
-  _requestColorWheelDraw(force = false) {
-    // Coalesce multiple requests into a single frame, but accumulate force —
-    // a `force=true` request must take effect even if a non-force request
-    // was already pending. Otherwise an explicit "the canvas is fresh and
-    // empty" caller can be dropped, leaving the wheel unpainted.
-    this._colorWheelPendingForce = (this._colorWheelPendingForce || false) || force;
-    if (this._colorWheelFrame) return;
-    const schedule = typeof requestAnimationFrame === 'function'
-      ? requestAnimationFrame
-      : (cb) => setTimeout(cb, 16);
-    const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
-    this._colorWheelCancel = cancel;
-    this._colorWheelFrame = schedule(() => {
-      this._colorWheelFrame = null;
-      const eff = this._colorWheelPendingForce;
-      this._colorWheelPendingForce = false;
-      this.drawColorWheel(eff);
-    });
-  }
-
-  drawColorWheel(force = false) {
-    const canvas = this._els.colorWheel;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // If the canvas isn't laid out yet (e.g. controls just toggled visible,
-    // tab was hidden when this fired, ResizeObserver hasn't fired yet),
-    // re-arm for the next frame instead of giving up. Without this the wheel
-    // can stay blank until something else triggers another draw request.
-    // Cap the retry count so we don't spin forever when the canvas is
-    // intentionally never displayed (e.g. no selection / no default_entity /
-    // no always_show_controls). The ResizeObserver on the canvas will still
-    // fire when it eventually gets a real size, kicking off a fresh request.
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) {
-      this._colorWheelZeroRetries = (this._colorWheelZeroRetries || 0) + 1;
-      if (this._colorWheelZeroRetries < 60 && typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => this._requestColorWheelDraw(force));
-      }
-      return;
-    }
-    this._colorWheelZeroRetries = 0;
-
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
-    const fallbackSize = Number(canvas.getAttribute('width')) || 256;
-    const cssSize = Math.max(rect.width, rect.height) > 0
-      ? Math.min(rect.width || fallbackSize, rect.height || fallbackSize)
-      : fallbackSize;
-
-    // Ensure pixelSize is within safe bounds to prevent OOM
-    // Max dimension: 4096px (reasonable for canvas operations)
-    const MAX_CANVAS_SIZE = 4096;
-    let pixelSize = Math.max(1, Math.round(cssSize * dpr));
-
-    // Validate pixelSize is finite and within safe range
-    if (!Number.isFinite(pixelSize) || pixelSize > MAX_CANVAS_SIZE || pixelSize < 1) {
-      console.warn(`Invalid canvas dimensions calculated: ${pixelSize}. Using fallback.`);
-      pixelSize = Math.min(fallbackSize, MAX_CANVAS_SIZE);
-    }
-
-    if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
-      canvas.width = pixelSize;
-      canvas.height = pixelSize;
-    } else if (!force && this._colorWheelLastSize && this._colorWheelLastSize.pixelSize === pixelSize && this._colorWheelLastSize.dpr === dpr) {
-      return;
-    }
-
-    this._colorWheelLastSize = { pixelSize, dpr };
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const radius = pixelSize / 2;
-    const imageData = ctx.createImageData(pixelSize, pixelSize);
-    const data = imageData.data;
-
-    const hslToRgb = (h, s, l) => {
-      if (s === 0) {
-        const val = Math.round(l * 255);
-        return [val, val, val];
-      }
-      const hue2rgb = (p, q, t) => {
-        if (t < 0) t += 1;
-        if (t > 1) t -= 1;
-        if (t < 1 / 6) return p + (q - p) * 6 * t;
-        if (t < 1 / 2) return q;
-        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-        return p;
-      };
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      const r = hue2rgb(p, q, h + 1 / 3);
-      const g = hue2rgb(p, q, h);
-      const b = hue2rgb(p, q, h - 1 / 3);
-      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-    };
-
-    for (let y = 0; y < pixelSize; y += 1) {
-      for (let x = 0; x < pixelSize; x += 1) {
-        const dx = x + 0.5 - radius;
-        const dy = y + 0.5 - radius;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > radius) continue;
-
-        const sat = Math.min(1, dist / radius);
-        const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
-        const lightness = 0.45 + (1 - sat) * 0.35;
-        const [r, g, b] = hslToRgb(hue / 360, sat, lightness);
-
-        const idx = (y * pixelSize + x) * 4;
-        data[idx] = r;
-        data[idx + 1] = g;
-        data[idx + 2] = b;
-        data[idx + 3] = 255;
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-
-    ctx.save();
-    ctx.lineWidth = Math.max(1, 1.5 * dpr);
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-    ctx.beginPath();
-    ctx.arc(radius, radius, radius - ctx.lineWidth / 2, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
   /** ---------- Glow updates ---------- */
 
   /**
@@ -10550,9 +10039,6 @@ class SpatialLightColorCard extends HTMLElement {
     // Show/hide below controls if used
     if (this._els.controlsBelow) {
       this._els.controlsBelow.classList.toggle('visible', shouldShowControls);
-    }
-    if ((this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) && this._els.colorWheel) {
-      this._requestColorWheelDraw();
     }
     this._refreshColorPresets();
     this._refreshEntityIcons();

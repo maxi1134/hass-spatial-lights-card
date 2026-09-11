@@ -16,7 +16,7 @@
 
 ## 1. Slider Controls Rendering
 
-**Renderers:** `_renderControlsFloating(visible, controlContext)` and `_renderControlsBelow(controlContext)`. Both emit the same children: a 256×256 mini color wheel canvas, two `<input type="range">` sliders (brightness 0-255, temperature in `tempRange.min..max`), and a `.presets-row` = power toggle (`_renderPowerToggle`, gated by `show_power_button`) + `.power-separator` + `.presets-area`. The row carries `.has-presets` (set at render and kept in sync by `_refreshColorPresets`); without it the separator and the empty presets area are `display: none`, leaving just the toggle.
+**Renderers:** `_renderControlsFloating(visible, controlContext)` and `_renderControlsBelow(controlContext)`. Both emit the same children: the colour bars (`_colorBarsHTML` — preview swatch, tint, hue), two `<input type="range">` sliders (brightness 0-255, temperature in `tempRange.min..max`), and a `.presets-row` = power toggle (`_renderPowerToggle`, gated by `show_power_button`) + `.power-separator` + `.presets-area`. The row carries `.has-presets` (set at render and kept in sync by `_refreshColorPresets`); without it the separator and the empty presets area are `display: none`, leaving just the toggle.
 
 **Power toggle:** `<button class="power-toggle" id="powerToggle">` at the start of `.presets-row` — the slot beside the wheel on mobile / under the sliders on desktop, whose height the 128 px wheel already sets — so it costs neither slider width nor card height. `_getPowerState(controlled)` classifies the available light/switch/input_boolean subset as `on` / `off` / `mixed` / `none` (→ disabled); `_updatePowerToggle` syncs class, `aria-pressed` (`mixed` for partial) and the label from `_updateControlValues`. Click calls `_toggleSelection(_getControlledEntities())` — the same any-off → all-on rule as the Space key.
 
@@ -33,7 +33,7 @@
 
 **Visual updates:**
 - `_updateSliderVisual(el)` — sets `--slider-percent` / `--slider-ratio` from `value`/`min`/`max`.
-- `_updateControlValues(controlContext)` — full sync to averaged state, plus capability gating via `_getControlCapabilities()` (toggles `disabled` attribute on sliders, `.disabled` on color wheel, `.no-rgb-support`/`.no-temp-support`/`.no-brightness-support` on the controls container). The temperature slider's warm-to-cool gradient is a static CSS background — it's a visual affordance, not a precise color readout.
+- `_updateControlValues(controlContext)` — full sync to averaged state, plus capability gating via `_getControlCapabilities()` (toggles `disabled` attribute on sliders, `.disabled` on the colour bars, `.no-rgb-support`/`.no-temp-support`/`.no-brightness-support` on the controls container). The temperature slider's warm-to-cool gradient is a static CSS background — it's a visual affordance, not a precise color readout.
 
 ---
 
@@ -115,15 +115,40 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 
 ---
 
-## 7. Color Wheel
+## 7. Color Picker (bars)
 
-`drawColorWheel()` (mini, 256×256) and `_drawLargeColorWheel()` (overlay, 512×512) render an HSV-ish wheel pixel-by-pixel using `lightness = 0.45 + (1 - sat) * 0.35`. Both are cached by size key on the canvas; the mini wheel auto-redraws via `ResizeObserver`.
+Three stacked full-width bars replace the old colour wheel: the colour as it stands, a **tint** bar from
+the pure hue to white, and the **hue** spectrum.
 
-**Hit testing:** `_getColorWheelColorAtEvent(e)` and `_getLargeWheelColorAtEvent(e)` use `getImageData(1×1)` with bounds clamped to `[0, canvas.width-1]` × `[0, canvas.height-1]` (Firefox throws `IndexSizeError` at the right/bottom edge otherwise).
+**The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
+goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use
+`hsl()` for the fully saturated end, where the two models agree.
 
-**Long-press → large wheel:** A long-press on the mini wheel opens the overlay (`_openLargeColorWheel`). The synthetic click that fires when the user releases the long-press is suppressed via `_largeColorWheelSuppressClick`, which is cleared on the next document `pointerup` (in the next frame, so the synthetic click sees the flag).
+**`tint` is 0 at the vivid end and 100 at white**, which is the direction the gradient reads left to
+right, so the plain `<input type="range">` plumbing needs no reversing and saturation is simply
+`100 - tint`. The bars are ordinary range inputs bound with `_bindSliderGesture`, so they inherit pointer
+capture, the vertical-scroll heuristic and the commit-on-release that the brightness and temperature
+sliders already use. That is most of why the wheel's magnifier and long-press overlay are gone: a
+full-width bar needs no aiming aid, and `_openLargeColorWheel`, `_drawLargeColorWheel`, `_updateMagnifier`
+and friends went with it.
 
----
+`_colorBarsRGB()` reads the two values; `_syncColorBars()` pushes state back into appearance (the preview
+swatch, and the tint track's gradient, which starts at the currently chosen hue). `_updateControlValues`
+syncs the bars FROM the lights unless `_activeSliderGesture === 'color'` -- a live apply round-trips
+through hass and returns as state, so writing it back mid-drag would make the thumb stutter against the
+finger. The preview swatch shows the light's ACTUAL colour rather than the bars' reconstruction, because a
+dim or warm-white light has a value the bars cannot express with V pinned to 100.
+
+**Two traps, both hit while building this.** Vendor track pseudo-elements need their OWN rules: a browser
+that does not recognise one selector in a comma list throws away the WHOLE rule, so pairing
+`::-webkit-slider-runnable-track` with `::-moz-range-track` left both engines with no track at all and the
+bars rendered blank. And the release commit must not repeat what the trailing live apply already sent --
+`_lastLiveWheelRgb` records what actually went out and the commit skips an exact repeat, cleared at
+pointerdown so it can never suppress a fresh gesture that merely lands on the same colour.
+
+`_applyColorWheelSelection` / `_applyColorWheelSelectionLive` / `_cancelLiveWheelThrottle` survive
+unchanged: they are the shared service-call seam, used by the presets and keyboard paths too, and the
+leading+trailing throttle is what keeps a drag to ~7 calls/sec.
 
 ## 8. Glow / Walls
 
@@ -309,7 +334,6 @@ _renderAll()
   ├─ shadowRoot.innerHTML = template
   ├─ Cache _els.*
   ├─ Populate yamlOutput.textContent
-  ├─ ResizeObserver on color wheel
   ├─ _attachEventListeners()
   ├─ _updateControlValues() (initial)
   ├─ updateLights()

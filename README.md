@@ -23,7 +23,7 @@ Very useful when you have a lot of lights, and searching for the one you need by
 1. [Features](#features)
 2. [Installation](#installation)
 3. [Quick Start](#-quick-start)
-4. [Usage](#-usage) — Selecting, toggling, color wheel, sliders, presets, moving lights, keyboard shortcuts
+4. [Usage](#-usage) — Selecting, toggling, colour bars, sliders, presets, moving lights, keyboard shortcuts
 5. [Configuration Reference](#-all-configuration-options)
 6. [Custom Colors & Backgrounds](#-custom-colors--backgrounds)
 7. [Effect Presets](#-effect-presets) — Quick-apply named light effects with filtering
@@ -96,7 +96,7 @@ resources:
 | Select all lights | Ctrl+A / Cmd+A | — |
 | Deselect all | Click/tap empty canvas, or press Escape | Tap empty canvas |
 
-When lights are selected, the color wheel, brightness slider, and temperature slider control all selected lights as a group. If you have a **default entity** configured, the controls affect that entity when nothing is selected.
+When lights are selected, the colour bars, brightness slider, and temperature slider control all selected lights as a group. If you have a **default entity** configured, the controls affect that entity when nothing is selected.
 
 > **Note:** On touch devices the card shares the canvas with page scrolling: a drag on empty canvas that starts **near-vertically** (within ~22° of straight up/down) scrolls the dashboard, while any other drag draws the selection box — and once the box has started, it can travel in any direction without being interrupted. For a deliberately vertical box, hold your finger still for a moment first (a short vibration confirms it), then drag. Pinch-zoom always works. Set `canvas_touch_scroll: false` to reserve every canvas touch for selection instead.
 
@@ -106,11 +106,11 @@ When lights are selected, the color wheel, brightness slider, and temperature sl
 |--------|---------|--------|
 | Toggle a light | Double-click | Double-tap |
 | Toggle a switch/scene | Double-click (or single click if `switch_single_tap` is on) | Double-tap (or single tap if `switch_single_tap` is on) |
-| Turn the whole selection on/off | Power button under the sliders | Power button beside the color wheel |
+| Turn the whole selection on/off | Power button under the sliders | Power button beside the colour bars |
 
 > **Note:** If `switch_single_tap` is enabled, switches and scenes activate immediately on a single tap/click instead of being selected.
 
-The **power button** sits at the start of the presets row — under the sliders on desktop, beside the color wheel on mobile — so the sliders keep their full width. It acts on whatever the sliders control: the selected lights, or the default entity when nothing is selected. It is filled when every one of them is on (pressing turns them all off), outlined when only some are on (pressing turns the rest on), and neutral when all are off. Hide it with `show_power_button: false`.
+The **power button** sits at the start of the presets row — under the sliders on desktop, beside the colour bars on mobile — so the sliders keep their full width. It acts on whatever the sliders control: the selected lights, or the default entity when nothing is selected. It is filled when every one of them is on (pressing turns them all off), outlined when only some are on (pressing turns the rest on), and neutral when all are off. Hide it with `show_power_button: false`.
 
 ### Opening Light Details
 
@@ -120,13 +120,23 @@ The **power button** sits at the start of the presets row — under the sliders 
 
 The more-info panel is the standard Home Assistant entity dialog where you can see attributes, history, and settings.
 
-### Color Wheel
+### Colour bars
 
-- **Tap/click** on the mini color wheel to immediately apply that color to selected lights.
-- **Long-press** the mini color wheel (400 ms on touch, 600 ms on mouse) to open a **full-screen color picker** with a magnifier for precise color selection.
-  - Drag around the large wheel to preview colors in the magnifier.
-  - Lift your finger / release the mouse to apply the color.
-  - Close with the **Done** button, by clicking the backdrop, or by pressing **Escape**.
+The colour picker is three stacked full-width bars:
+
+1. **Preview** — the colour the selected lights are showing right now.
+2. **Tint** — the pure hue on the left running to white on the right.
+3. **Hue** — the full spectrum.
+
+- **Tap/click** anywhere along a bar to jump straight to that value.
+- **Drag** to sweep; the lights follow live, throttled to about seven updates a
+  second so a long drag doesn't flood the connection.
+- **Arrow keys** step either bar once it has focus.
+- On mobile, starting a vertical scroll on a bar releases it so the page can
+  scroll — the same behaviour the brightness and temperature sliders have.
+
+The bars run the full width of the controls, so there is no magnifier or
+full-screen picker any more: there is nothing left to aim at.
 
 ### Brightness & Temperature Sliders
 
@@ -169,7 +179,7 @@ Position history stores up to 50 steps.
 | Shortcut | Action |
 |----------|--------|
 | Ctrl+A / Cmd+A | Select all lights |
-| Escape | Deselect all / close color wheel / close dialogs |
+| Escape | Deselect all / close colour bars / close dialogs |
 | Ctrl+Z / Cmd+Z | Undo position change |
 | Ctrl+Y / Cmd+Shift+Z | Redo position change |
 | Arrow keys | Nudge selected lights (when positions unlocked) |
@@ -177,7 +187,7 @@ Position history stores up to 50 steps.
 
 ### Desktop vs Mobile Differences
 
-- **Layout:** On screens wider than 768 px, controls use a two-column grid (color wheel + sliders side by side). On mobile (768 px or narrower), controls stack vertically.
+- **Layout:** On screens wider than 768 px, controls use a two-column grid (colour bars + sliders side by side). On mobile (768 px or narrower), controls stack vertically.
 - **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
 - **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
 - **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.
@@ -216,7 +226,7 @@ Position history stores up to 50 steps.
 | `switch_off_color` | string | `"#3a3a3a"` | Default color for inactive switches. |
 | `scene_color` | string | `"#6366f1"` | Default color for scenes. |
 | `always_show_controls` | boolean | `false` | Always show color controls even when nothing selected. Use if you prefer persistent sliders that are always there even if nothing is selected and there's no default_entity. |
-| `show_power_button` | boolean | `true` | Round on/off button at the start of the presets row (under the sliders on desktop, beside the color wheel on mobile) that toggles the selected lights (or the default entity) as a group. Filled = all on (press turns off); outlined = some on (press turns the rest on). |
+| `show_power_button` | boolean | `true` | Round on/off button at the start of the presets row (under the sliders on desktop, beside the colour bars on mobile) that toggles the selected lights (or the default entity) as a group. Filled = all on (press turns off); outlined = some on (press turns the rest on). |
 | `minimal_ui` | boolean | `false` | Hides light circles; shows only icons. Automatically enables `icon_only_mode`. |
 | `controls_below` | boolean | `true` | Render controls below (`true`) or floating over (`false`). |
 | `default_entity` | string | `null` | Entity to control when nothing is selected. |
@@ -267,7 +277,7 @@ scene_color: "#55aaff"
 
 ### Color Presets
 
-Add quick-select color circles next to the color wheel so you can apply frequently used colors with a single tap.
+Add quick-select color circles next to the colour bars so you can apply frequently used colors with a single tap.
 <!--```yaml
 color_presets:
   - "#ff0000"
@@ -1129,7 +1139,7 @@ JPEG, re-export it as PNG or SVG.
 ## About the design
 The design was somewhat inspired by the Philips Hue light controls, and thinking hard about how to improve over it. I liked about the Philips Hue app the ability to easily grab many lights and make them arbitrary colors, including multiple lights at the same time; and make many lights the same color. However, picking the specific light was still fairly difficult if you have a lot of lights.
 
-This card solves all of the problems: identifying lights by their position in the physical space is much easier than identifying them by their position on the color wheel or finding them by name.
+This card solves all of the problems: identifying lights by their position in the physical space is much easier than identifying them by their position on the colour bars or finding them by name.
 
 This allows very fast and easy setting of arbitrary groups of lights to specific color/temperature/brightness; there’s a mode that shows existing colors and presets to easily sync arbitrary lights to the same color.
 
