@@ -275,6 +275,18 @@ up. Every label went soft. Laying the stage out at full size costs a reflow per 
 text render at the resolution it is actually displayed at (layout == visual, 2 device px per visual px
 at every level).
 
+**The tap-vs-draw threshold divides by the zoom.** It answers a question about the GESTURE — did the
+hand move or did it tap — and that is a fixed number of screen pixels however far in you are. It is
+computed from the rect diagonal, and the rect grows with the zoom while the stroke stays the same size
+on screen, so the bar rose as you zoomed: at 5x you had to drag five times as far to draw anything, and
+every short line was taken as a tap and selected the wall underneath instead — precisely when short
+lines are the point. Divided by the zoom it is a constant 4 screen px at 1x, 1.8x, 3.3x and 6x, and the
+shortest drawable line goes from 2.29% of the plan at 1x to 0.26% at 11x.
+
+The other thresholds were already right, because they are constants in px rather than fractions of the
+diagonal: `_hitTestWall`'s 10px, `_wallJointsAt`'s 1.2px and `_hitTestLightOnStage`'s 18px all divide
+by the same grown rect and so stay fixed on screen.
+
 The viewport's edge is an INSET shadow rather than a border: a border sits outside the content box, so
 the stage came out 2px smaller than the aspect-ratio box and the plan was drawn at a slightly wrong
 shape.

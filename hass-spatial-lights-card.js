@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.28.1 (fork-maxi1134)';
+  static BUILD = 'v1.28.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -10420,7 +10420,16 @@ class SpatialLightColorCard extends HTMLElement {
       const rect = this._planSpaceRect(this._wallSurface().getBoundingClientRect());
       const dxPx = (w.x2 - w.x1) / 100 * rect.width;
       const dyPx = (w.y2 - w.y1) / 100 * rect.height;
-      const minLen = Math.hypot(rect.width, rect.height) * 0.02;
+      // Divided by the zoom, because this threshold answers a question about
+      // the GESTURE -- did the hand move, or did it tap -- and that is a fixed
+      // number of screen pixels however far in you are. `rect` grows with the
+      // zoom while the stroke stays the same size on screen, so without this
+      // the bar rises as you zoom: at 5x you had to drag five times as far to
+      // draw anything, and every short line was taken as a tap and selected
+      // the wall underneath instead. Zooming in is precisely when short lines
+      // are the point.
+      const zoom = (this._wallEditMode && this._weZoom > 0) ? this._weZoom : 1;
+      const minLen = Math.hypot(rect.width, rect.height) * 0.02 / zoom;
       if (Math.hypot(dxPx, dyPx) < minLen) {
         this._draftWalls.splice(st.index, 1);
         this._wallChainAnchor = null;
