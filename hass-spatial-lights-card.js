@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.27.0 (fork-maxi1134)';
+  static BUILD = 'v1.28.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -3319,6 +3319,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._wallEditorTeardown = false;
     this._els.wallOverlay = this.shadowRoot.getElementById('wallEditorOverlay');
     this._els.wallStage = this.shadowRoot.getElementById('wallEditorStage');
+    this._els.wallViewport = this.shadowRoot.getElementById('wallEditorViewport');
     this._els.wallCanvas = this.shadowRoot.getElementById('wallEditorCanvas');
     this._els.wallCount = this.shadowRoot.getElementById('wallEditorCount');
     this._els.wallInspector = this.shadowRoot.getElementById('wallInspector');
@@ -4421,6 +4422,16 @@ class SpatialLightColorCard extends HTMLElement {
         color: rgba(255,255,255,0.7);
       }
       .wall-editor-btn.ghost:hover { background: rgba(255,80,80,0.22); color: #fff; }
+      .wall-editor-zoom {
+        display: flex; align-items: center; gap: 2px;
+        border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; overflow: hidden;
+      }
+      .we-zoom-btn, .we-zoom-level {
+        border: 0; background: transparent; color: rgba(255,255,255,0.75);
+        font: 600 13px system-ui, sans-serif; cursor: pointer; padding: 6px 10px;
+      }
+      .we-zoom-level { min-width: 54px; font-size: 12px; font-variant-numeric: tabular-nums; }
+      .we-zoom-btn:hover, .we-zoom-level:hover { background: rgba(255,255,255,0.18); color: #fff; }
       .wall-editor-modes { display: flex; gap: 0; border-radius: 8px; overflow: hidden;
         border: 1px solid rgba(255,255,255,0.22); }
       .wall-editor-mode {
@@ -4432,8 +4443,30 @@ class SpatialLightColorCard extends HTMLElement {
       /* The stage carries the plan and sets the aspect ratio; sizing by BOTH
          max-width and max-height lets aspect-ratio pick whichever fits, so a
          wide plan fills the width and a tall one fills the height. */
+      /* The viewport owns the size and does the clipping; the stage inside it
+         is what zooms. Keeping them separate means the zoom transform never
+         touches layout, so the dialog does not resize as you zoom. */
+      .wall-editor-viewport {
+        position: relative; overflow: hidden;
+        border-radius: 6px;
+        box-shadow: 0 10px 60px rgba(0,0,0,0.6);
+        border: 1px solid rgba(255,255,255,0.18);
+        height: min(calc(95vh - var(--we-chrome, 150px)), calc(95vw / var(--we-ar, 1.6)));
+        width: auto; max-width: 95vw;
+        aspect-ratio: var(--we-ar, 1.6);
+        touch-action: none;
+        cursor: crosshair;
+      }
+      .wall-editor-viewport.panning { cursor: grabbing; }
       .wall-editor-stage {
-        position: relative;
+        position: absolute; inset: 0;
+        /* Zoom is a transform, so getBoundingClientRect on the stage reports
+           the zoomed box -- which is exactly what _wallPointFromEvent divides
+           by. Every existing gesture keeps working with no changes, and the
+           canvas backing store is sized from the same rect, so lines stay
+           crisp instead of being scaled up. */
+        transform-origin: 0 0;
+        transform: translate(var(--we-tx, 0px), var(--we-ty, 0px)) scale(var(--we-z, 1));
         /* As large as the plan's own ratio allows inside 95% of the viewport.
            Width is computed from the height budget rather than pinned, so a
            tall plan stops being given width it cannot use -- which is what
@@ -4441,15 +4474,7 @@ class SpatialLightColorCard extends HTMLElement {
            second term is the width a stage of that height would need, and min
            picks whichever limit binds. --we-ar is the plan ratio as a plain
            number, emitted beside the aspect-ratio so it can be used in calc. */
-        height: min(calc(95vh - var(--we-chrome, 150px)), calc(95vw / var(--we-ar, 1.6)));
-        width: auto;
-        max-width: 95vw;
         background-color: #f4f1ea;
-        border: 1px solid rgba(255,255,255,0.18);
-        border-radius: 6px;
-        box-shadow: 0 10px 60px rgba(0,0,0,0.6);
-        touch-action: none;
-        cursor: crosshair;
         overflow: hidden;
       }
       /* Same two-layer arrangement as the card's canvas, so ONE set of
@@ -4485,7 +4510,13 @@ class SpatialLightColorCard extends HTMLElement {
         border: 1px solid rgba(255,255,255,0.14);
         border-radius: 10px; padding: 10px 12px;
         color: #fff; font-size: 13px;
-        min-height: 22px;
+        /* Tall enough for its POPULATED state, not its empty one. Selecting a
+           wall or a light fills this panel, and if that grew the panel it
+           shrank the plan above it -- mid-gesture, so the plan jumped under
+           the pointer exactly as you grabbed something. A fixed height costs
+           a few pixels and keeps the plan still. */
+        min-height: 32px;
+        box-sizing: content-box;
       }
       .wall-inspector .wi-hint { color: rgba(255,255,255,0.45); font-size: 12px; }
       .wall-inspector .wi-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -4906,24 +4937,173 @@ class SpatialLightColorCard extends HTMLElement {
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? '' : ' active'}" id="wallModeWalls">Walls</button>
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? ' active' : ''}" id="wallModeLights">Lights</button>
           </div>
+          <div class="wall-editor-zoom">
+            <button class="we-zoom-btn" id="weZoomOut" title="Zoom out">&minus;</button>
+            <button class="we-zoom-level" id="weZoomLevel" title="Reset to fit">100%</button>
+            <button class="we-zoom-btn" id="weZoomIn" title="Zoom in">+</button>
+          </div>
           <button class="wall-editor-btn ghost" id="wallEditorCancel"
                   title="Discard everything done since the editor opened">Cancel</button>
           <button class="wall-editor-btn" id="wallEditorDone">Done</button>
         </div>
-        <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
-             style="${bgStyle} aspect-ratio:${ar}; --we-ar:${this._wallEditorAspectNumber()};">
-          <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
+        <div class="wall-editor-viewport" id="wallEditorViewport"
+             style="--we-ar:${this._wallEditorAspectNumber()};">
+          <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
+               style="${bgStyle} aspect-ratio:${ar};">
+            <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
+          </div>
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
-          ? 'Drag a light to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping'
+          ? 'Drag a light to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
           : 'Drag to draw &mdash; starting on a corner attaches to it exactly &middot; '
             + '<kbd>Esc</kbd> ends a run &middot; '
             + '<kbd>Shift</kbd>-drag a corner or a wall to move it &middot; '
             + 'right-click or long-press a wall to delete &middot; '
-            + '<kbd>Alt</kbd> ignores snapping'}</div>
+            + '<kbd>Alt</kbd> ignores snapping &middot; '
+            + 'scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'}</div>
       </dialog>
     `;
+  }
+
+  /**
+   * Zoom the big editor. State is kept in CSS variables on the stage rather
+   * than in layout, so zooming never resizes the dialog and every gesture
+   * keeps measuring the stage the way it already did.
+   *
+   * `at` is a viewport-relative point to keep fixed (the pointer, or the
+   * centre), which is what makes wheel-zoom feel like it is pulling the plan
+   * toward the cursor instead of drifting away from it.
+   */
+  _setWallZoom(z, at) {
+    const vp = this._els && this._els.wallViewport;
+    const stage = this._els && this._els.wallStage;
+    if (!vp || !stage) return;
+    const vb = vp.getBoundingClientRect();
+    if (!(vb.width > 0)) return;
+    const MIN = 1, MAX = 12;
+    const prev = this._weZoom || 1;
+    const next = Math.max(MIN, Math.min(MAX, z));
+    const px = at ? at.x - vb.left : vb.width / 2;
+    const py = at ? at.y - vb.top : vb.height / 2;
+    // Keep the plan point under `at` under `at`: solve for the pan that leaves
+    // (px,py) mapping to the same stage coordinate at the new scale.
+    const tx = (this._wePanX || 0);
+    const ty = (this._wePanY || 0);
+    const k = next / prev;
+    this._wePanX = px - (px - tx) * k;
+    this._wePanY = py - (py - ty) * k;
+    this._weZoom = next;
+    this._clampWallPan();
+    this._applyWallZoom();
+  }
+
+  /**
+   * Never let the plan be dragged off its own viewport: at zoom 1 it is pinned,
+   * and beyond that it may travel exactly as far as the overflow allows.
+   */
+  _clampWallPan() {
+    const vp = this._els && this._els.wallViewport;
+    if (!vp) return;
+    const vb = vp.getBoundingClientRect();
+    const z = this._weZoom || 1;
+    const maxX = vb.width * (z - 1);
+    const maxY = vb.height * (z - 1);
+    this._wePanX = Math.max(-maxX, Math.min(0, this._wePanX || 0));
+    this._wePanY = Math.max(-maxY, Math.min(0, this._wePanY || 0));
+  }
+
+  _applyWallZoom() {
+    const stage = this._els && this._els.wallStage;
+    if (!stage) return;
+    const z = this._weZoom || 1;
+    stage.style.setProperty('--we-z', String(z));
+    stage.style.setProperty('--we-tx', `${Math.round(this._wePanX || 0)}px`);
+    stage.style.setProperty('--we-ty', `${Math.round(this._wePanY || 0)}px`);
+    const label = this.shadowRoot && this.shadowRoot.getElementById('weZoomLevel');
+    if (label) label.textContent = `${Math.round(z * 100)}%`;
+    // The canvas backing store is sized from the stage rect, which the zoom
+    // just changed, so redraw or the walls stay at the old resolution.
+    this._requestWallEditorDraw();
+  }
+
+  _resetWallZoom() {
+    this._weZoom = 1;
+    this._wePanX = 0;
+    this._wePanY = 0;
+    this._applyWallZoom();
+  }
+
+  /** Wheel, pinch and drag-to-pan on the big editor. */
+  _bindWallZoom() {
+    const vp = this._els && this._els.wallViewport;
+    if (!vp || vp._zoomBound) return;
+    vp._zoomBound = true;
+
+    vp.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      // A trackpad reports small deltas continuously; exponentiating keeps the
+      // step proportional so it feels the same at every zoom level.
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      this._setWallZoom((this._weZoom || 1) * factor, { x: e.clientX, y: e.clientY });
+    }, { passive: false });
+
+    // Pan: middle button, or Ctrl/Cmd with the left. Both are free -- plain
+    // drag draws, Shift moves a corner, Alt ignores snapping.
+    const pan = { id: null, x: 0, y: 0 };
+    vp.addEventListener('pointerdown', (e) => {
+      const wants = e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey));
+      if (!wants) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pan.id = e.pointerId; pan.x = e.clientX; pan.y = e.clientY;
+      vp.classList.add('panning');
+      try { vp.setPointerCapture(e.pointerId); } catch (_) { /* pointer gone */ }
+    }, true);
+    vp.addEventListener('pointermove', (e) => {
+      if (pan.id !== e.pointerId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._wePanX = (this._wePanX || 0) + (e.clientX - pan.x);
+      this._wePanY = (this._wePanY || 0) + (e.clientY - pan.y);
+      pan.x = e.clientX; pan.y = e.clientY;
+      this._clampWallPan();
+      this._applyWallZoom();
+    }, true);
+    const endPan = (e) => {
+      if (pan.id !== e.pointerId) return;
+      pan.id = null;
+      vp.classList.remove('panning');
+      try { vp.releasePointerCapture(e.pointerId); } catch (_) { /* already gone */ }
+    };
+    vp.addEventListener('pointerup', endPan, true);
+    vp.addEventListener('pointercancel', endPan, true);
+
+    // Pinch: two pointers on the plan, the one gesture a touch user will try.
+    const pts = new Map();
+    let pinchBase = null;
+    vp.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2) {
+        const [a, b] = [...pts.values()];
+        pinchBase = { d: Math.hypot(a.x - b.x, a.y - b.y), z: this._weZoom || 1 };
+      }
+    });
+    vp.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size !== 2 || !pinchBase || pinchBase.d <= 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      this._setWallZoom(pinchBase.z * (d / pinchBase.d),
+        { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    }, true);
+    const dropPt = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinchBase = null; };
+    vp.addEventListener('pointerup', dropPt);
+    vp.addEventListener('pointercancel', dropPt);
   }
 
   /**
@@ -4938,8 +5118,9 @@ class SpatialLightColorCard extends HTMLElement {
     const stage = this.shadowRoot && this.shadowRoot.getElementById('wallEditorStage');
     if (!dlg || !stage || !dlg.open) return;
     let chrome = 0;
+    const plan = this._els.wallViewport || stage;
     for (const child of dlg.children) {
-      if (child === stage) continue;
+      if (child === plan) continue;
       chrome += child.getBoundingClientRect().height;
     }
     const cs = getComputedStyle(dlg);
@@ -5496,6 +5677,7 @@ class SpatialLightColorCard extends HTMLElement {
         this._wallEditMode = active;
         this._wallEditorId = active ? (d.editorId || null) : null;
         this._wallEditorMode = (d.mode === 'lights') ? 'lights' : 'walls';
+        if (active && !this._wallEditMode) this._resetWallZoom();
         // Wall mode and position-editing are mutually exclusive; enforce it
         // card-side too, since a dropped event would otherwise leave the card
         // in both, where the wall branch wins and light dragging silently
@@ -5821,6 +6003,15 @@ class SpatialLightColorCard extends HTMLElement {
       if (mw) mw.addEventListener('click', () => setMode('walls'));
       const ml = this.shadowRoot.getElementById('wallModeLights');
       if (ml) ml.addEventListener('click', () => setMode('lights'));
+
+      this._bindWallZoom();
+      const zIn = this.shadowRoot.getElementById('weZoomIn');
+      if (zIn) zIn.addEventListener('click', () => this._setWallZoom((this._weZoom || 1) * 1.4));
+      const zOut = this.shadowRoot.getElementById('weZoomOut');
+      if (zOut) zOut.addEventListener('click', () => this._setWallZoom((this._weZoom || 1) / 1.4));
+      const zLvl = this.shadowRoot.getElementById('weZoomLevel');
+      if (zLvl) zLvl.addEventListener('click', () => this._resetWallZoom());
+      this._applyWallZoom();
 
       const cancel = this.shadowRoot.getElementById('wallEditorCancel');
       if (cancel) {

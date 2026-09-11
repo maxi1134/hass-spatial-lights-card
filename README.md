@@ -1015,6 +1015,12 @@ closing it. **Done** (or a second `Esc`) closes it and keeps your work;
 the editor — every wall drawn, moved or deleted, and every light placed, in
 both modes.
 
+**Zoom in to place things precisely.** Scroll (or pinch) to zoom on the point
+under the pointer, `Ctrl`/`⌘`-drag or middle-drag to pan, and the — / % / +
+buttons in the header do the same — click the percentage to fit the plan again.
+Every gesture works the same zoomed in, so a light can be nudged a fraction of
+a percent rather than a whole one.
+
 It sizes itself to your plan: at most 95% of the viewport in either
 direction, as tall as will fit, and only as wide as the plan's own shape
 needs — so a portrait plan gets a portrait editor rather than a narrow strip
