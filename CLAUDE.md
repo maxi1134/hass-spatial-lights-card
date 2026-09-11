@@ -275,6 +275,31 @@ up. Every label went soft. Laying the stage out at full size costs a reflow per 
 text render at the resolution it is actually displayed at (layout == visual, 2 device px per visual px
 at every level).
 
+**The canvas covers the VIEWPORT, not the plan.** Laying the stage out at full size fixed the
+text the STAGE draws, but the canvas on top of it was still sized to the whole zoomed plan -- and
+`_sizeFieldCanvas` enforces `light_field.max_pixels` (2.6M), so the further in you zoomed the further
+its resolution fell: on a 1330x665 viewport, 1.0 device px per CSS px at 2.2x and 0.5 at 5.21x, a
+quarter of the display. The labels are `fillText` at a fixed 11px, so they went soft exactly as
+reported, and the first two attempts at this missed it because the harness viewport was small enough
+that the whole zoomed stage stayed under the budget.
+
+`_renderLightField(canvas, rect, view)` takes a `view` of `{canvasRect, panX, panY}`: the canvas is
+sized from `canvasRect` (the viewport) while the drawing still measures against `rect` (the zoomed
+plan), and `ctx.translate(panX, panY)` says which part of the plan the window is over. The canvas is
+therefore a SIBLING of the stage inside the viewport, not a child of it, and is `pointer-events: none`
+so the stage keeps every gesture. Nothing in the gesture path moved: it all measures
+`_wallSurface()`, which is the stage.
+
+The editor canvas gets its own budget (`EDITOR_PIXEL_BUDGET`, 8M) because the card's exists to stop
+MANY cards on a phone each claiming a large backing store, and the editor is one surface that can
+never exceed the screen. Without the override a 1330x665 viewport at dpr 2 still wanted 3.5M and was
+trimmed to 1.71. Measured after: 2.00 device px per CSS px, and the same backing store at 1x, 2.2x,
+4.8x, 5.21x, 9x and 12x.
+
+The plan IMAGE is a different matter and not fixable here: at 521% a raster plan is being asked for
+five times its native width, and `_warnIfPlanUpscaled` only measures the card's own canvas. An SVG
+plan re-rasterizes at the zoomed layout size and stays sharp.
+
 **The zoom is parked with the editor, like the mode.** It lives on the card, and HA replaces the card on
 every config change — which every committed wall and every dropped light causes — so committing
 anything zoomed you straight back out. `_applyWallZoom` broadcasts `spatial-card-wall-view`, the editor

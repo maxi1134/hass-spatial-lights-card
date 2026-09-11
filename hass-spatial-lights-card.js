@@ -16,9 +16,18 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.28.3 (fork-maxi1134)';
+  static BUILD = 'v1.28.4 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
+
+  /**
+   * Pixel allowance for the full-size editor's canvas. Larger than the card's
+   * because it is ONE surface, never larger than the screen, and the place
+   * precision work happens -- the card's budget exists to stop many cards on a
+   * phone each allocating a big backing store, which does not apply to a modal.
+   * 8M covers device-pixel-ratio 2 up to roughly 2000x1000 CSS pixels.
+   */
+  static EDITOR_PIXEL_BUDGET = 8000000;
   // Natural dimensions of plan images, keyed by URL and shared across cards so
   // one plan is measured once per dashboard. Values are {w,h}, null (failed),
   // or a Promise while the measurement is in flight.
@@ -4464,10 +4473,11 @@ class SpatialLightColorCard extends HTMLElement {
         /* Zoom changes the stage's LAYOUT size, not a transform. A transform
            looks equivalent -- getBoundingClientRect includes it either way --
            but the compositor rasterizes a transformed layer at its LAYOUT size
-           and scales that bitmap up, so the canvas kept its small raster and
-           every label went soft. Measured at 521%: layout 209px, visual
-           1087px, backing store 2173px, i.e. 10.4 device pixels of canvas
-           squeezed into each laid-out pixel and then blown back up.
+           and scales that bitmap up, so everything it draws -- the plan
+           image, and the canvas while it still lived in here -- kept its
+           small raster. Measured at 521%: layout 209px, visual 1087px,
+           backing store 2173px, i.e. 10.4 device pixels squeezed into each
+           laid-out pixel and then blown back up.
            Laying it out at full size costs a reflow per zoom step and makes
            text render at the resolution it is actually displayed at. */
         position: absolute;
@@ -4505,9 +4515,15 @@ class SpatialLightColorCard extends HTMLElement {
         width: 100cqh; height: 100cqw;
         transform: translate(-50%, -50%) rotate(var(--plan-rotation, 90deg));
       }
-      .wall-editor-canvas { position: relative; z-index: 1; }
+      /* Covers the VIEWPORT, not the stage: a canvas sized to the zoomed plan
+         spends the whole pixel budget on parts that are off screen, and the
+         budget then forces its resolution down -- at 521% on a 1330px
+         viewport that was 0.5 device pixels per CSS pixel, a quarter of the
+         display, and every label went soft. Sibling of the stage rather than
+         its child, drawn after it so it sits over the plan image. */
       .wall-editor-canvas {
-        position: absolute; inset: 0; width: 100%; height: 100%;
+        position: absolute; inset: 0; z-index: 1;
+        width: 100%; height: 100%;
         display: block; pointer-events: none;
       }
       .wall-inspector {
@@ -4956,9 +4972,8 @@ class SpatialLightColorCard extends HTMLElement {
         <div class="wall-editor-viewport" id="wallEditorViewport"
              style="--we-ar:${this._wallEditorAspectNumber()};">
           <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
-               style="${bgStyle} aspect-ratio:${ar};">
-            <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
-          </div>
+               style="${bgStyle} aspect-ratio:${ar};"></div>
+          <canvas class="wall-editor-canvas" id="wallEditorCanvas" data-css-sized="1"></canvas>
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
@@ -5199,19 +5214,27 @@ class SpatialLightColorCard extends HTMLElement {
     if (!stage || !cv) return;
     const box = stage.getBoundingClientRect();
     if (!(box.width > 0) || !(box.height > 0)) return;
+    // The PLAN is the zoomed stage; the CANVAS only covers what is visible.
     const rect = { width: box.width, height: box.height };
+    const vp = this._els && this._els.wallViewport;
+    const vpBox = vp ? vp.getBoundingClientRect() : box;
+    const view = {
+      canvasRect: { width: vpBox.width, height: vpBox.height },
+      panX: box.left - vpBox.left,
+      panY: box.top - vpBox.top,
+    };
 
     const ctx = cv.getContext('2d');
     if (!ctx) return;
 
     if (this._fieldActive) {
-      // Same renderer, bigger canvas — so what you draw against is what the
-      // dashboard will actually show.
-      this._renderLightField(cv, rect);
+      // Same renderer, same plan geometry — just windowed.
+      this._renderLightField(cv, rect, view);
     } else {
-      const dpr = this._sizeFieldCanvas(cv, rect);
+      const dpr = this._sizeFieldCanvas(cv, view.canvasRect, SpatialLightColorCard.EDITOR_PIXEL_BUDGET);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.clearRect(0, 0, view.canvasRect.width, view.canvasRect.height);
+      ctx.translate(view.panX, view.panY);
       this._drawFieldWalls(ctx, rect);
     }
 
@@ -5219,8 +5242,9 @@ class SpatialLightColorCard extends HTMLElement {
     // can be placed relative to what they occlude; in lights mode they are the
     // thing being dragged, so they get grabbable size and a name.
     const lightsMode = this._wallEditorMode === 'lights';
-    const dpr2 = cv.width / rect.width;
+    const dpr2 = cv.width / view.canvasRect.width;
     ctx.setTransform(dpr2, 0, 0, dpr2, 0, 0);
+    ctx.translate(view.panX, view.panY);
     ctx.save();
     const radius = lightsMode ? 11 : 7;
     for (const id of this._config.entities) {
@@ -9073,7 +9097,7 @@ class SpatialLightColorCard extends HTMLElement {
    * Size the backing store to the plan box times a quality-capped DPR.
    * Returns the device-pixel ratio actually used, or 0 if unusable.
    */
-  _sizeFieldCanvas(cv, rect) {
+  _sizeFieldCanvas(cv, rect, budgetOverride) {
     const lf = this._config.light_field;
     const deviceDpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     let dpr;
@@ -9084,8 +9108,11 @@ class SpatialLightColorCard extends HTMLElement {
       default: dpr = Math.min(deviceDpr, 2); break;
     }
     // Honour the pixel budget so a very wide card on a 3x phone does not
-    // allocate a backing store the GPU will refuse.
-    const budget = lf.max_pixels;
+    // allocate a backing store the GPU will refuse. The full-size editor
+    // overrides it: that budget guards against MANY cards each claiming a big
+    // one, and the editor is a single surface that can never exceed the
+    // screen -- while being exactly where undersampling is visible.
+    const budget = budgetOverride || lf.max_pixels;
     const wanted = rect.width * rect.height * dpr * dpr;
     if (wanted > budget) dpr *= Math.sqrt(budget / wanted);
     dpr = Math.max(0.5, dpr);
@@ -9478,7 +9505,7 @@ class SpatialLightColorCard extends HTMLElement {
    * a whole then composites over the plan with `mix-blend-mode` (screen by
    * default, which tints the plan without crushing its own darks).
    */
-  _renderLightField(targetCanvas, targetRect) {
+  _renderLightField(targetCanvas, targetRect, view) {
     if (this._fieldFailed) return;
     // Parameterised so the full-size wall editor can paint the same field on
     // its own, much larger canvas. Defaults to the in-card layer.
@@ -9490,11 +9517,20 @@ class SpatialLightColorCard extends HTMLElement {
     const ctx = cv.getContext('2d');
     if (!ctx) { this._fieldFailed = true; return; }
 
-    const dpr = this._sizeFieldCanvas(cv, rect);
+    // `view` decouples the CANVAS from the PLAN. Zoomed in, the plan is many
+    // times the size of what you can see, and sizing the canvas to the plan
+    // spends the whole pixel budget on parts that are off screen -- at 5x on a
+    // 1200px viewport the budget forced dpr down to 0.5, a quarter of the
+    // device resolution, and every label went soft. The canvas covers the
+    // WINDOW; the pan says which part of the plan that window is over.
+    const canvasRect = (view && view.canvasRect) || rect;
+    const dpr = this._sizeFieldCanvas(cv, canvasRect,
+      view ? SpatialLightColorCard.EDITOR_PIXEL_BUDGET : 0);
     const lf = this._config.light_field;
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.clearRect(0, 0, canvasRect.width, canvasRect.height);
+    if (view) ctx.translate(view.panX || 0, view.panY || 0);
 
     // Wall drawing can be armed with diffusion switched off; then the canvas
     // exists only to show the geometry.
