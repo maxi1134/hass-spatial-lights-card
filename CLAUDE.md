@@ -139,6 +139,44 @@ The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements a
 them is already element-guarded, so they are inert rather than broken and would light up again if the
 labels ever came back.
 
+**The floating controls are draggable, and that is the answer to them being in the way.**
+`default_entity` keeps them on screen — it names the light they act on when nothing is selected,
+which is only useful if they are there to act — so the fix for "permanently over my plan" is to let
+the user move them, not to hide them.
+
+`_bindFloatingDrag` drags by a grip (`.cf-grip`); `.dragged` swaps the anchors for `--cf-x`/`--cf-y`.
+Three things are load-bearing. The position is stored as FRACTIONS of the canvas, so it survives a
+resize, a column change and a rotation. `_applyFloatingPos` re-clamps on EVERY application, not just on
+drop, because the canvas can be a different shape by then. And it is driven from the canvas
+ResizeObserver, because `_renderAll` legitimately runs while the card is DETACHED (HA sets config and
+hass before appending) and there is no box to clamp against yet.
+
+The box is sized by WIDTH, never by pinning left AND right. A dragged box has to release the right
+edge, and the mobile rule used to size it by pinning both with `width: auto` — so dragging collapsed it
+to shrink-to-fit, 428px down to 187px. Compression is `@container sle-card` on `.canvas-wrapper`, named
+rather than anonymous because `#canvas` becomes a size container itself on a quarter turn and would
+otherwise capture those queries.
+
+The grip stops propagation: it sits inside `#canvas`, whose pointerdown currently declines the gesture,
+but incidentally rather than by contract. Its Escape swallows too, or one key would both reposition the
+panel and clear the selection.
+
+**`max-height: calc(100% - 40px)` on the box is not cosmetic.** `#canvas` clips, and the grip is the
+TOPMOST child, so a box taller than the plan loses its own drag handle first — and with it any way to
+move the panel off the lights. On an ordinary 1.6:1 plan in a 420px column the box was 321px against a
+262px canvas and the grip hit-tested to BODY: the feature was unreachable. It scrolls internally now.
+The same reasoning pins an over-tall box to the BOTTOM on restore rather than the top, because the
+presets row and power toggle live at the bottom and are what you press.
+
+Three more things the live drag owns: `_applyFloatingPos` bails while `.dragging` (every watched state
+change calls `updateLights`, including the ones this card just caused, and it would rewrite the position
+from the stored fractions mid-gesture); a second pointer on the grip is ignored rather than replacing
+the state; and the origin is seeded through the SAME clamp `pointermove` applies, or an over-tall box
+jumped the instant it was grabbed.
+
+The `@container` rules sit AFTER the `@media (max-width: 768px)` block on purpose: container queries add
+no specificity, so source order is all that decides which wins when both match.
+
 **Bar height is `color_bar_height`** (px, default 34, clamped 12–120). It feeds `--color-bar-h`, which the
 track AND thumb rules both derive from, so the thumb stays proportional at any height.
 

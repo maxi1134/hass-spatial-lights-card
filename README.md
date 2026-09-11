@@ -147,10 +147,22 @@ with the old sliders — ask if you want them back.
 
 ### Overlaid controls
 
-With `controls_below: false` the controls float over the plan. They anchor
-themselves to whichever end the selection is **not** at — select a light near
-the bottom and the controls move to the top, so they never sit on the lights
-you are adjusting.
+With `controls_below: false` the controls float over the plan.
+
+- **Drag them** by the grip at the top to put them wherever suits your plan.
+  The position is remembered per card, in your browser, and survives
+  reloads and resizes.
+- **Keyboard**: focus the grip and use the arrow keys to nudge it (hold Shift
+  for bigger steps), or Escape to go back to automatic placement.
+- **Double-click the grip** to go back to automatic placement.
+- Left alone, they anchor to whichever end the selection is **not** at —
+  select a light near the bottom and they move to the top.
+- They **compress** on a narrow card, shrinking their padding and wrapping
+  the presets rather than spilling past the plan.
+
+Setting `default_entity` keeps them on screen permanently, since it names the
+light they act on when nothing is selected. If that puts them in your way,
+drag them.
 
 ### Color Presets & Live Colors
 
@@ -231,11 +243,11 @@ Position history stores up to 50 steps.
 | `switch_on_color` | string | `"#ffa500"` | Default color for active switches. |
 | `switch_off_color` | string | `"#3a3a3a"` | Default color for inactive switches. |
 | `scene_color` | string | `"#6366f1"` | Default color for scenes. |
-| `always_show_controls` | boolean | `false` | Always show color controls even when nothing selected. Use if you prefer persistent sliders that are always there even if nothing is selected and there's no default_entity. |
+| `always_show_controls` | boolean | `false` | Show the controls even when nothing is selected. This alone governs visibility. |
 | `show_power_button` | boolean | `true` | Round on/off button at the start of the presets row (under the sliders on desktop, beside the colour bars on mobile) that toggles the selected lights (or the default entity) as a group. Filled = all on (press turns off); outlined = some on (press turns the rest on). |
 | `minimal_ui` | boolean | `false` | Hides light circles; shows only icons. Automatically enables `icon_only_mode`. |
 | `controls_below` | boolean | `true` | Render controls below (`true`) or floating over (`false`). |
-| `default_entity` | string | `null` | Entity to control when nothing is selected. |
+| `default_entity` | string | `null` | Light the controls act on when nothing is selected; also keeps them on screen. Drag them by their grip if they are in the way. |
 | `switch_single_tap` | boolean | `false` | Toggle switches/scenes with a single tap instead of selecting them. |
 | `show_entity_icons` | boolean | `true` | Show MDI icons inside the light circles. |
 | `icon_style` | string | `"mdi"` | Icon style (`mdi` or `emoji`). |

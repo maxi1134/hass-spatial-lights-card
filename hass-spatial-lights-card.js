@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.23.0 (fork-maxi1134)';
+  static BUILD = 'v1.24.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -409,6 +409,10 @@ class SpatialLightColorCard extends HTMLElement {
     this._initializePositions();
 
     // Clear caches on config change
+    // The remembered control position is keyed on the entity list and title,
+    // so a config change can move the key. The memo has to go with it or the
+    // card keeps showing a position stored for a DIFFERENT card.
+    this._floatingPos = undefined;
     this._canvasElementCache = null;
     this._customMaskCache = null;
     this._wallMaskCache = null;
@@ -3233,6 +3237,10 @@ class SpatialLightColorCard extends HTMLElement {
 
     const controlContext = this._getControlContext();
     const avgState = controlContext.avgState;
+    // `default_entity` keeps the controls up: it names the light they act on
+    // when nothing is selected, which is only useful if they are on screen to
+    // act. Being permanently in the way is answered by letting the user DRAG
+    // them instead, not by hiding them.
     const showControls = this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity;
     const controlsPosition = this._config.controls_below ? 'below' : 'floating';
     const showHeader = !!this._config.title;
@@ -3307,6 +3315,9 @@ class SpatialLightColorCard extends HTMLElement {
     }
     if (this._els.canvas && typeof window !== 'undefined' && 'ResizeObserver' in window) {
       this._canvasObserver = new ResizeObserver(() => {
+        // Cheap, and it is the only thing that reliably runs once the canvas
+        // has a real box: _renderAll can legitimately run detached.
+        this._applyFloatingPos();
         // Leading + trailing debounce. The leading call keeps the initial
         // layout flush instant (this observer is what renders walls on first
         // paint); during a continuous window resize the per-frame size
@@ -3405,7 +3416,11 @@ class SpatialLightColorCard extends HTMLElement {
         overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
       }
 
-      .canvas-wrapper { position: relative; }
+      /* Named container so the floating controls can compress against the
+         CARD's width. Named rather than anonymous because #canvas becomes a
+         size container itself on a quarter turn and would otherwise capture
+         these queries. */
+      .canvas-wrapper { position: relative; container-type: inline-size; container-name: sle-card; }
       .canvas {
         position: relative; width: 100%; background: var(--canvas-bg, var(--surface-primary));
         ${this._viewAspectRatio()
@@ -3972,7 +3987,16 @@ class SpatialLightColorCard extends HTMLElement {
         border: 1px solid var(--border-medium); border-radius: var(--radius-lg, 12px); padding: 16px 20px;
         display: flex; flex-direction: column;
         gap: 12px; align-items: stretch; box-shadow: var(--shadow-md);
-        min-width: min(420px, 86vw);
+        /* Shrinks with the card instead of forcing a minimum: a narrow
+           dashboard column would otherwise push the box past the plan. */
+        width: min(420px, calc(100% - 20px));
+        /* Never taller than the plan it floats over. #canvas clips, and the
+           grip is the topmost child, so an over-tall box loses its own drag
+           handle first -- and with it any way to move the box off the lights.
+           Scrolls internally instead of growing out of the top. */
+        max-height: calc(100% - 40px);
+        overflow-y: auto; overflow-x: hidden;
+        overscroll-behavior: contain;
         opacity: 0; pointer-events: none; transition: opacity var(--transition-base);
         z-index: 50;
       }
@@ -3980,111 +4004,23 @@ class SpatialLightColorCard extends HTMLElement {
       /* Anchored to whichever end of the plan the selection is NOT at, so the
          controls do not sit on top of the lights being adjusted. */
       .controls-floating.at-top { top: 20px; bottom: auto; }
+      /* Dragged: explicit placement wins over both anchors, and the centring
+         transform has to go with them or the box jumps half its width. */
+      .controls-floating.dragged {
+        left: var(--cf-x, 50%); top: var(--cf-y, 20px);
+        right: auto; bottom: auto; transform: none;
+      }
+      .cf-grip {
+        flex: 0 0 auto; align-self: center;
+        width: 44px; height: 5px; border-radius: 3px; margin: -4px 0 2px;
+        background: var(--text-secondary, #9aa); opacity: 0.5;
+        cursor: grab; touch-action: none;
+      }
+      .cf-grip:hover { opacity: 0.85; }
+      .cf-grip:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+      .controls-floating.dragging .cf-grip { cursor: grabbing; opacity: 1; }
+      .controls-floating.dragging { transition: none; }
 
-      .controls-below {
-        padding: 20px; border-top: 1px solid var(--border-subtle); background: var(--controls-below-bg, var(--surface-secondary));
-        backdrop-filter: var(--controls-below-backdrop, none);
-        display: none;
-        flex-direction: column;
-        gap: 12px; align-items: stretch; justify-content: center;
-      }
-      .controls-below.visible { display: flex; }
-
-      /* The colour picker: three stacked full-width bars. Full width is the
-         point -- a bar you can hit anywhere along is easier to aim than a
-         128px wheel, which is why the wheel needed a long-press magnifier and
-         these do not. */
-      .color-bars {
-        display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0;
-      }
-      .color-bar-slot {
-        background: var(--surface-secondary);
-        border: 1px solid var(--border-subtle);
-        border-radius: 14px; padding: 7px;
-        display: flex; align-items: center;
-      }
-      .color-bar, .color-bar-input {
-        display: block; width: 100%; height: var(--color-bar-h, 34px);
-        border-radius: 9px; min-width: 0;
-      }
-      .color-bar.preview {
-        background: var(--bar-preview, var(--accent-primary));
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
-      }
-      .color-bar-input {
-        -webkit-appearance: none; appearance: none;
-        background: transparent; margin: 0; padding: 0; border: 0;
-        cursor: pointer; touch-action: none;
-      }
-      .color-bar-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
-      /* Capability gating sets the disabled property on the brightness and
-         temperature bars individually (a light may do colour but not
-         temperature), so they mute on their own rather than via the
-         whole-block .disabled class. */
-      .color-bar-input:disabled { opacity: 0.4; cursor: not-allowed; }
-      /* Literal stops rather than var()-driven ones: iOS caches var()-resolved
-         gradients on pseudo-elements and the spectrum would stop updating. */
-      /* Vendor track pseudo-elements get their OWN rules, never a shared
-         selector list: a browser that does not recognise one selector in a
-         list throws away the whole rule, so pairing -webkit- with -moz- here
-         leaves both engines with no track at all. */
-      .color-bar-input.hue::-webkit-slider-runnable-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
-          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
-      }
-      .color-bar-input.hue::-moz-range-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
-          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
-      }
-      /* Brightness: the bar carries the light's CURRENT colour, so the whole
-         row doubles as the preview it replaced. The axis is position only --
-         no ramp -- because a ramp would read as a second colour control. */
-      .color-bar-input.brightness::-webkit-slider-runnable-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: var(--bar-preview, var(--accent-primary));
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
-      }
-      .color-bar-input.brightness::-moz-range-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: var(--bar-preview, var(--accent-primary));
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
-      }
-      /* Temperature: the same warm-to-cool ramp the old slider used, in the
-         bar shape. A visual affordance, not a precise readout. */
-      .color-bar-input.temp::-webkit-slider-runnable-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
-          #87ceeb 70%, #4d9fff 100%);
-      }
-      .color-bar-input.temp::-moz-range-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
-          #87ceeb 70%, #4d9fff 100%);
-      }
-      .color-bar-input.tint::-webkit-slider-runnable-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
-      }
-      .color-bar-input.tint::-moz-range-track {
-        height: var(--color-bar-h, 34px); border-radius: 9px;
-        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
-      }
-      /* A thin upright bar, taller than the track so it reads as a position
-         marker rather than a blob sitting on the colour. */
-      .color-bar-input::-webkit-slider-thumb {
-        -webkit-appearance: none; appearance: none;
-        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
-        margin-top: -5px; border-radius: 5px;
-        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-        border: 1px solid rgba(0,0,0,0.15);
-      }
-      .color-bar-input::-moz-range-thumb {
-        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
-        border-radius: 5px; border: 1px solid rgba(0,0,0,0.15);
-        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-      }
       /* H7: capability gating — keep the layout slot occupied so selection
          changes don't reflow, but visually mute and block interaction when
          no controlled light supports the relevant control. */
@@ -4104,7 +4040,6 @@ class SpatialLightColorCard extends HTMLElement {
          separator and the (empty) presets area collapse when there are no
          presets, leaving just the power toggle. */
       .presets-row {
-        grid-column: 2; grid-row: 2;
         display: flex; align-items: center; gap: 6px; min-width: 0;
       }
       .presets-area {
@@ -4240,7 +4175,10 @@ class SpatialLightColorCard extends HTMLElement {
         .controls-floating {
           display: flex; flex-direction: column; align-items: stretch;
           gap: 12px;
-          left: 16px; right: 16px; width: auto; transform: none;
+          /* Sized by WIDTH, not by pinning both edges: a dragged box has to
+             release the right edge, and with width:auto that collapses it to
+             shrink-to-fit. */
+          width: calc(100% - 24px);
         }
         .controls-below.visible {
           display: flex; flex-direction: column; align-items: stretch;
@@ -4258,6 +4196,129 @@ class SpatialLightColorCard extends HTMLElement {
           justify-content: center;
         }
       }
+
+      /* Compression. The bars are width:100% so they follow on their own; what
+         has to give at narrow widths is the padding, the gaps and the presets
+         row, which would otherwise force the box wider than the plan. */
+      @container sle-card (max-width: 380px) {
+        .controls-floating { padding: 10px; gap: 8px; border-radius: 10px; }
+        .controls-floating .color-bars { gap: 6px; }
+        .controls-floating .color-bar-slot { padding: 5px; border-radius: 10px; }
+        .controls-floating .presets-row { flex-wrap: wrap; justify-content: center; row-gap: 6px; }
+      }
+      @container sle-card (max-width: 260px) {
+        .controls-floating { padding: 7px; gap: 6px; }
+        .controls-floating .color-bar-slot { padding: 4px; border-radius: 8px; }
+        .controls-floating .cf-grip { width: 32px; }
+      }
+
+      .controls-below {
+        padding: 20px; border-top: 1px solid var(--border-subtle); background: var(--controls-below-bg, var(--surface-secondary));
+        backdrop-filter: var(--controls-below-backdrop, none);
+        display: none;
+        flex-direction: column;
+        gap: 12px; align-items: stretch; justify-content: center;
+      }
+      .controls-below.visible { display: flex; }
+
+      /* The colour picker: three stacked full-width bars. Full width is the
+         point -- a bar you can hit anywhere along is easier to aim than a
+         128px wheel, which is why the wheel needed a long-press magnifier and
+         these do not. */
+      .color-bars {
+        display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0;
+        /* Lets the scroll container above actually shrink it. */
+        flex: 0 0 auto; min-height: 0;
+      }
+      .color-bar-slot {
+        background: var(--surface-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 14px; padding: 7px;
+        display: flex; align-items: center;
+      }
+      .color-bar, .color-bar-input {
+        display: block; width: 100%; height: var(--color-bar-h, 34px);
+        border-radius: 9px; min-width: 0;
+      }
+      .color-bar.preview {
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      .color-bar-input {
+        -webkit-appearance: none; appearance: none;
+        background: transparent; margin: 0; padding: 0; border: 0;
+        cursor: pointer; touch-action: none;
+      }
+      .color-bar-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+      /* Capability gating sets the disabled property on the brightness and
+         temperature bars individually (a light may do colour but not
+         temperature), so they mute on their own rather than via the
+         whole-block .disabled class. */
+      .color-bar-input:disabled { opacity: 0.4; cursor: not-allowed; }
+      /* Literal stops rather than var()-driven ones: iOS caches var()-resolved
+         gradients on pseudo-elements and the spectrum would stop updating. */
+      /* Vendor track pseudo-elements get their OWN rules, never a shared
+         selector list: a browser that does not recognise one selector in a
+         list throws away the whole rule, so pairing -webkit- with -moz- here
+         leaves both engines with no track at all. */
+      .color-bar-input.hue::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
+          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
+      }
+      .color-bar-input.hue::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
+          #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
+      }
+      /* Brightness: the bar carries the light's CURRENT colour, so the whole
+         row doubles as the preview it replaced. The axis is position only --
+         no ramp -- because a ramp would read as a second colour control. */
+      .color-bar-input.brightness::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      .color-bar-input.brightness::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: var(--bar-preview, var(--accent-primary));
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+      }
+      /* Temperature: the same warm-to-cool ramp the old slider used, in the
+         bar shape. A visual affordance, not a precise readout. */
+      .color-bar-input.temp::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
+          #87ceeb 70%, #4d9fff 100%);
+      }
+      .color-bar-input.temp::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, #ff9944 0%, #ffd480 30%, #ffffff 50%,
+          #87ceeb 70%, #4d9fff 100%);
+      }
+      .color-bar-input.tint::-webkit-slider-runnable-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
+      }
+      .color-bar-input.tint::-moz-range-track {
+        height: var(--color-bar-h, 34px); border-radius: 9px;
+        background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
+      }
+      /* A thin upright bar, taller than the track so it reads as a position
+         marker rather than a blob sitting on the colour. */
+      .color-bar-input::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        margin-top: -5px; border-radius: 5px;
+        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        border: 1px solid rgba(0,0,0,0.15);
+      }
+      .color-bar-input::-moz-range-thumb {
+        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        border-radius: 5px; border: 1px solid rgba(0,0,0,0.15);
+        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+      }
+
 
       .empty-state {
         position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -4701,6 +4762,9 @@ class SpatialLightColorCard extends HTMLElement {
     const presetsHtml = this._renderPresetsContent();
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
+        <div class="cf-grip" id="cfGrip" role="button" tabindex="0"
+             aria-label="Move controls (double-click to reset)"
+             title="Drag to move — double-click to reset"></div>
         ${this._colorBarsHTML(avgState, tempRange)}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
@@ -5694,6 +5758,7 @@ class SpatialLightColorCard extends HTMLElement {
     // release) rather than carrying a bespoke pointer state machine of their
     // own. That is most of why the wheel's magnifier and long-press overlay
     // are gone: a full-width bar needs no aiming aid.
+    this._bindFloatingDrag();
     this._bindSliderGesture(this._els.hueSlider);
     this._bindSliderGesture(this._els.tintSlider);
     [this._els.hueSlider, this._els.tintSlider].forEach((el) => {
@@ -7538,6 +7603,191 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * A storage key per card, so two cards on one dashboard do not fight over
+   * one remembered position. Derived from the entity list and title rather
+   * than an id, because the card has no stable identity of its own.
+   */
+  _floatingPosKey() {
+    const sig = (this._config.entities || []).join(',') + '|' + (this._config.title || '');
+    let h = 0x811c9dc5;
+    for (let i = 0; i < sig.length; i++) {
+      h ^= sig.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return `slc-ctrlpos-${(h >>> 0).toString(36)}`;
+  }
+
+  /**
+   * The dragged position is kept as FRACTIONS of the canvas, not pixels, so it
+   * survives a resize, a dashboard column change and a plan rotation without
+   * the box drifting off the plan.
+   */
+  _loadFloatingPos() {
+    if (this._floatingPos !== undefined) return this._floatingPos;
+    this._floatingPos = null;
+    try {
+      const raw = window.localStorage.getItem(this._floatingPosKey());
+      if (raw) {
+        const v = JSON.parse(raw);
+        if (Number.isFinite(v.fx) && Number.isFinite(v.fy)) this._floatingPos = { fx: v.fx, fy: v.fy };
+      }
+    } catch (_) { /* private mode, or storage disabled: stay with the default */ }
+    return this._floatingPos;
+  }
+
+  _saveFloatingPos(pos) {
+    this._floatingPos = pos;
+    try {
+      if (pos) window.localStorage.setItem(this._floatingPosKey(), JSON.stringify(pos));
+      else window.localStorage.removeItem(this._floatingPosKey());
+    } catch (_) { /* not fatal: the position simply will not outlive the page */ }
+  }
+
+  /**
+   * Apply the remembered position, clamping it back inside the plan. The clamp
+   * matters on every render, not just on drop: the canvas can be a different
+   * shape by then (a rotation, a resized column), and a box remembered against
+   * the old one would sit half off the plan.
+   */
+  _applyFloatingPos() {
+    const el = this._els && this._els.controlsFloating;
+    if (!el) return;
+    // A gesture in flight is the source of truth; a state tick must not drag
+    // the box back to where it was before this drag started.
+    if (el.classList.contains('dragging')) return;
+    const pos = this._loadFloatingPos();
+    if (!pos) { el.classList.remove('dragged'); return; }
+    const host = el.parentElement;
+    if (!host) return;
+    const hb = host.getBoundingClientRect();
+    if (!(hb.width > 0) || !(hb.height > 0)) return;
+    const eb = el.getBoundingClientRect();
+    // When the box is larger than the plan the range inverts; clamping to the
+    // ordered pair keeps it pinned at the edge instead of jumping.
+    const maxX = hb.width - eb.width;
+    const maxY = hb.height - eb.height;
+    const cx = Math.max(Math.min(0, maxX), Math.min(Math.max(0, maxX), pos.fx * hb.width));
+    // When the box is taller than the plan, every fraction a drop could have
+    // produced collapses to 0, i.e. top-pinned -- which hides the presets row
+    // and the power toggle off the bottom. Pin to the bottom instead, so the
+    // things you press stay reachable.
+    const cy = maxY < 0 ? maxY : Math.max(0, Math.min(maxY, pos.fy * hb.height));
+    el.style.setProperty('--cf-x', `${Math.round(cx)}px`);
+    el.style.setProperty('--cf-y', `${Math.round(cy)}px`);
+    el.classList.add('dragged');
+  }
+
+  /** Drag the floating controls by their grip. */
+  _bindFloatingDrag() {
+    const el = this._els && this._els.controlsFloating;
+    const grip = this.shadowRoot && this.shadowRoot.getElementById('cfGrip');
+    if (!el || !grip) return;
+    let st = null;
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      // One drag at a time: a second finger landing on the grip would
+      // otherwise replace the live state and the first drag's drop would be
+      // discarded.
+      if (st) return;
+      const host = el.parentElement;
+      if (!host) return;
+      const hb = host.getBoundingClientRect();
+      const eb = el.getBoundingClientRect();
+      const mX = hb.width - eb.width;
+      const mY = hb.height - eb.height;
+      st = {
+        pointerId: e.pointerId,
+        grabX: e.clientX, grabY: e.clientY,
+        // Seeded through the SAME clamp pointermove applies. Taking the raw
+        // offset made an over-tall box jump the instant it was grabbed,
+        // before the pointer had moved.
+        originX: Math.max(Math.min(0, mX), Math.min(Math.max(0, mX), eb.left - hb.left)),
+        originY: Math.max(Math.min(0, mY), Math.min(Math.max(0, mY), eb.top - hb.top)),
+        hb, ew: eb.width, eh: eb.height,
+      };
+      e.preventDefault();
+      // The grip sits inside #canvas, so the canvas' own pointerdown would
+      // otherwise get a look at this gesture. It currently declines it, but
+      // that is incidental rather than guaranteed, and a marquee or a light
+      // drag starting underneath a panel drag would be a miserable bug to
+      // find later.
+      e.stopPropagation();
+      try { grip.setPointerCapture(e.pointerId); } catch (_) { /* pointer may be gone */ }
+      el.classList.add('dragging');
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!st || e.pointerId !== st.pointerId) return;
+      e.preventDefault();
+      const maxX = st.hb.width - st.ew;
+      const maxY = st.hb.height - st.eh;
+      const x = Math.max(Math.min(0, maxX), Math.min(Math.max(0, maxX), st.originX + (e.clientX - st.grabX)));
+      const y = Math.max(Math.min(0, maxY), Math.min(Math.max(0, maxY), st.originY + (e.clientY - st.grabY)));
+      el.style.setProperty('--cf-x', `${Math.round(x)}px`);
+      el.style.setProperty('--cf-y', `${Math.round(y)}px`);
+      el.classList.add('dragged');
+      st.last = { x, y };
+    });
+    const end = (e) => {
+      if (!st || e.pointerId !== st.pointerId) return;
+      try { grip.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+      el.classList.remove('dragging');
+      if (st.last) {
+        this._saveFloatingPos({ fx: st.last.x / st.hb.width, fy: st.last.y / st.hb.height });
+      }
+      st = null;
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    // Back to automatic placement.
+    grip.addEventListener('dblclick', () => {
+      this._saveFloatingPos(null);
+      el.classList.remove('dragged');
+      el.style.removeProperty('--cf-x');
+      el.style.removeProperty('--cf-y');
+      this._placeFloatingControls();
+    });
+    // The grip is focusable and announces itself as a button, so it has to be
+    // operable from the keyboard or that role is a lie: arrows nudge, Escape
+    // returns to automatic placement.
+    grip.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        // Swallowed, or the card's own Escape would clear the selection at the
+        // same time -- one key doing two unrelated things.
+        e.stopPropagation();
+        e.preventDefault();
+        this._saveFloatingPos(null);
+        el.classList.remove('dragged');
+        el.style.removeProperty('--cf-x');
+        el.style.removeProperty('--cf-y');
+        this._placeFloatingControls();
+        return;
+      }
+      const step = e.shiftKey ? 20 : 5;
+      let dx = 0, dy = 0;
+      if (e.key === 'ArrowLeft') dx = -step;
+      else if (e.key === 'ArrowRight') dx = step;
+      else if (e.key === 'ArrowUp') dy = -step;
+      else if (e.key === 'ArrowDown') dy = step;
+      else return;
+      e.stopPropagation();
+      e.preventDefault();
+      const host = el.parentElement;
+      if (!host) return;
+      const hb = host.getBoundingClientRect();
+      const eb = el.getBoundingClientRect();
+      if (!(hb.width > 0) || !(hb.height > 0)) return;
+      const maxX = hb.width - eb.width;
+      const maxY = hb.height - eb.height;
+      const x = Math.max(Math.min(0, maxX), Math.min(Math.max(0, maxX), (eb.left - hb.left) + dx));
+      const y = Math.max(Math.min(0, maxY), Math.min(Math.max(0, maxY), (eb.top - hb.top) + dy));
+      el.style.setProperty('--cf-x', `${Math.round(x)}px`);
+      el.style.setProperty('--cf-y', `${Math.round(y)}px`);
+      el.classList.add('dragged');
+      this._saveFloatingPos({ fx: x / hb.width, fy: y / hb.height });
+    });
+  }
+
+  /**
    * Put the floating controls at whichever end of the plan the selection is
    * not. Overlaid controls that cover the very lights you just selected are
    * the worst case, and with four stacked bars the box is tall enough that
@@ -7550,6 +7800,9 @@ class SpatialLightColorCard extends HTMLElement {
   _placeFloatingControls() {
     const el = this._els && this._els.controlsFloating;
     if (!el) return;
+    // A hand-placed box stays where it was put; automatic avoidance is only
+    // for the default placement.
+    if (this._loadFloatingPos()) { this._applyFloatingPos(); return; }
     const ids = this._selectedLights.size
       ? [...this._selectedLights]
       : (this._config.default_entity ? [this._config.default_entity] : []);
