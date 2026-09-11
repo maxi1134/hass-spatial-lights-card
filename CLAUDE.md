@@ -241,6 +241,55 @@ Both renderers resolve: the field in `_getFieldEmitter`, the legacy path in `_up
 
 The editor therefore presents ONE "Light Projection" section: a single enable switch, a **Renderer** select (Diffused / Classic) writing `light_field.enabled`, a shared Emission block, and a Diffusion block shown only for the field. (Two `light_field` keys live outside it, under **Appearance** -- `wall_color` and `wall_width`; see §8e for why that is placement rather than an exception.) Two peer sections with two "Enable" switches led users to turn on Glow and never discover that diffusion is what makes wall shadows and colour mixing exact. `cfgGlowBlur`/`cfgGlowEdgeSoftness` are disabled and suffixed "(classic only)" under the field.
 
+**The master switch is three-state, and that is what makes it work.** "Project light onto the
+plan" writes `glow.enabled`, and for a long time nothing on the diffused path read it: `_fieldActive`
+tests only `light_field.enabled`, so with the field on the switch's ONLY effect was picking a branch
+in `_getFieldEmitter`. Turning it off therefore did not stop the light -- it swapped the user's own
+emission values for the defaults, and a light with `intensity: 0.17` got 0.7 instead. Measured on the
+reporter's config: peak luminance 114 with the switch OFF against 28 with it ON, a ratio of 4.07
+against the predicted 0.7/0.17 = 4.12. Turning the feature ON made the plan dimmer.
+
+The fix is TWO INDEPENDENT PREDICATES, because there are two questions and `enabled` was answering
+both:
+
+- **Does this light project?** `enabled_set` + `enabled`. An AUTHORED false projects nothing; an
+  absent `enabled` means "never configured" and keeps diffusing, which is the documented
+  `light_field: true` one-liner and exactly what `getStubConfig` produces (it emits neither `glow`
+  nor `light_field`). Gating naively on `glow.enabled` would have turned the README's headline
+  install black, because `enabled: obj.enabled === true` collapses absent and false one statement
+  into the normalizer.
+- **What does it emit?** `params_set` -- did the user author any emission parameter -- and never
+  `enabled`. This is what makes the switch **emission-neutral by construction**: it can turn a light
+  on or off, but it cannot change what that light emits. Verified: `glow: {enabled: true}` with no
+  emission key now paints energy IDENTICAL to an unconfigured card (4992400 both ways) and 0 when
+  off, so toggling moves between one value and zero rather than between two different non-zero ones.
+
+Both flags are read from the RAW object in `_normalizeGlowConfig` and both prefer an existing flag,
+so re-normalizing is idempotent instead of declaring every filled-in default user-authored.
+`_normalizeGlowOverrides` writes `enabled`/`enabled_set` ONLY when the key is present -- that is now
+load-bearing, since `_getGlowConfig`'s `{ ...base, ...override }` would otherwise let an
+intensity-only override clear the card's switch. Overrides deliberately never set `params_set`: a
+card with no `glow:` block plus a per-entity `intensity` would then take the card-level PIXEL
+defaults (cone, 60x80 px) and shrink from a `light_field.radius` pool to a sliver.
+
+**The gate lives in `_renderLightField`'s entity loop, NOT in `_fieldActive`.** That getter is read
+at eleven sites and every one means "the field is the painter"; putting projection in it would swap
+renderers per light and strip the blend mode from a walls-only canvas instead of stopping the thing
+that paints. Walls are unaffected -- `_drawFieldWalls` runs after the loop.
+
+**The editor was lying in four places, and that is why the config was never applied.**
+`#glowSettingsGroup` was a DEAD id: one reference, a hardcoded `display:flex`, nothing ever hid it.
+So the whole Emission block stayed visible and editable while the switch was off and every value in
+it was discarded -- the reporter had been tuning an Intensity that was never in effect, which is why
+turning the switch ON "made it dimmer". It was the first moment their own config applied. The header
+announced "Light Projection — diffused" whenever a renderer was set, regardless of the switch. The
+switch itself rendered `!!(g.enabled)`, so a legacy `light_field: true` card opened reading OFF while
+visibly projecting -- and the user's first flip would then write an explicit false and go dark. And
+the per-entity switch had the same lie, unchecked for both "no override" and "explicitly off", so the
+first click on a light projecting by inheritance killed it. All four now show the EFFECTIVE state via
+`_glowProjectsEffective()`. The group's visibility is set by the change handler as well as by
+`_setDOMValues`, because the editor does not rebuild itself after its own change.
+
 **Legacy (default).** `_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. When `_fieldActive`, `_renderLightsHTML` does not emit the div and `_updateAllGlows` returns immediately.
 
 **Light field (`light_field.enabled`).** One shared `<canvas class="light-field">` inside `#canvas`, between `.grid` and the `.light` markers. `.light-halo` (the icon-only / minimal-ui colour carrier) is gated on `!_fieldActive` alongside `.light-glow` — it is a second projected-light source, and left ungated it painted inside `.light`'s own stacking context (i.e. above the field canvas), double-glowing and escaping every wall. Each `.light` is its own stacking context (its glow sits at `z-index:-1` inside it), which is the structural reason the legacy glows can never merge — one surface fixes it. `_renderLightField()` draws every lit entity with `globalCompositeOperation='lighter'`, so overlapping colours add.

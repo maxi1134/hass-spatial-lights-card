@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.29.0 (fork-maxi1134)';
+  static BUILD = 'v1.30.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -602,10 +602,36 @@ class SpatialLightColorCard extends HTMLElement {
     };
   }
 
-  /** Normalize a single glow config object, filling in defaults. */
+  /**
+   * Normalize a single glow config object, filling in defaults.
+   *
+   * Two AUTHORSHIP flags come out of here alongside the values, because the
+   * card has to answer two different questions and `enabled` cannot answer
+   * either one on its own once it has been normalized:
+   *
+   *   enabled_set - did the user actually write an `enabled` key? One
+   *     statement below, `enabled: obj.enabled === true` collapses "absent"
+   *     and "false" into the same boolean, and they must not mean the same
+   *     thing: absent means "never configured" (the field diffuses it, which
+   *     is the documented `light_field: true` one-liner), while false means
+   *     "the user switched this light off" and must project nothing.
+   *
+   *   params_set - did the user author any EMISSION parameter? This, not
+   *     `enabled`, is what decides whether the field reads this config or
+   *     falls back to a plain `light_field.radius` disc. Keying emission on
+   *     `enabled` made the master switch change what a light emits as well as
+   *     whether it emits, so turning it OFF swapped in the 0.7 default and a
+   *     light got BRIGHTER -- the reported bug. Split this way the switch is
+   *     emission-neutral by construction: it can only turn a light on or off.
+   *
+   * Both prefer an existing flag so re-normalizing a normalized object is
+   * idempotent rather than declaring every default to be user-authored.
+   */
   _normalizeGlowConfig(obj) {
     const defaults = {
       enabled: false,
+      enabled_set: false,
+      params_set: false,
       shape: 'cone',            // cone, semicone, round, oval, beam, spotlight, bar
       direction: 0,             // 0=down, 90=right, 180=up, 270=left
       length: 80,               // max length in px (height for directional shapes, diameter for round)
@@ -624,8 +650,13 @@ class SpatialLightColorCard extends HTMLElement {
       custom_shape: null,       // polar coords: [[angle°, radius 0-1], ...] — used with shape:'custom'
     };
     if (!obj || typeof obj !== 'object') return defaults;
+    const AUTHORSHIP = ['enabled', 'enabled_set', 'params_set'];
     return {
       enabled: obj.enabled === true,
+      enabled_set: obj.enabled_set != null ? obj.enabled_set === true : obj.enabled != null,
+      params_set: obj.params_set != null
+        ? obj.params_set === true
+        : Object.keys(obj).some((k) => !AUTHORSHIP.includes(k) && obj[k] != null),
       shape: SpatialLightColorCard.GLOW_SHAPES.includes(obj.shape) ? obj.shape : defaults.shape,
       direction: Number.isFinite(Number(obj.direction)) ? Number(obj.direction) : defaults.direction,
       // Sizes accept a plain number (CSS px) or a '%' string, which is
@@ -1108,7 +1139,10 @@ class SpatialLightColorCard extends HTMLElement {
     Object.entries(obj).forEach(([entity, val]) => {
       if (!val || typeof val !== 'object') return;
       const o = {};
-      if (val.enabled != null) o.enabled = val.enabled === true;
+      // Only when the key is actually present -- an override that mentions
+      // just `intensity` must not clear the card-level enabled/enabled_set,
+      // which it would if these were written unconditionally.
+      if (val.enabled != null) { o.enabled = val.enabled === true; o.enabled_set = true; }
       if (val.direction != null && Number.isFinite(Number(val.direction))) o.direction = Number(val.direction);
       // Through _normalizeGlowLength, exactly like the card-level glow: these
       // accept 'NN%' as well as pixels, and Number('26%') is NaN, so parsing
@@ -1369,6 +1403,16 @@ class SpatialLightColorCard extends HTMLElement {
    * True when the shared-canvas light field owns the diffusion for this card.
    * While true the per-light `.light-glow` divs are not emitted and
    * `_updateAllGlows` short-circuits, so exactly one renderer is ever live.
+   */
+  /**
+   * WHICH RENDERER owns diffusion -- deliberately NOT "is light projected".
+   *
+   * It is read at eleven sites (the canvas markup, the `.light-glow` and
+   * `.light-halo` gating, `_updateAllGlows`' short-circuit, the blend tokens,
+   * the wall editor) and every one of them means "the field is the painter".
+   * Adding the master switch here would swap renderers per light and strip the
+   * blend mode from a walls-only canvas, instead of stopping the thing that is
+   * painting. The projection gate lives in `_renderLightField`'s entity loop.
    */
   get _fieldActive() {
     return !!(this._config && this._config.light_field && this._config.light_field.enabled
@@ -9186,25 +9230,31 @@ class SpatialLightColorCard extends HTMLElement {
    */
   _getFieldEmitter(entityId, gc, rect, ratio) {
     const pos = (this._config.positions && this._config.positions[entityId]) || { x: 50, y: 50 };
-    const hasGlow = gc && gc.enabled;
+    // WHAT a light emits is decided by whether emission parameters were
+    // authored -- NOT by whether it is switched on. This used to read
+    // `gc.enabled`, which made the master switch change the emission as well
+    // as gate it: switching OFF discarded the user's own values for the 0.7
+    // default and a wider disc, so the light got roughly four times brighter.
+    // Whether a light projects at all is answered in _renderLightField's loop.
+    const hasParams = !!(gc && gc.params_set);
     const lf = this._config.light_field;
 
-    // A light with no glow config of its own still diffuses — that is the
+    // A light with no emission config of its own still diffuses — that is the
     // point of the feature — using a plain round footprint of light_field.radius.
-    const shape = hasGlow ? gc.shape : 'round';
-    const falloff = hasGlow ? gc.falloff : lf.falloff;
-    const stops = hasGlow ? gc.gradient_stops : null;
-    const scaleB = hasGlow ? gc.scale_with_brightness : true;
-    const baseIntensity = hasGlow ? gc.intensity : 0.7;
-    const width = hasGlow
+    const shape = hasParams ? gc.shape : 'round';
+    const falloff = hasParams ? gc.falloff : lf.falloff;
+    const stops = hasParams ? gc.gradient_stops : null;
+    const scaleB = hasParams ? gc.scale_with_brightness : true;
+    const baseIntensity = hasParams ? gc.intensity : 0.7;
+    const width = hasParams
       ? this._resolveGlowLength(gc.width, rect)
       : this._resolveGlowLength(lf.radius, rect) * 2;
-    const baseLength = hasGlow
+    const baseLength = hasParams
       ? this._resolveGlowLength(gc.length, rect)
       : this._resolveGlowLength(lf.radius, rect) * 2;
-    // Already rotated by _getGlowConfig; a light with no glow emits a disc, so
-    // its direction is immaterial.
-    const direction = hasGlow ? gc.direction : 0;
+    // Already rotated by _getGlowConfig; a light with no emission config emits
+    // a disc, so its direction is immaterial.
+    const direction = hasParams ? gc.direction : 0;
 
     // Matches _updateGlow: length tracks brightness, width does not.
     const length = scaleB ? baseLength * Math.max(ratio, 0.1) : baseLength;
@@ -9213,8 +9263,8 @@ class SpatialLightColorCard extends HTMLElement {
     // gc comes from _getGlowConfig, which has ALREADY turned the direction and
     // the offsets. Rotating them again here would double-apply the turn.
     const spos = this._toScreenPct(pos.x, pos.y);
-    const x = spos.x / 100 * rect.width + (hasGlow ? gc.offset_x : 0);
-    const y = spos.y / 100 * rect.height + (hasGlow ? gc.offset_y : 0);
+    const x = spos.x / 100 * rect.width + (hasParams ? gc.offset_x : 0);
+    const y = spos.y / 100 * rect.height + (hasParams ? gc.offset_y : 0);
     const rot = direction * Math.PI / 180;
 
     const centred = shape === 'round' || shape === 'oval' || shape === 'custom';
@@ -9555,6 +9605,12 @@ class SpatialLightColorCard extends HTMLElement {
       if (!isOn) continue;
 
       const gc = this._getGlowConfig(entityId);
+      // "Project light onto the plan", honoured at last. Only an AUTHORED
+      // false stops a light: an absent `enabled` means the user never
+      // configured glow, and those cards are meant to diffuse -- that is the
+      // documented `light_field: true` one-liner, and what getStubConfig
+      // produces. Walls are unaffected: _drawFieldWalls runs after this loop.
+      if (gc && gc.enabled_set && !gc.enabled) continue;
       const brightness = st.attributes.brightness || ((isScene || isBinary) ? 255 : 0);
       const ratio = brightness / 255;
 
@@ -12438,7 +12494,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const rotationOverride = (this._config.icon_rotation_overrides && this._config.icon_rotation_overrides[entity] !== undefined) ? this._config.icon_rotation_overrides[entity] : '';
     const mirrorOverride = (this._config.icon_mirror_overrides && this._config.icon_mirror_overrides[entity]) || '';
     const glowOverride = (this._config.glow_overrides && this._config.glow_overrides[entity]) || {};
-    const glowOverrideEnabled = glowOverride.enabled === true;
+    // Effective, not literal: unchecked used to mean both "no override" and
+    // "explicitly off", so a light projecting by inheritance showed an OFF
+    // switch and the user's first click wrote a false that darkened it.
+    const glowOverrideEnabled = glowOverride.enabled != null
+      ? glowOverride.enabled === true
+      : this._glowProjectsEffective();
     const glowOverrideShape = glowOverride.shape || '';
     const glowOverrideDirection = glowOverride.direction != null ? glowOverride.direction : '';
     const glowOverrideIntensity = glowOverride.intensity != null ? glowOverride.intensity : '';
@@ -12793,6 +12854,15 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // of them is added.
     const lfCfg = SpatialLightColorCard.prototype._normalizeLightField.call(
       Object.create(SpatialLightColorCard.prototype), config.light_field);
+    // The same three-state rule the card paints by: an absent `enabled` means
+    // "never configured", and such a card DOES project under the field. The
+    // switch has to show that, or a legacy `light_field: true` card opens
+    // reading OFF while light is visibly on the plan -- and the user's first
+    // flip would then write an explicit false and go dark. One touch resolves
+    // the ambiguity permanently.
+    const glowProjects = config.glow && config.glow.enabled != null
+      ? config.glow.enabled === true
+      : lfCfg.enabled;
     const alSwitches = SpatialLightColorCard.findAdaptiveSwitches(this._hass);
 
     // Save section collapsed state before re-render
@@ -13433,7 +13503,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         <!-- Glow Section -->
         <div class="section${glow.enabled || lfCfg.enabled ? '' : ' collapsed'}" id="section-glow">
           <div class="section-header" data-section="glow">
-            <h3>Light Projection${glow.enabled || lfCfg.enabled ? (lfCfg.enabled ? ' &mdash; diffused' : ' &mdash; classic') : ''}</h3>
+            <h3>Light Projection${glowProjects ? (lfCfg.enabled ? ' &mdash; diffused' : ' &mdash; classic') : ''}</h3>
             <span class="chevron">&#9660;</span>
           </div>
           <div class="section-body">
@@ -13441,7 +13511,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
               <div><div class="label">Project light onto the plan</div><div class="sublabel">Show each light's colour spreading around it</div></div>
               <ha-switch id="cfgGlowEnabled"></ha-switch>
             </div>
-            <div id="glowSettingsGroup" style="display:flex;flex-direction:column;gap:12px;">
+            <div id="glowSettingsGroup" style="display:${glowProjects ? 'flex' : 'none'};flex-direction:column;gap:12px;">
               <div class="option-row">
                 <div>
                   <div class="label">Renderer</div>
@@ -13842,6 +13912,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
     if (cssEl) cssEl.value = c.custom_css || '';
 
     // Switches
+    // Same normalizer idiom as _render: the projection switch shows the
+    // EFFECTIVE state, so an unconfigured card that is projecting reads on.
+    const lfEnabledForSwitch = SpatialLightColorCard.prototype._normalizeLightField.call(
+      Object.create(SpatialLightColorCard.prototype), c.light_field).enabled;
     const switches = {
       cfgEditPositions: this._editPositionsActive,
       cfgMinimalUI: c.minimal_ui || false,
@@ -13856,9 +13930,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
       cfgSwitchTap: c.switch_single_tap || false,
       cfgCanvasTouchScroll: c.canvas_touch_scroll !== false,
       cfgThemeGlass: !!(c.theme && c.theme.glass),
-      cfgGlowEnabled: !!(g.enabled),
+      cfgGlowEnabled: g.enabled != null ? g.enabled === true : lfEnabledForSwitch,
       cfgGlowScaleBrightness: g.scale_with_brightness !== false,
     };
+    const glowGroupEl = root.getElementById('glowSettingsGroup');
+    if (glowGroupEl) {
+      glowGroupEl.style.display = switches.cfgGlowEnabled ? 'flex' : 'none';
+    }
     const setChecked = () => {
       Object.entries(switches).forEach(([id, val]) => {
         const el = root.getElementById(id);
@@ -14714,6 +14792,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
       glowEnabledEl.addEventListener('change', () => {
         ensureGlow();
         this._config.glow.enabled = glowEnabledEl.checked;
+        // Done here rather than by a re-render: the editor does not rebuild
+        // itself after its own change (_fireConfigChanged sets
+        // _configFromEditor and setConfig early-returns), so the Emission
+        // block would stay visible-but-dead until some other render.
+        const grp = this.shadowRoot.getElementById('glowSettingsGroup');
+        if (grp) grp.style.display = glowEnabledEl.checked ? 'flex' : 'none';
         this._fireConfigChanged();
       });
     }
@@ -15212,6 +15296,19 @@ class SpatialLightColorCardEditor extends HTMLElement {
   }
 
   /** Set/delete a key under config.theme, pruning the object when empty. */
+  /**
+   * Does a light project, absent a per-entity override? Mirrors the card's
+   * three-state rule: an authored `glow.enabled` wins, and with none the
+   * renderer choice answers it (an unconfigured card DOES diffuse).
+   */
+  _glowProjectsEffective() {
+    const g = this._config && this._config.glow;
+    if (g && g.enabled != null) return g.enabled === true;
+    return SpatialLightColorCard.prototype._normalizeLightField.call(
+      Object.create(SpatialLightColorCard.prototype),
+      this._config && this._config.light_field).enabled;
+  }
+
   _setThemeKey(key, val) {
     if (!this._config.theme || typeof this._config.theme !== 'object') this._config.theme = {};
     if (val === '' || val == null || val === false) {
