@@ -265,7 +265,24 @@ It is a **`<dialog>` opened with `showModal()`**, NOT a `position: fixed` div. T
 
 **Right-click deletes a wall (mouse only).** Handled in the POINTERDOWN handlers, not on `contextmenu`: only pointerdown carries both `pointerType` and `button`, so "mouse only" is a fact rather than a guess -- Android's long-press raises `contextmenu` with nothing to distinguish it from a real right-click, and binding there would delete a wall twice over since the hold timer already handles touch. It also fixed a live bug: the overlay stage's pointerdown listener had NO button guard, so a right-click was starting a draw. `_handleWallRightClick` repairs the selection index before removing, since indices shift down past the removal.
 
-**Zoom is a TRANSFORM on the stage, inside a clipping viewport.** That choice does the work: `getBoundingClientRect` includes transforms, so the zoomed stage reports a zoomed box, which is exactly what `_wallPointFromEvent` divides by — every gesture keeps working with no change at all. The canvas backing store is sized from the same rect, so lines stay crisp rather than being scaled up. The viewport owns the size and the clipping, so zooming never touches layout and the dialog does not resize as you zoom. `_setWallZoom(z, at)` solves for the pan that keeps the point under `at` fixed, and `_clampWallPan` stops the plan being dragged off its own viewport. Pan is middle-drag or Ctrl/Cmd-drag — plain drag draws, Shift moves a corner, Alt ignores snapping, so those were the free gestures.
+**Zoom changes the stage's LAYOUT SIZE, not a transform** — `width: calc(100% * var(--we-z))` inside a
+clipping viewport. A transform looks equivalent, and `getBoundingClientRect` includes it either way, so
+every gesture measures correctly under both. It was built as a transform first. But the compositor
+rasterizes a transformed layer at its LAYOUT size and scales that bitmap up, so the canvas kept its
+small raster no matter how large its backing store: measured at 521%, layout 209px, visual 1087px,
+backing 2173px — 10.4 device pixels of canvas squeezed into each laid-out pixel and then blown back
+up. Every label went soft. Laying the stage out at full size costs a reflow per zoom step and makes
+text render at the resolution it is actually displayed at (layout == visual, 2 device px per visual px
+at every level).
+
+The viewport's edge is an INSET shadow rather than a border: a border sits outside the content box, so
+the stage came out 2px smaller than the aspect-ratio box and the plan was drawn at a slightly wrong
+shape.
+
+`_setWallZoom(z, at)` solves for the pan that keeps the point under `at` fixed, which is what makes
+wheel-zoom pull the plan toward the cursor rather than drift from it, and `_clampWallPan` stops the
+plan being dragged off its own viewport. Pan is middle-drag or Ctrl/Cmd-drag — plain drag draws, Shift
+moves a corner, Alt ignores snapping, so those were the free gestures.
 
 **The inspector has a fixed min-height for a reason.** It grows when a wall or light is selected, and because `_sizeWallEditor` measures the chrome, that growth shrank the stage — mid-gesture, so the plan jumped under the pointer at the exact moment you grabbed something. Measured: 275x137 to 255x127 on select. A stable height costs a few pixels and keeps the plan still.
 

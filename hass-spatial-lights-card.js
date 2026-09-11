@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.28.0 (fork-maxi1134)';
+  static BUILD = 'v1.28.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -4449,8 +4449,10 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-editor-viewport {
         position: relative; overflow: hidden;
         border-radius: 6px;
-        box-shadow: 0 10px 60px rgba(0,0,0,0.6);
-        border: 1px solid rgba(255,255,255,0.18);
+        /* The edge is an INSET shadow, not a border. A border sits outside the
+           content box, so the stage inside came out 2px smaller than the
+           aspect-ratio box and the plan was drawn at a slightly wrong shape. */
+        box-shadow: 0 10px 60px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(255,255,255,0.18);
         height: min(calc(95vh - var(--we-chrome, 150px)), calc(95vw / var(--we-ar, 1.6)));
         width: auto; max-width: 95vw;
         aspect-ratio: var(--we-ar, 1.6);
@@ -4459,14 +4461,19 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .wall-editor-viewport.panning { cursor: grabbing; }
       .wall-editor-stage {
-        position: absolute; inset: 0;
-        /* Zoom is a transform, so getBoundingClientRect on the stage reports
-           the zoomed box -- which is exactly what _wallPointFromEvent divides
-           by. Every existing gesture keeps working with no changes, and the
-           canvas backing store is sized from the same rect, so lines stay
-           crisp instead of being scaled up. */
-        transform-origin: 0 0;
-        transform: translate(var(--we-tx, 0px), var(--we-ty, 0px)) scale(var(--we-z, 1));
+        /* Zoom changes the stage's LAYOUT size, not a transform. A transform
+           looks equivalent -- getBoundingClientRect includes it either way --
+           but the compositor rasterizes a transformed layer at its LAYOUT size
+           and scales that bitmap up, so the canvas kept its small raster and
+           every label went soft. Measured at 521%: layout 209px, visual
+           1087px, backing store 2173px, i.e. 10.4 device pixels of canvas
+           squeezed into each laid-out pixel and then blown back up.
+           Laying it out at full size costs a reflow per zoom step and makes
+           text render at the resolution it is actually displayed at. */
+        position: absolute;
+        left: var(--we-tx, 0px); top: var(--we-ty, 0px);
+        width: calc(100% * var(--we-z, 1));
+        height: calc(100% * var(--we-z, 1));
         /* As large as the plan's own ratio allows inside 95% of the viewport.
            Width is computed from the height budget rather than pinned, so a
            tall plan stops being given width it cannot use -- which is what
