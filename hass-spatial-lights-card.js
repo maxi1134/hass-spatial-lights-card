@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.30.0 (fork-maxi1134)';
+  static BUILD = 'v1.31.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -116,6 +116,9 @@ class SpatialLightColorCard extends HTMLElement {
     /** Animation frame / batching */
     this._raf = null;
     this._canvasObserver = null;
+    /** The element _canvasObserver is observing — _installCanvasObserver's
+     *  idempotency key. Always cleared together with the observer itself. */
+    this._canvasObserverTarget = null;
     this._glowResizeTimer = null;   // trailing debounce for resize-driven glow updates
     this._glowResizeLast = 0;
 
@@ -3400,46 +3403,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._els.announcer = this.shadowRoot.querySelector('.sr-announcer');
 
 
-    // Watch the main canvas so glow walls re-render when its size changes
-    // (initial layout flush, browser resize, dashboard tab becoming visible).
-    // Previously the original code happened to recompute walls on the next
-    // `set hass` push — but with the relevance-diff in `set hass`, an
-    // unrelated state push would no longer trigger that, so walls could stay
-    // unrendered for a long time after first paint. This observer makes wall
-    // rendering independent of HA state events.
-    if (this._canvasObserver) {
-      this._canvasObserver.disconnect();
-      this._canvasObserver = null;
-    }
-    if (this._els.canvas && typeof window !== 'undefined' && 'ResizeObserver' in window) {
-      this._canvasObserver = new ResizeObserver(() => {
-        // Cheap, and it is the only thing that reliably runs once the canvas
-        // has a real box: _renderAll can legitimately run detached.
-        this._applyFloatingPos();
-        // Leading + trailing debounce. The leading call keeps the initial
-        // layout flush instant (this observer is what renders walls on first
-        // paint); during a continuous window resize the per-frame size
-        // changes miss every mask cache, so intermediate frames coalesce
-        // into one trailing recompute at the settled size.
-        const now = Date.now();
-        if (!this._glowResizeLast || now - this._glowResizeLast > 250) {
-          this._glowResizeLast = now;
-          this._updateAllGlows();
-          // Geometry changed, so every cached occluder set and polygon is
-          // stale — force past the coalescing guard.
-          this._requestLightFieldDraw();
-          return;
-        }
-        this._glowResizeLast = now;
-        if (this._glowResizeTimer) clearTimeout(this._glowResizeTimer);
-        this._glowResizeTimer = setTimeout(() => {
-          this._glowResizeTimer = null;
-          this._updateAllGlows();
-          this._requestLightFieldDraw();
-        }, 150);
-      });
-      this._canvasObserver.observe(this._els.canvas);
-    }
+    this._installCanvasObserver();
 
     this._attachEventListeners();
     if ((showControls || this._config.always_show_controls) && this._els.colorBars) {
@@ -3448,6 +3412,9 @@ class SpatialLightColorCard extends HTMLElement {
     this._syncOverlayState();
     this.updateLights();
     this._applyEditorHighlight();
+    // Same shape as _applyEditorHighlight above: a class the rebuilt markup
+    // cannot decide for itself, re-applied after every render.
+    this._syncGridVisibility();
     this._refreshEntityIcons();
     requestAnimationFrame(() => this._updateSeparatorVisibility());
     // The canvas ResizeObserver registered above fires on initial observation
@@ -3466,6 +3433,155 @@ class SpatialLightColorCard extends HTMLElement {
     };
     requestAnimationFrame(recoveryTick);
     this._subscribeTemplates();
+  }
+
+  /**
+   * Install (or re-install) the ResizeObserver that watches the plan canvas.
+   *
+   * It exists so wall/field rendering is independent of HA state events:
+   * `set hass` only calls `updateLights` when a WATCHED entity changed, so
+   * without this nothing repaints on the initial layout flush, a window
+   * resize, or a dashboard tab becoming visible.
+   *
+   * Extracted from `_renderAll` because `disconnectedCallback` destroys it
+   * and `connectedCallback` has to rebuild it. HA moves cards between DOM
+   * parents during layout (masonry reflow, view rebuild, sections) and every
+   * move is a disconnect + reconnect. The observer used to be created ONLY
+   * inside `_renderAll`, so after one move the card had no observer, no
+   * pending draw, and a light-field canvas whose backing store the teardown
+   * had zeroed — measured 1120x700 with energy 7665602 before the move,
+   * 0x0 with energy 0 and no walls 1.8s after it, with the SAME canvas
+   * element throughout. One `updateLights()` restored it completely, which is
+   * exactly the user's "does not load until you interact" workaround.
+   *
+   * Idempotent BY IDENTITY, because both `connectedCallback` (which can fire
+   * many times) and `_renderAll` (which can run many times between two
+   * connects) call it. It re-observes only when the observed element actually
+   * changed, so a repeat call neither double-observes nor tears down a live
+   * observation — and the latter matters: `observe()` delivers an initial
+   * notification, which is what paints the field once the canvas first gets a
+   * box, so churning the observer on every render would fire a redundant full
+   * glow+field recompute each time.
+   */
+  _installCanvasObserver() {
+    const canvas = this._els ? this._els.canvas : null;
+    // Same element, live observation: nothing to do.
+    if (this._canvasObserver && this._canvasObserverTarget === canvas) return;
+    if (this._canvasObserver) {
+      this._canvasObserver.disconnect();
+      this._canvasObserver = null;
+    }
+    this._canvasObserverTarget = null;
+    if (!canvas) return;
+    if (typeof window === 'undefined' || !('ResizeObserver' in window)) return;
+    this._canvasObserver = new ResizeObserver(() => {
+      // Cheap, and it is the only thing that reliably runs once the canvas
+      // has a real box: _renderAll can legitimately run detached.
+      this._applyFloatingPos();
+      // Leading + trailing debounce. The leading call keeps the initial
+      // layout flush instant (this observer is what renders walls on first
+      // paint); during a continuous window resize the per-frame size
+      // changes miss every mask cache, so intermediate frames coalesce
+      // into one trailing recompute at the settled size.
+      const now = Date.now();
+      if (!this._glowResizeLast || now - this._glowResizeLast > 250) {
+        this._glowResizeLast = now;
+        this._updateAllGlows();
+        // Geometry changed, so every cached occluder set and polygon is
+        // stale — force past the coalescing guard.
+        this._requestLightFieldDraw();
+        return;
+      }
+      this._glowResizeLast = now;
+      if (this._glowResizeTimer) clearTimeout(this._glowResizeTimer);
+      this._glowResizeTimer = setTimeout(() => {
+        this._glowResizeTimer = null;
+        this._updateAllGlows();
+        this._requestLightFieldDraw();
+      }, 150);
+    });
+    this._canvasObserver.observe(canvas);
+    this._canvasObserverTarget = canvas;
+  }
+
+  /**
+   * Repaint the surfaces `disconnectedCallback` tore down.
+   *
+   * That teardown does not merely stop scheduling: it ZEROES the light-field
+   * and wall-editor backing stores (deliberately — iOS Safari accounts
+   * canvas memory globally across a dashboard and HA recreates the editor
+   * preview card on every keystroke). Nothing un-zeroes a backing store
+   * except a draw, so a reconnect without this leaves a blank canvas however
+   * long you wait.
+   *
+   * Re-installing the observer is not a substitute, though the reason is
+   * narrower than it looks. Teardown NULLS the observer, so a reconnect builds
+   * a NEW one, and a fresh observe() does deliver an initial notification --
+   * measured in Chrome, in a FOREGROUND tab. Two things still need this call.
+   * That notification arrives through the callback's leading/trailing
+   * debounce, and `_glowResizeLast` is never reset by teardown or by a render,
+   * so a reconnect within 250ms of the last resize defers the repaint by
+   * 150ms. And when `ResizeObserver` is unavailable there is no observer at
+   * all, leaving this the only thing that repaints a moved card.
+   *
+   * What genuinely fires nothing, both measured: re-observing the SAME element
+   * at the SAME size (callback count 1 -> 1), and a same-size DOM move with an
+   * existing observer. So neither the install nor the move can be relied on to
+   * produce pixels on its own.
+   *
+   * Measure this in a FOREGROUND tab. A background tab runs no rendering
+   * steps, so ResizeObserver never delivers and rAF never fires -- an earlier
+   * pass measured zero callbacks for everything and drew the wrong conclusion.
+   *
+   * Every call inside is coalesced or idempotent: `_requestLightFieldDraw`
+   * returns immediately while a frame or its timeout backstop is pending,
+   * `_requestWallEditorDraw` returns unless wall mode is armed and guards on
+   * its own pending frame, and `_updateAllGlows` is a full resync from
+   * current state. So running it on a connect that is immediately followed by
+   * `_renderAll` (the hello-handshake path) costs one no-op.
+   *
+   * Guarded on `_els.canvas`: before the first `_renderAll` there is no DOM
+   * to paint, and `_updateAllGlows` would dereference a null `_config`.
+   */
+  _repaintCanvasLayers() {
+    if (!this._config || !this._hass) return;
+    if (!this._els || !this._els.canvas) return;
+    // The canvas can be a different size under its new parent, and the
+    // floating controls are stored as fractions of it.
+    this._applyFloatingPos();
+    this._updateAllGlows();
+    this._requestLightFieldDraw();
+    this._requestWallEditorDraw();
+  }
+
+  /**
+   * Show the alignment grid only while this card is the editor's live
+   * preview.
+   *
+   * "The editor" means exactly `_isInsideEditorPreview()` — the card already
+   * has one definition of that (an ancestor walk for HUI-CARD-PREVIEW /
+   * HUI-DIALOG-EDIT-CARD) and every editor-session broadcast is gated on it,
+   * so a second, disagreeing definition is the thing to avoid. Deliberately
+   * NOT `_editPositionsMode` or `_wallEditMode`: those are modes WITHIN the
+   * editor, and the grid is what you read while deciding whether to arm one.
+   *
+   * This is imperative rather than a markup decision because `_renderAll` can
+   * run while the card is DETACHED — HA sets config and hass before appending
+   * it — and the walk then terminates at a root with no host and reports
+   * false whether or not the card is headed for the preview. Both call sites
+   * run in the same task as the DOM they are correcting, so nothing flashes:
+   * `connectedCallback` fires synchronously inside the `appendChild` that
+   * connects the card, i.e. before that card's first paint, and `_renderAll`
+   * is synchronous, so a re-render of an already-connected card re-applies
+   * the class before the frame is composited.
+   *
+   * Cheap and idempotent: `classList.toggle` with an explicit force argument
+   * is a no-op when the class is already in the wanted state.
+   */
+  _syncGridVisibility() {
+    const canvas = this._els ? this._els.canvas : null;
+    if (!canvas) return;
+    canvas.classList.toggle('show-grid', this._isInsideEditorPreview());
   }
 
   _styles() {
@@ -3566,11 +3682,23 @@ class SpatialLightColorCard extends HTMLElement {
         width: 100cqh; height: 100cqw;
         transform: translate(-50%, -50%) rotate(var(--plan-rotation, 90deg));
       }
+      /* The alignment grid is EDITOR CHROME, not part of the plan: it exists
+         so lights can be lined up on a lattice (the same grid_size the
+         editor's Snap-to-grid button uses), and on a finished dashboard it is
+         graph paper printed over the user's floor plan. So it is off by
+         default and switched on by a class, never by markup: _renderAll
+         legitimately runs DETACHED (HA sets config and hass before appending),
+         and _isInsideEditorPreview walks the ancestor chain, so a
+         markup-time decision is answerable only after the card is connected.
+         The div is therefore always emitted and .show-grid is applied
+         imperatively by _syncGridVisibility. */
       .grid {
         position: absolute; inset: 0;
         background-image: radial-gradient(circle, var(--grid-dots) 1px, transparent 1px);
         background-size: ${this._gridSize}px ${this._gridSize}px; pointer-events: none;
+        display: none;
       }
+      .canvas.show-grid .grid { display: block; }
 
       /* Shared light-diffusion layer. Sits above the plan and the grid and
          below every marker, so it tints the floor plan but never covers a
@@ -5865,6 +5993,59 @@ class SpatialLightColorCard extends HTMLElement {
       this._boundWindowBlur = () => this._cancelActiveInteractions();
       window.addEventListener('blur', this._boundWindowBlur);
     }
+
+    /* ------------------------------------------------------------------
+       The mirror of disconnectedCallback.
+
+       HA moves cards between DOM parents during layout — masonry reflow, a
+       view rebuild, sections — and every move is a disconnect followed by a
+       reconnect. Teardown therefore has to be reversible, and the rule is
+       simply: whatever disconnectedCallback destroys, this rebuilds. The
+       listener re-binds above already honoured it; these three did not, and
+       each one was a user-visible bug.
+
+       Deliberately LAST in this method: the preview hello handshake above can
+       set _wallModeNeedsRender and call _renderAll(), which installs the
+       observer, subscribes templates and repaints by itself. Running after it
+       makes these calls no-ops on that path instead of duplicated work, and
+       means the grid class is decided once, from the final mode.
+
+       These run outside the `typeof window` guard above on purpose: none of
+       them needs `window` (the observer install does its own feature test),
+       and a repaint must not be conditional on the listener environment.
+       ------------------------------------------------------------------ */
+
+    // 1. The canvas ResizeObserver. Destroyed and NULLED by teardown, and
+    //    created nowhere but _renderAll, so after one move nothing watched
+    //    the canvas and the field/walls stayed blank until an unrelated
+    //    updateLights() ran. That is report (1) verbatim.
+    this._installCanvasObserver();
+
+    // 2. Template subscriptions. _unsubscribeTemplates() in teardown has no
+    //    rebuild site either — _subscribeTemplates runs only from _renderAll
+    //    — so a move froze every `type: template` canvas element at its last
+    //    rendered value, silently and permanently. It unsubscribes first and
+    //    carries a generation guard, so this cannot double-subscribe.
+    //    Gated on the card actually HAVING template elements: that keeps it
+    //    free for every card that has none, and bounds the one redundant
+    //    round trip on the hello-handshake path (where _renderAll has just
+    //    subscribed) to cards that use templates at all.
+    if (this._config && this._hass && this._els && this._els.canvas
+        && (this._config.canvas_elements || []).some(el => el && el.type === 'template' && el.content)) {
+      this._subscribeTemplates();
+    }
+
+    // 3. The pixels. Teardown zeroes the light-field and wall-editor backing
+    //    stores outright (deliberately -- iOS accounts canvas memory globally
+    //    across a dashboard), so that measured 0x0 with the SAME canvas
+    //    element is OUR teardown, not the browser dropping a bitmap. Nothing
+    //    un-zeroes a backing store except a draw, so a reconnect needs a draw
+    //    and not merely a watcher. See _repaintCanvasLayers for why the fresh
+    //    observer above is not a substitute -- and why it is not redundant.
+    this._repaintCanvasLayers();
+
+    // 4. The grid class, which the detached render could not decide.
+    this._syncGridVisibility();
   }
   disconnectedCallback() {
     if (this._boundKeyDown) {
@@ -5923,6 +6104,10 @@ class SpatialLightColorCard extends HTMLElement {
       this._canvasObserver.disconnect();
       this._canvasObserver = null;
     }
+    // Cleared WITH the observer, never separately: _installCanvasObserver
+    // treats "same target" as "already observing", so a stale target left
+    // here would make it decline to rebuild after the next reconnect.
+    this._canvasObserverTarget = null;
 
     if (this._glowResizeTimer) {
       clearTimeout(this._glowResizeTimer);

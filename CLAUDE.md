@@ -588,6 +588,81 @@ to contain it. `minLen` is a floor near the real size for the same reason: 20000
 chars waves through a 40000-char amputation. Verified against both failure modes -- a stray
 backtick, and a truncation that `node --check` passes.
 
+## 8f. Teardown must be reversible (first paint after a move)
+
+**Reported: "the walls and light projections do not load until you interact with the map or an
+entity."** They were right, and the cause is a teardown/rebuild asymmetry rather than anything in
+the renderer.
+
+HA moves cards between DOM parents during layout -- masonry reflow, a view rebuild, sections -- and
+every move is a `disconnectedCallback` followed by a `connectedCallback`. Teardown destroyed three
+things that only `_renderAll` ever created: it disconnected AND NULLED `_canvasObserver`, it called
+`_clearLightFieldSchedule()`, and it ZEROED the light-field and wall-editor backing stores. The
+listener re-binds in `connectedCallback` already mirrored teardown; these three did not. After one
+move the card had no observer, no pending draw and a 0x0 canvas, so nothing repainted until some
+unrelated `updateLights()` ran -- which is exactly "until you interact".
+
+Measured in `.harness/first-paint.html` (`abRemount`), with the fix stubbed out at instance level as
+a control: before the move 1120x700, energy 7665602, 5672 wall pixels; 1.8s after the move, touching
+nothing, 0x0 / energy 0 / no walls, `_canvasObserver` null and both schedule handles null while
+`_fieldCanvasNeeded` was still true and the plan box a healthy 560x350. One `updateLights()` restored
+it completely. With the fix: 1120x700, energy 7665748, 5672 wall pixels, no interaction.
+
+**The 0x0 is OUR teardown, not the browser.** `disconnectedCallback` sets `width`/`height` to 0 on
+both canvases deliberately, because iOS Safari accounts canvas memory globally across a dashboard and
+HA recreates the editor preview card on every keystroke. The canvas ELEMENT is identical across the
+move. Nothing un-zeroes a backing store except a draw, which is why a watcher alone is not the fix.
+
+`_installCanvasObserver()` is the extracted owner of the observer, called from `_renderAll` and from
+`connectedCallback`, and idempotent BY IDENTITY via `_canvasObserverTarget` -- which must only ever be
+cleared alongside the observer itself, or install sees "same target, already observing" and declines
+to rebuild, silently restoring the bug. `.harness/first-paint.html`'s `observerTally` asserts the live
+count is exactly 1 after a connect, after five extra connects, after three renders and after three
+moves: never 0 (the bug), never 2+ (a leak).
+
+**Both halves are load-bearing, and the reason is narrower than it first looks.** Measured in a
+FOREGROUND tab: a fresh `observe()` DOES deliver an initial notification, so the reinstall alone
+would eventually repaint -- but it arrives through the callback's leading/trailing debounce and
+`_glowResizeLast` survives the move, so a reconnect within 250ms defers the repaint by 150ms; and
+with no `ResizeObserver` there is no observer at all. What fires nothing, both measured: re-observing
+the SAME element at the SAME size (1 -> 1), and a same-size DOM move with an existing observer.
+
+**Measure this in a foreground tab.** A background tab runs no rendering steps, so ResizeObserver
+never delivers and rAF never fires; an earlier pass measured zero callbacks for everything and drew
+the opposite conclusion. It is also why `_requestLightFieldDraw`'s 250ms `setTimeout` backstop beside
+the rAF is not redundant.
+
+Template subscriptions had the identical shape -- `_unsubscribeTemplates()` in teardown with
+`_subscribeTemplates` only in `_renderAll` -- so a move froze every `type: template` canvas element at
+its last value, permanently. Rebuilt on connect, gated on the card actually having template elements.
+
+## 8g. The grid is editor chrome
+
+`.grid` is the snap lattice for placing lights, and on a finished dashboard it is graph paper printed
+over the user's floor plan. It is now shown only while the card is the editor's live preview.
+
+"The editor" means exactly `_isInsideEditorPreview()` -- the card already has ONE definition of that
+and every editor-session broadcast is gated on it, so a second, differently-spelled predicate is the
+thing to avoid. Deliberately NOT `_editPositionsMode` / `_wallEditMode`: both are strict subsets (each
+is only ever set under that same guard) and they are modes WITHIN the editor, so gating on them would
+make the dots appear only after you start dragging.
+
+The gate is a CLASS applied imperatively (`_syncGridVisibility`, toggling `.show-grid` on `#canvas`),
+never a markup decision, because `_renderAll` legitimately runs DETACHED -- HA sets config and hass
+before appending -- and the ancestor walk then answers false whether or not the card is headed for the
+preview. Verified: the detached markup contains `.grid` while the walk says false. It is re-applied
+from `_renderAll` (beside `_applyEditorHighlight`, same shape) and from `connectedCallback` (last,
+after the hello handshake, so the class is decided once from the final mode).
+
+Nothing flashes in either direction: `connectedCallback` fires synchronously inside the `appendChild`
+that connects the card, before its first paint, and `_renderAll` is synchronous. Measured in the same
+task as the connect: `none` under a plain parent, `block` under `hui-card-preview` and
+`hui-dialog-edit-card` including one shadow root deep, and `block` -> `none` when re-parented out.
+
+Snapping is unaffected -- `_snapToGrid` and the wall-editor stage snap compute from `this._gridSize`
+arithmetically and never read the DOM. `theme.grid_color` still validates and round-trips; it now only
+affects the editor preview.
+
 ## 8a. Label legibility over the field
 
 `.light-label` paints in TWO layers: `background-color: var(--label-ground)` (opaque) with `background-image: linear-gradient(var(--label-bg), var(--label-bg))` on top. `background-image` paints above `background-color`, so the theme's tint survives while the label is guaranteed opaque.
