@@ -275,6 +275,16 @@ up. Every label went soft. Laying the stage out at full size costs a reflow per 
 text render at the resolution it is actually displayed at (layout == visual, 2 device px per visual px
 at every level).
 
+**The zoom is parked with the editor, like the mode.** It lives on the card, and HA replaces the card on
+every config change — which every committed wall and every dropped light causes — so committing
+anything zoomed you straight back out. `_applyWallZoom` broadcasts `spatial-card-wall-view`, the editor
+stores it without rendering, and the hello reply hands it back beside the mode. A fresh open still
+starts fitted, because that path is the wall-mode event rather than the handshake.
+
+That reset needs the PREVIOUS value of `_wallEditMode`, captured before the handler assigns it —
+reading it afterwards always said "already open", so the guard never fired and reopening kept the old
+zoom.
+
 **The tap-vs-draw threshold divides by the zoom.** It answers a question about the GESTURE — did the
 hand move or did it tap — and that is a fixed number of screen pixels however far in you are. It is
 computed from the rect diagonal, and the rect grows with the zoom while the stroke stays the same size

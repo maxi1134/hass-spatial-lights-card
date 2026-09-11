@@ -1,0 +1,110 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Mode persists on drop</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}
+.dlg{display:flex;gap:16px;padding:12px;transform:translateZ(0)}
+.edcol{flex:3;max-height:60vh;overflow:auto;background:#222;padding:8px}
+.pvcol{flex:1;min-width:0}</style></head><body>
+<div class="dlg"><div class="edcol" id="edcol"></div><div class="pvcol"><hui-card-preview id="pv"></hui-card-preview></div></div>
+<script>
+class HuiCardPreview extends HTMLElement{}customElements.define('hui-card-preview',HuiCardPreview);
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{constructor(){super();this._c=false}get checked(){return this._c}
+ set checked(v){this._c=!!v}connectedCallback(){this.onclick=()=>{this._c=!this._c;
+ this.dispatchEvent(new Event('change',{bubbles:true}))}}}
+customElements.define('ha-switch',HaSwitch);
+const ids=['light.a','light.b'];
+const states={};ids.forEach(i=>states[i]={entity_id:i,state:'on',attributes:{friendly_name:i,
+ brightness:255,rgb_color:[255,150,0],color_mode:'rgb',supported_color_modes:['rgb']}});
+const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+ connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+let CONFIG={type:'custom:spatial-light-color-card',entities:ids,
+  positions:{'light.a':{x:30,y:40},'light.b':{x:70,y:60}},
+  background_image:{url:'floorplan.svg'}, aspect_ratio:'2:1'};
+let card, editor, rebuilds=0;
+function mountCard(){
+  const pv=document.getElementById('pv'); pv.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(JSON.parse(JSON.stringify(CONFIG)));   // HA's order: config, hass, THEN append
+  card.hass=hass; pv.appendChild(card); window.card=card; rebuilds++;
+}
+function mountEditor(){
+  const col=document.getElementById('edcol'); col.innerHTML='';
+  editor=document.createElement('spatial-light-color-card-editor');
+  editor.hass=hass; editor.setConfig(JSON.parse(JSON.stringify(CONFIG)));
+  col.appendChild(editor); window.editor=editor;
+  editor.addEventListener('config-changed',(e)=>{ CONFIG=e.detail.config; mountCard(); });
+}
+window.boot=async function(){ mountEditor(); mountCard(); await new Promise(r=>setTimeout(r,700)); return true; };
+// Zoom must survive the preview rebuild a committed wall causes.
+window.runZoomPersist=async function(){
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  editor.shadowRoot.getElementById('cfgWallDrawMode').click();
+  await sleep(600);
+  const out={};
+  const wheel=(c,fx,fy,dy)=>{const vp=c.shadowRoot.getElementById('wallEditorViewport');
+    const v=vp.getBoundingClientRect();
+    vp.dispatchEvent(new WheelEvent('wheel',{deltaY:dy,clientX:v.left+v.width*fx,
+      clientY:v.top+v.height*fy,bubbles:true,cancelable:true}));};
+  wheel(window.card,0.5,0.5,-600); await sleep(300);
+  wheel(window.card,0.5,0.5,-400); await sleep(300);
+  out.beforeZoom = Math.round(window.card._weZoom*100)/100;
+  out.beforePan = [Math.round(window.card._wePanX), Math.round(window.card._wePanY)];
+  out.beforeLabel = window.card.shadowRoot.getElementById('weZoomLevel').textContent;
+  // draw a wall, which commits and makes HA rebuild the preview card
+  const c=window.card, st=c.shadowRoot.getElementById('wallEditorStage');
+  const r=st.getBoundingClientRect();
+  const saved=c._wallSurface; c._wallSurface=()=>st;
+  const ev=(fx,fy)=>({clientX:r.left+r.width*fx, clientY:r.top+r.height*fy, pointerId:1,
+    button:0, pointerType:'mouse', preventDefault(){}, altKey:true, shiftKey:false});
+  c._onWallPointerDown(ev(0.3,0.3)); c._onWallPointerMove(ev(0.6,0.35)); c._onWallPointerUp(ev(0.6,0.35));
+  c._wallSurface=saved;
+  await sleep(900);
+  out.wallsAfter = (CONFIG.glow_walls||[]).length;
+  out.afterZoom = Math.round(window.card._weZoom*100)/100;
+  out.afterPan = [Math.round(window.card._wePanX), Math.round(window.card._wePanY)];
+  out.afterLabel = window.card.shadowRoot.getElementById('weZoomLevel').textContent;
+  out.zoomHeld = Math.abs(out.afterZoom-out.beforeZoom)<0.02
+              && Math.abs(out.afterPan[0]-out.beforePan[0])<3
+              && Math.abs(out.afterPan[1]-out.beforePan[1])<3;
+  // and a fresh open starts fitted again
+  window.card.shadowRoot.getElementById('wallEditorDone').click(); await sleep(500);
+  editor.shadowRoot.getElementById('cfgWallDrawMode').click(); await sleep(700);
+  out.reopenZoom = Math.round((window.card._weZoom||1)*100)/100;
+  return out;
+};
+
+window.run=async function(){
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const out={};
+  // Open the modal in LIGHTS mode, the way the editor button does.
+  editor.shadowRoot.getElementById('cfgLightPlaceOpen').click();
+  await sleep(600);
+  out.openedMode = card._wallEditorMode;
+  out.modalTitle = card.shadowRoot.querySelector('.wall-editor-title')?.textContent;
+  const before = rebuilds;
+  // Drag a light on the stage and drop it.
+  const stage = card.shadowRoot.getElementById('wallEditorStage');
+  const r = stage.getBoundingClientRect();
+  const ev=(t,fx,fy)=>({clientX:r.left+r.width*fx, clientY:r.top+r.height*fy, pointerId:2,
+    button:0, pointerType:'mouse', preventDefault(){}, altKey:true});
+  card._onLightStagePointerDown(ev('down',0.30,0.40));
+  card._onLightStagePointerMove(ev('move',0.55,0.70));
+  card._onLightStagePointerUp(ev('up',0.55,0.70));
+  await sleep(800);
+  out.previewRebuilt = rebuilds > before;
+  out.modeAfterDrop = window.card._wallEditorMode;
+  out.titleAfterDrop = window.card.shadowRoot.querySelector('.wall-editor-title')?.textContent;
+  out.stillOpen = !!window.card.shadowRoot.getElementById('wallEditorStage');
+  out.positionSaved = JSON.stringify(CONFIG.positions['light.a']);
+  // Switching to Walls in the header must also survive a rebuild.
+  window.card.shadowRoot.getElementById('wallModeWalls').click();
+  await sleep(400);
+  out.afterSwitch = window.card._wallEditorMode;
+  window.card._onLightStagePointerDown(ev('down',0.9,0.9)); // no-op in walls mode
+  await sleep(200);
+  out.editorRemembers = editor._wallDrawMode;
+  return out;
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'" onload="boot()"><\/script>');</script>
+</body></html>

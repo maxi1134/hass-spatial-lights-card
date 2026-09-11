@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.28.2 (fork-maxi1134)';
+  static BUILD = 'v1.28.3 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -5029,6 +5029,16 @@ class SpatialLightColorCard extends HTMLElement {
     stage.style.setProperty('--we-ty', `${Math.round(this._wePanY || 0)}px`);
     const label = this.shadowRoot && this.shadowRoot.getElementById('weZoomLevel');
     if (label) label.textContent = `${Math.round(z * 100)}%`;
+    // The zoom lives on the card, and HA replaces the card on every config
+    // change -- which every committed wall and every dropped light causes. So
+    // it is parked with the editor, the one thing that outlives the rebuild,
+    // exactly as the mode is. The editor only stores it, so this is cheap
+    // enough to send on each wheel tick.
+    if (typeof window !== 'undefined' && this._wallEditorId) {
+      window.dispatchEvent(new CustomEvent('spatial-card-wall-view', {
+        detail: { editorId: this._wallEditorId, z, x: this._wePanX || 0, y: this._wePanY || 0 },
+      }));
+    }
     // The canvas backing store is sized from the stage rect, which the zoom
     // just changed, so redraw or the walls stay at the old resolution.
     this._requestWallEditorDraw();
@@ -5681,10 +5691,17 @@ class SpatialLightColorCard extends HTMLElement {
         if (!this._isInsideEditorPreview()) return;
         const active = !!d.active;
         if (this._wallEditMode === active && (!active || this._wallEditorId === d.editorId)) return;
+        // Captured BEFORE the assignment below: the zoom reset needs to know
+        // whether this is a fresh open, and reading _wallEditMode afterwards
+        // always said "already open" and never fired.
+        const wasActive = this._wallEditMode;
         this._wallEditMode = active;
         this._wallEditorId = active ? (d.editorId || null) : null;
         this._wallEditorMode = (d.mode === 'lights') ? 'lights' : 'walls';
-        if (active && !this._wallEditMode) this._resetWallZoom();
+        // A fresh open starts fitted. A rebuild mid-session comes through the
+        // hello handshake instead, which restores the view rather than
+        // resetting it, so this cannot undo a zoom the user set.
+        if (active && !wasActive) this._resetWallZoom();
         // Wall mode and position-editing are mutually exclusive; enforce it
         // card-side too, since a dropped event would otherwise leave the card
         // in both, where the wall branch wins and light dragging silently
@@ -5722,7 +5739,7 @@ class SpatialLightColorCard extends HTMLElement {
         // is invoked synchronously during dispatch).
         window.dispatchEvent(new CustomEvent('spatial-card-preview-hello', {
           detail: {
-            reply: (editorId, active, wallActive, wallMode) => {
+            reply: (editorId, active, wallActive, wallMode, wallView) => {
               this._editPositionsMode = !!active;
               this._editorId = active ? editorId : null;
               // The preview card is recreated on every config change, so wall
@@ -5733,8 +5750,14 @@ class SpatialLightColorCard extends HTMLElement {
               this._wallEditMode = !!wallActive;
               this._wallEditorId = wallActive ? editorId : null;
               if (wallActive) {
-                // Restore the MODE as well as the fact of being open.
+                // Restore the MODE and the VIEW as well as the fact of being
+                // open, or committing a wall silently zooms back out.
                 this._wallEditorMode = (wallMode === 'lights') ? 'lights' : 'walls';
+                if (wallView && wallView.z > 0) {
+                  this._weZoom = wallView.z;
+                  this._wePanX = wallView.x || 0;
+                  this._wePanY = wallView.y || 0;
+                }
                 this._wallModeNeedsRender = true;
               }
             },
@@ -11117,7 +11140,8 @@ class SpatialLightColorCardEditor extends HTMLElement {
         // without this the rebuilt card defaults to 'walls' and the modal
         // flips out of Lights the instant you drop a lamp.
         e.detail.reply(this._editorId, this._editPositionsActive, this._wallDrawActive,
-          this._wallDrawMode === 'lights' ? 'lights' : 'walls');
+          this._wallDrawMode === 'lights' ? 'lights' : 'walls',
+          this._wallViewState || null);
       }
     };
     window.addEventListener('spatial-card-preview-hello', this._boundPreviewHello);
@@ -11158,6 +11182,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
     };
     window.addEventListener('spatial-card-wall-cancel', this._boundWallCancel);
 
+    // Park the card's zoom/pan here: the card is replaced on every config
+    // change, this is not. Stored only -- no render, so a wheel tick costs
+    // nothing.
+    if (this._boundWallView) window.removeEventListener('spatial-card-wall-view', this._boundWallView);
+    this._boundWallView = (e) => {
+      const d = e.detail || {};
+      if (!d.editorId || d.editorId !== this._editorId) return;
+      this._wallViewState = { z: d.z, x: d.x, y: d.y };
+    };
+    window.addEventListener('spatial-card-wall-view', this._boundWallView);
+
     // Keep the editor's idea of "is the wall editor open" in step with the
     // card's. Without this, closing the editor left _wallDrawActive true, the
     // next click re-broadcast a state the card was already in, and the card's
@@ -11177,6 +11212,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       // the snapshot has served its purpose. Dropping it stops a later Cancel
       // reverting to a session the user already accepted.
       this._wallEditorSnapshot = null;
+      this._wallViewState = null;
       this._render();
     };
     window.addEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
@@ -11303,6 +11339,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
       if (this._boundWallCancel) {
         window.removeEventListener('spatial-card-wall-cancel', this._boundWallCancel);
         this._boundWallCancel = null;
+      }
+      if (this._boundWallView) {
+        window.removeEventListener('spatial-card-wall-view', this._boundWallView);
+        this._boundWallView = null;
       }
       this._boundWallDelta = null;
     }
@@ -14828,6 +14868,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
           }));
         }
         this._wallDrawMode = 'walls';
+        this._wallViewState = null;
         if (this._wallDrawActive) {
         // Everything the modal can change, as it stands right now. Wall
         // strokes and light drops commit to config as they happen, so Cancel
@@ -14861,6 +14902,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
           }));
         }
         this._wallDrawMode = 'lights';
+        this._wallViewState = null;
         // Everything the modal can change, as it stands right now. Wall
         // strokes and light drops commit to config as they happen, so Cancel
         // has nothing to undo unless the state it started from was kept.
