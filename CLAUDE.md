@@ -139,6 +139,18 @@ The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements a
 them is already element-guarded, so they are inert rather than broken and would light up again if the
 labels ever came back.
 
+**Script buttons** (`script_buttons`) run a script against whatever the controls are pointed at. They
+render as `.effect-preset.script-preset` in the presets row, so they inherit the icon-circle look, the
+click binding and the Enter/Space path the other presets already have — the only new code is the
+normalizer, the renderer and `_applyScriptButton`.
+
+`script` is a full `domain.service`, so `scene.movie` and `automation.trigger` work as well as
+`script.foo`; that is why there is no separate `service` key. The entities go in under `target_key`
+(default `entity_id`), which is the variable name the script receives, and `data` merges fixed arguments
+underneath. Targeting widens the same way `_applyEffectPreset` does — selection, else `default_entity`,
+else every entity on the plan — so a button still does something sensible with nothing selected.
+`pass_entities: false` opts out entirely, for a script that takes none.
+
 **The floating controls are draggable, and that is the answer to them being in the way.**
 `default_entity` keeps them on screen — it names the light they act on when nothing is selected,
 which is only useful if they are there to act — so the fix for "permanently over my plan" is to let

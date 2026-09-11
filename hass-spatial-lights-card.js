@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.24.0 (fork-maxi1134)';
+  static BUILD = 'v1.25.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -339,6 +339,10 @@ class SpatialLightColorCard extends HTMLElement {
         ? config.color_presets.filter(c => typeof c === 'string' && c.trim()).map(c => c.trim())
         : [],
       show_live_colors: config.show_live_colors === true,
+
+      // Script buttons: run a script (or any service) against whatever the
+      // controls are currently pointed at.
+      script_buttons: this._normalizeScriptButtons(config.script_buttons),
 
       // Effect presets (array of {effect, icon?} shown as icon circles next to color presets)
       effect_presets: Array.isArray(config.effect_presets)
@@ -1523,6 +1527,39 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     return null;
+  }
+
+  /**
+   * Script buttons. `script` is a full service id: `script.foo` runs that
+   * script, but any `domain.service` works, so this covers scenes, automations
+   * and one-off service calls without a second config key.
+   *
+   * The entities go in under `target_key` (default `entity_id`), which is the
+   * variable name the script sees. Anything in `data` is merged underneath, so
+   * a button can carry fixed arguments as well.
+   */
+  _normalizeScriptButtons(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map((b) => {
+      if (!b) return null;
+      // A bare string is the common case: just the script to run.
+      const raw = typeof b === 'string' ? { script: b } : b;
+      if (typeof raw !== 'object') return null;
+      const script = typeof raw.script === 'string' ? raw.script.trim()
+        : (typeof raw.service === 'string' ? raw.service.trim() : '');
+      // Must be domain.service, or callService has nothing to dispatch on.
+      if (!/^[a-z_]+\.[a-z0-9_]+$/i.test(script)) return null;
+      const out = {
+        script,
+        icon: (typeof raw.icon === 'string' && raw.icon.trim()) ? raw.icon.trim() : 'mdi:script-text-play',
+        name: (typeof raw.name === 'string' && raw.name.trim()) ? raw.name.trim() : script.split('.')[1].replace(/_/g, ' '),
+        target_key: (typeof raw.target_key === 'string' && raw.target_key.trim()) ? raw.target_key.trim() : 'entity_id',
+      };
+      if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data)) out.data = raw.data;
+      // Opt out of receiving the entities at all, for scripts that take none.
+      if (raw.pass_entities === false) out.pass_entities = false;
+      return out;
+    }).filter(Boolean);
   }
 
   _normalizeCanvasElements(elements) {
@@ -6050,6 +6087,8 @@ class SpatialLightColorCard extends HTMLElement {
         if (Number.isFinite(k)) this._applyTemperaturePreset(k);
       } else if (target.classList.contains('adaptive-preset')) {
         this._applyAdaptiveLighting();
+      } else if (target.classList.contains('script-preset')) {
+        this._applyScriptButton(parseInt(target.dataset.scriptIndex, 10));
       } else if (target.classList.contains('effect-preset')) {
         const effect = target.dataset.presetEffect;
         if (effect) this._applyEffectPreset(effect);
@@ -7049,6 +7088,10 @@ class SpatialLightColorCard extends HTMLElement {
         e.stopPropagation();
         if (this._suppressPresetClick) { this._suppressPresetClick = false; return; }
         if (el.classList.contains('adaptive-preset')) { this._applyAdaptiveLighting(); return; }
+        if (el.dataset.scriptIndex !== undefined) {
+          this._applyScriptButton(parseInt(el.dataset.scriptIndex, 10));
+          return;
+        }
         const effectName = el.dataset.presetEffect;
         if (effectName) this._applyEffectPreset(effectName);
       });
@@ -7560,12 +7603,52 @@ class SpatialLightColorCard extends HTMLElement {
     return html;
   }
 
+  /** The script buttons, sharing the effect presets' look so the row reads as one. */
+  _renderScriptButtons() {
+    const list = this._config.script_buttons || [];
+    if (!list.length) return '';
+    return list.map((b, i) => {
+      const label = this._escapeHtml(b.name);
+      return `<div class="effect-preset script-preset" data-script-index="${i}" title="${label}"`
+        + ` tabindex="0" role="button" aria-label="Run ${label}">`
+        + `<ha-icon icon="${this._escapeHtml(b.icon)}"></ha-icon>`
+        + `<span class="effect-label">${label}</span></div>`;
+    }).join('');
+  }
+
+  /**
+   * Run a script button against whatever the controls are pointed at: the
+   * selection, else `default_entity`, else every entity on the plan -- the
+   * same widening the effect presets use, so a button does something sensible
+   * with nothing selected rather than nothing at all.
+   */
+  _applyScriptButton(index) {
+    const b = (this._config.script_buttons || [])[index];
+    if (!b || !this._hass) return;
+    const dot = b.script.indexOf('.');
+    const domain = b.script.slice(0, dot);
+    const service = b.script.slice(dot + 1);
+    const data = { ...(b.data || {}) };
+    if (b.pass_entities !== false) {
+      let targets = this._selectedLights.size > 0 ? [...this._selectedLights]
+        : (this._config.default_entity ? [this._config.default_entity]
+          : [...(this._config.entities || [])]);
+      targets = targets.filter((id) => this._isEntityAvailable(id));
+      if (targets.length === 0) return;
+      data[b.target_key] = targets;
+    }
+    this._hass.callService(domain, service, data)
+      .catch((err) => console.warn(`[spatial-lights-card] ${b.script} failed:`, err));
+    this._announce(`${b.name} run`);
+  }
+
   _renderPresetsContent() {
     const colorHtml = this._renderColorPresets();
     const tempHtml = this._renderTemperaturePresets();
     // The adaptive preset lives in the effect block: it's a mode button, not
     // a color swatch, and shares the effect-preset look and separators.
-    const effectHtml = this._renderEffectPresets() + this._renderAdaptivePreset();
+    const effectHtml = this._renderEffectPresets() + this._renderAdaptivePreset()
+      + this._renderScriptButtons();
     if (!colorHtml && !tempHtml && !effectHtml) return '';
     let html = colorHtml || '';
     if (colorHtml && tempHtml) {
@@ -10475,6 +10558,17 @@ class SpatialLightColorCard extends HTMLElement {
         yamlLines.push(`${indent}- "${color}"`);
       });
     }
+    if (Array.isArray(this._config.script_buttons) && this._config.script_buttons.length) {
+      yamlLines.push('script_buttons:');
+      this._config.script_buttons.forEach((b) => {
+        yamlLines.push(`${indent}- script: ${b.script}`);
+        yamlLines.push(`${indent}  name: "${b.name}"`);
+        yamlLines.push(`${indent}  icon: ${b.icon}`);
+        if (b.target_key !== 'entity_id') yamlLines.push(`${indent}  target_key: ${b.target_key}`);
+        if (b.pass_entities === false) yamlLines.push(`${indent}  pass_entities: false`);
+        if (b.data) yamlLines.push(`${indent}  data: ${JSON.stringify(b.data)}`);
+      });
+    }
     if (this._config.show_live_colors) yamlLines.push(`show_live_colors: true`);
 
     // Adaptive Lighting: emit only what deviates from the defaults
@@ -12779,6 +12873,38 @@ class SpatialLightColorCardEditor extends HTMLElement {
                 <button class="add-preset-btn" id="addEffectPresetBtn" title="Add effect preset">+</button>
               </div>
             </div>
+            <div class="input-row">
+              <label>Script Buttons</label>
+              <div class="sublabel" style="margin:-4px 0 6px;">Runs a script against the selected lights (or the default entity, or all of them if nothing is selected). Any <code>domain.service</code> works, not just scripts.</div>
+              <datalist id="allScriptsList">
+                ${Object.keys((this._hass && this._hass.states) || {})
+                  .filter((id) => id.startsWith('script.') || id.startsWith('scene.'))
+                  .sort().map((id) => `<option value="${this._esc(id)}">`).join('')}
+              </datalist>
+              <div class="effect-presets-list" id="scriptButtonsList">
+                ${(Array.isArray(config.script_buttons) ? config.script_buttons : []).map((b, i) => {
+                  const sb = (typeof b === 'string') ? { script: b } : (b || {});
+                  return `
+                  <div class="effect-preset-block" data-index="${i}">
+                    <div class="effect-preset-row" data-index="${i}">
+                      <input type="text" class="sb-script-input" data-index="${i}" value="${this._esc(sb.script || sb.service || '')}" placeholder="script.my_script" list="allScriptsList">
+                      <button class="remove-script-button" data-index="${i}" title="Remove">&times;</button>
+                    </div>
+                    <div class="effect-preset-row" data-index="${i}">
+                      <input type="text" class="sb-name-input" data-index="${i}" value="${this._esc(sb.name || '')}" placeholder="Button label">
+                      <span class="effect-icon-label">Icon:</span>
+                      <input type="text" class="sb-icon-input" data-index="${i}" value="${this._esc(sb.icon || 'mdi:script-text-play')}" placeholder="mdi:script-text-play" style="max-width:160px;">
+                    </div>
+                    <div class="effect-preset-row" data-index="${i}">
+                      <span class="effect-icon-label">Passes entities as:</span>
+                      <input type="text" class="sb-key-input" data-index="${i}" value="${this._esc(sb.target_key || 'entity_id')}" placeholder="entity_id" style="max-width:160px;">
+                      <label class="effect-light-check" title="Untick for a script that takes no entities"><input type="checkbox" class="sb-pass-cb" data-index="${i}"${sb.pass_entities === false ? '' : ' checked'}><span>send entities</span></label>
+                    </div>
+                  </div>`;
+                }).join('')}
+                <button class="add-preset-btn" id="addScriptButtonBtn" title="Add script button">+</button>
+              </div>
+            </div>
             <div class="option-row">
               <div><div class="label">Effect visibility (no selection)</div><div class="sublabel">Show effect if any or all lights on the card have it</div></div>
               <select id="cfgEffectFilterDefault" style="padding:6px 10px; border-radius:6px; border:1px solid var(--divider-color, rgba(0,0,0,0.12)); background:var(--card-background-color, #fff); color:var(--primary-text-color, #212121); font-size:14px;">
@@ -13864,6 +13990,47 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._render();
       });
     }
+
+    const addScriptButtonBtn = root.getElementById('addScriptButtonBtn');
+    if (addScriptButtonBtn) {
+      addScriptButtonBtn.addEventListener('click', () => {
+        if (!Array.isArray(this._config.script_buttons)) this._config.script_buttons = [];
+        this._config.script_buttons.push({ script: '', name: '', icon: 'mdi:script-text-play', target_key: 'entity_id' });
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+    root.querySelectorAll('.remove-script-button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.index, 10);
+        if (!Array.isArray(this._config.script_buttons)) return;
+        this._config.script_buttons.splice(idx, 1);
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+    // One writer for all four fields: they differ only in which key they set,
+    // and a per-field listener would be four copies of the same guard.
+    const sbField = (sel, key, transform) => {
+      root.querySelectorAll(sel).forEach((input) => {
+        const ev = input.type === 'checkbox' ? 'change' : 'input';
+        input.addEventListener(ev, () => {
+          const idx = parseInt(input.dataset.index, 10);
+          const list = this._config.script_buttons;
+          if (!Array.isArray(list) || !list[idx]) return;
+          // A bare string entry has to become an object before it can hold
+          // anything but the script id.
+          if (typeof list[idx] === 'string') list[idx] = { script: list[idx] };
+          list[idx][key] = transform(input);
+          this._fireConfigChanged();
+        });
+      });
+    };
+    sbField('.sb-script-input', 'script', (i) => i.value.trim());
+    sbField('.sb-name-input', 'name', (i) => i.value.trim());
+    sbField('.sb-icon-input', 'icon', (i) => i.value.trim() || 'mdi:script-text-play');
+    sbField('.sb-key-input', 'target_key', (i) => i.value.trim() || 'entity_id');
+    sbField('.sb-pass-cb', 'pass_entities', (i) => i.checked);
 
     // --- Canvas Elements ---
     // Add canvas element buttons

@@ -145,6 +145,49 @@ either: a bar running the full width of the controls has nothing left to aim
 at. The numeric readouts (the brightness percentage and the Kelvin value) went
 with the old sliders — ask if you want them back.
 
+### Script buttons
+
+Add buttons to the controls that run a script against the lights you have
+selected:
+
+```yaml
+script_buttons:
+  - script.flash_lights            # shorthand: icon and label are derived
+  - script: script.wind_down
+    name: Wind down
+    icon: mdi:weather-night
+  - script: scene.movie_night
+    name: Movie
+    icon: mdi:movie
+    pass_entities: false           # a script that takes no entities
+```
+
+The script receives the entities as `entity_id`, so a script like this gets
+exactly the lights you had selected:
+
+```yaml
+flash_lights:
+  fields:
+    entity_id:
+      selector: {entity: {multiple: true}}
+  sequence:
+    - service: light.turn_on
+      target: {entity_id: "{{ entity_id }}" }
+      data: {flash: short}
+```
+
+| key | default | meaning |
+| --- | --- | --- |
+| `script` | required | Any `domain.service` — scripts, scenes, automations. |
+| `name` | from the service id | Button label and tooltip. |
+| `icon` | `mdi:script-text-play` | Any mdi icon. |
+| `target_key` | `entity_id` | The variable name the entities arrive under. |
+| `data` | none | Fixed arguments merged into the call. |
+| `pass_entities` | `true` | Set `false` to send no entities at all. |
+
+With nothing selected the button falls back to `default_entity`, and failing
+that to every light on the plan — the same widening the effect presets use.
+
 ### Overlaid controls
 
 With `controls_below: false` the controls float over the plan.
