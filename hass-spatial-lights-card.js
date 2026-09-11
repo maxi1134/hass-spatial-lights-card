@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.25.0 (fork-maxi1134)';
+  static BUILD = 'v1.25.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -1101,8 +1101,15 @@ class SpatialLightColorCard extends HTMLElement {
       const o = {};
       if (val.enabled != null) o.enabled = val.enabled === true;
       if (val.direction != null && Number.isFinite(Number(val.direction))) o.direction = Number(val.direction);
-      if (val.length != null && Number.isFinite(Number(val.length)) && Number(val.length) > 0) o.length = Number(val.length);
-      if (val.width != null && Number.isFinite(Number(val.width)) && Number(val.width) > 0) o.width = Number(val.width);
+      // Through _normalizeGlowLength, exactly like the card-level glow: these
+      // accept 'NN%' as well as pixels, and Number('26%') is NaN, so parsing
+      // them here dropped every per-entity percentage on the floor. A null
+      // fallback means an unusable value omits the key rather than inventing
+      // a default the user never asked for.
+      const oLen = this._normalizeGlowLength(val.length, null);
+      if (val.length != null && oLen !== null) o.length = oLen;
+      const oWid = this._normalizeGlowLength(val.width, null);
+      if (val.width != null && oWid !== null) o.width = oWid;
       if (val.intensity != null && Number.isFinite(Number(val.intensity))) o.intensity = Math.max(0, Math.min(1, Number(val.intensity)));
       if (val.blur != null && Number.isFinite(Number(val.blur)) && Number(val.blur) >= 0) o.blur = Number(val.blur);
       if (val.offset_x != null && Number.isFinite(Number(val.offset_x))) o.offset_x = Number(val.offset_x);

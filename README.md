@@ -18,21 +18,49 @@ Very useful when you have a lot of lights, and searching for the one you need by
 
 ---
 
+## What this fork adds
+
+This is a fork of [Mihonarium/hass-spatial-lights-card](https://github.com/Mihonarium/hass-spatial-lights-card)
+with a focus on making the plan itself do the work: real light on the floor
+plan, walls that stop it, and controls that stay out of the way.
+
+| | |
+| --- | --- |
+| **[Light diffusion](#light-diffusion-light_field)** | Every light paints onto one shared surface, so overlapping pools genuinely mix instead of stacking. Red over blue gives magenta, not two circles. |
+| **[Walls and shadows](#glow-walls)** | Draw walls on the plan and light stops at them, with exact shadows solved by ray-casting — it wraps around a wall's end precisely where geometry says it should. |
+| **[Doors](#doors--walls-that-open)** | A wall can be tied to a `binary_sensor`, so it blocks light only while the door is shut. |
+| **[Uncropped plans](#background-image)** | The canvas adopts your plan's own aspect ratio, so nothing is cropped, stretched or letterboxed at any card width. |
+| **[Rotating the plan](#-rotating-the-plan)** | Turn the whole layout 90/180/270°: lights, zones, walls, image and emission directions together. Non-destructive — nothing you placed is rewritten. |
+| **[The full-size editor](#-the-full-size-editor)** | Draw walls and place lights on a near-fullscreen plan instead of a 250px preview pane. |
+| **[Colour bars](#colour-bars)** | The colour wheel is replaced by four full-width bars: brightness, saturation, hue, temperature. Easier to aim than a 128px circle. |
+| **[Draggable controls](#overlaid-controls)** | Overlaid controls can be dragged anywhere on the plan, remember where you put them, and compress on narrow cards. |
+| **[Script buttons](#script-buttons)** | Run any script, scene or service against the lights you have selected, from a button in the controls. |
+
+Plus: plan-relative (`%`) glow sizes so a plan looks the same at every card
+width, a configurable control-bar height, and light labels that stay legible
+over projected light.
+
+---
+
 ## Table of Contents
 
-1. [Features](#features)
-2. [Installation](#installation)
-3. [Quick Start](#-quick-start)
-4. [Usage](#-usage) — Selecting, toggling, colour bars, sliders, presets, moving lights, keyboard shortcuts
-5. [Configuration Reference](#-all-configuration-options)
-6. [Custom Colors & Backgrounds](#-custom-colors--backgrounds)
-7. [Effect Presets](#-effect-presets) — Quick-apply named light effects with filtering
-8. [Adaptive Lighting](#-adaptive-lighting) — Hand selected lights back to the Adaptive Lighting integration
-9. [Glow Effects](#-glow-effects) — Light diffusion, shapes, walls, custom polar shapes, per-entity overrides
-10. [Canvas Elements](#canvas-elements) — Links, sensors, and template elements on the canvas
-11. [Custom CSS](#-custom-css) — Global and per-entity style customization
-12. [Visual Layout Options](#-visual-options)
-13. [Troubleshooting](#troubleshooting)
+1. [What this fork adds](#what-this-fork-adds)
+2. [Features](#features)
+3. [Installation](#installation)
+4. [Quick Start](#-quick-start)
+5. [Usage](#-usage) — Selecting, toggling, colour bars, sliders, presets, moving lights, keyboard shortcuts
+6. [Configuration Reference](#-all-configuration-options)
+7. [Custom Colors & Backgrounds](#-custom-colors--backgrounds)
+8. [Effect Presets](#-effect-presets) — Quick-apply named light effects with filtering
+9. [Adaptive Lighting](#-adaptive-lighting) — Hand selected lights back to the Adaptive Lighting integration
+10. [Glow Effects](#-glow-effects) — Light diffusion, shapes, walls, doors, custom polar shapes, per-entity overrides
+11. [Rotating the Plan](#-rotating-the-plan) — Quarter turns of the whole layout
+12. [The Full-Size Editor](#-the-full-size-editor) — Draw walls and place lights on a big plan
+13. [Canvas Elements](#canvas-elements) — Links, sensors, and template elements on the canvas
+14. [Custom CSS](#-custom-css) — Global and per-entity style customization
+15. [Visual Layout Options](#-visual-options)
+16. [Theming](#-theming)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -45,6 +73,13 @@ Very useful when you have a lot of lights, and searching for the one you need by
 - Optional default entity for whole-room adjustments.
 - Toggleable floating/below controls to match your dashboard style.
 - Glow effects with multiple shapes (cone, round, oval, beam, spotlight, bar, custom polar) and wall occlusion.
+- Light diffusion: additive colour mixing on one shared surface, with exact ray-cast shadows.
+- Drawable walls, and doors that stop blocking light when an entity says they are open.
+- Plan rotation in quarter turns, applied as a view transform so your coordinates are never rewritten.
+- A full-size editor for drawing walls and placing lights.
+- Four full-width control bars (brightness, saturation, hue, temperature) at a configurable height.
+- Overlaid controls you can drag, that remember their position and compress on narrow cards.
+- Script buttons that run a script, scene or service against the current selection.
 - Canvas elements: place sensor readouts, navigation links, and text labels alongside your lights.
 - Icon rotation, mirroring, and per-entity style customization.
 - Effect presets: quick-apply named effects (e.g., colorloop, fireplace) with per-preset light restrictions and filtering.
@@ -106,7 +141,7 @@ When lights are selected, the colour bars, brightness slider, and temperature sl
 |--------|---------|--------|
 | Toggle a light | Double-click | Double-tap |
 | Toggle a switch/scene | Double-click (or single click if `switch_single_tap` is on) | Double-tap (or single tap if `switch_single_tap` is on) |
-| Turn the whole selection on/off | Power button under the sliders | Power button beside the colour bars |
+| Turn the whole selection on/off | Power button below the bars | Power button below the bars |
 
 > **Note:** If `switch_single_tap` is enabled, switches and scenes activate immediately on a single tap/click instead of being selected.
 
@@ -135,7 +170,7 @@ The controls are four stacked full-width bars:
   second so a long drag doesn't flood the connection.
 - **Arrow keys** step whichever bar has focus.
 - **Height** is configurable: `color_bar_height` (px, default 34), or the
-  **Control Bar Height** slider in the editor's Appearance section.
+  **Control Bar Height** slider in the editor's **Display** section.
 - On mobile, starting a vertical scroll on a bar releases it so the page can
   scroll, rather than the bar swallowing the gesture.
 
@@ -156,10 +191,12 @@ script_buttons:
   - script: script.wind_down
     name: Wind down
     icon: mdi:weather-night
-  - script: scene.movie_night
+  - script: scene.turn_on          # scenes are activated through scene.turn_on
     name: Movie
     icon: mdi:movie
-    pass_entities: false           # a script that takes no entities
+    pass_entities: false           # do not send the selection...
+    data:
+      entity_id: scene.movie_night # ...send the scene instead
 ```
 
 The script receives the entities as `entity_id`, so a script like this gets
@@ -178,7 +215,7 @@ flash_lights:
 
 | key | default | meaning |
 | --- | --- | --- |
-| `script` | required | Any `domain.service` — scripts, scenes, automations. |
+| `script` | required | Any callable `domain.service`. Home Assistant gives every script its own service (`script.my_script`), so scripts can be named directly; scenes and automations are activated through `scene.turn_on` / `automation.trigger` with the entity in `data`. `service:` works as an alias for this key. |
 | `name` | from the service id | Button label and tooltip. |
 | `icon` | `mdi:script-text-play` | Any mdi icon. |
 | `target_key` | `entity_id` | The variable name the entities arrive under. |
@@ -186,7 +223,13 @@ flash_lights:
 | `pass_entities` | `true` | Set `false` to send no entities at all. |
 
 With nothing selected the button falls back to `default_entity`, and failing
-that to every light on the plan — the same widening the effect presets use.
+that to every entity on the card (not only lights) — the same widening the
+effect presets use. Unavailable entities are dropped before the call, and if
+nothing is left the button does nothing.
+
+They can also be managed in the visual editor: the **Presets** section has a
+**Script Buttons** list with an entity picker for your `script.*` and `scene.*`
+entities, so you never have to touch YAML for this.
 
 ### Overlaid controls
 
@@ -245,10 +288,12 @@ Position history stores up to 50 steps.
 | Ctrl+Y / Cmd+Shift+Z | Redo position change |
 | Arrow keys | Nudge selected lights (when positions unlocked) |
 | Alt + Arrow keys | Fine-nudge selected lights |
+| Enter | Activate the focused light, preset or canvas element |
+| Space | Toggle the focused entity on/off, or activate a focused preset |
 
 ### Desktop vs Mobile Differences
 
-- **Layout:** On screens wider than 768 px, controls use a two-column grid (colour bars + sliders side by side). On mobile (768 px or narrower), controls stack vertically.
+- **Layout:** the controls are a single stacked column at every width — four full-width bars, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows.
 - **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
 - **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
 - **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.
@@ -276,17 +321,20 @@ Position history stores up to 50 steps.
 | `canvas_height` | number | `450` | Canvas height in pixels. Used when no background image supplies a ratio (and as the fallback while the image loads). Ignored when `aspect_ratio` is set or auto-aspect is active. |
 | `aspect_ratio` | string | `null` | Optional `"W:H"` (e.g. `"16:9"`, `"1200x800"`). The canvas derives its height from its width so positions stay glued to a floor-plan background at any card width. Usually unnecessary — a background image supplies its own ratio. |
 | `light_field` | map/bool | `{enabled: false}` | Shared-canvas light diffusion: colours merge additively and walls cast real shadows. See [Light Diffusion](#light-diffusion-light_field). |
+| `plan_rotation` | number | `0` | Quarter turn of the whole layout: `0`, `90`, `180` or `270`, clockwise. A view setting — your coordinates are never rewritten. See [Rotating the Plan](#-rotating-the-plan). |
 | `grid_size` | number | `25` | Grid spacing in pixels when snapping. |
 | `label_mode` | string | `"smart"` | Light label style: `smart` (compact abbreviation), `full` (alias `friendly_name`), `initials`, `entity_id`, `none`. |
 | `canvas_touch_scroll` | boolean | `true` | Vertical touch swipes on the canvas scroll the page (marquee needs a sideways drag). Set `false` to reserve all canvas touches for selection. |
 | `theme_mode` | string | `"auto"` | `auto` follows your HA theme (including glass themes), `dark` keeps the card's original dark palette, `light` is a fixed light palette. |
 | `theme` | map | `{}` | Fine-grained appearance overrides — see [Theming](#-theming). |
 | `label_overrides` | map | `{}` | Map entity_id → custom label. |
-| `color_overrides` | map | `{}` | Map entity_id → color string OR object (`state_on`, `state_off`). |
+| `color_overrides` | map | `{}` | Map entity_id → colour string, or object with `state_on` / `state_off` (`on` / `off` are accepted as aliases). |
 | `switch_on_color` | string | `"#ffa500"` | Default color for active switches. |
 | `switch_off_color` | string | `"#3a3a3a"` | Default color for inactive switches. |
 | `scene_color` | string | `"#6366f1"` | Default color for scenes. |
-| `always_show_controls` | boolean | `false` | Show the controls even when nothing is selected. This alone governs visibility. |
+| `always_show_controls` | boolean | `false` | Show the controls even when nothing is selected. (`default_entity` also keeps them up.) |
+| `color_bar_height` | number | `34` | Height of the four control bars, in px. Clamped to 12–120. |
+| `script_buttons` | list | `[]` | Buttons in the controls that run a script, scene or service against the selection. See [Script buttons](#script-buttons). |
 | `show_power_button` | boolean | `true` | Round on/off button at the start of the presets row (under the sliders on desktop, beside the colour bars on mobile) that toggles the selected lights (or the default entity) as a group. Filled = all on (press turns off); outlined = some on (press turns the rest on). |
 | `minimal_ui` | boolean | `false` | Hides light circles; shows only icons. Automatically enables `icon_only_mode`. |
 | `controls_below` | boolean | `true` | Render controls below (`true`) or floating over (`false`). |
@@ -302,7 +350,7 @@ Position history stores up to 50 steps.
 | `icon_mirror_overrides` | map | `{}` | Per-entity icon mirror overrides (e.g., `light.lamp: "horizontal"`). |
 | `size_overrides` | map | `{}` | Per-entity size overrides (e.g., `light.lamp: 40`). |
 | `icon_only_overrides` | map | `{}` | Per-entity icon-only mode overrides (e.g., `light.lamp: true`). |
-| `background_image` | string/map | `null` | URL string or object `{url, size, position, repeat, blend_mode, opacity}`. `opacity` accepts 0–1. `repeat` accepts any CSS `background-repeat` value (e.g. `no-repeat`, `repeat`). |
+| `background_image` | string/map | `null` | URL string, or object `{url, fit, size, position, repeat, blend_mode, opacity, rendering, auto_aspect}`. `opacity` accepts 0–1; `repeat` takes any CSS `background-repeat`. See [Background Image](#background-image) for `fit`, `rendering` and `auto_aspect`. |
 | `color_presets` | list | `[]` | Hex color strings to show as quick-select circles (e.g., `["#ff0000", "#00ff00"]`). |
 | `show_live_colors` | boolean | `false` | Show the current colors of your lights as additional preset circles. |
 | `effect_presets` | list | `[]` | Named effect presets with icons and optional light restrictions (see [Effect Presets](#-effect-presets)). |
@@ -321,7 +369,7 @@ Position history stores up to 50 steps.
 | `custom_css` | string | `""` | Custom CSS injected into the card's shadow DOM. |
 | `style_overrides` | map | `{}` | Per-entity inline CSS style overrides (e.g., `light.lamp: "filter: blur(2px);"`). |
 
-> ℹ️ **Label modes:** `smart` uses friendly names when available, falling back to entity IDs. Override individual entities with `label_overrides`.
+> ℹ️ **Label modes:** `smart` **abbreviates** the friendly name to 2–3 letters ("Kitchen Ceiling Light" — KC), disambiguating trailing numbers and direction words. Use `full` if you want the whole friendly name, and `label_overrides` for individual entities. Override individual entities with `label_overrides`.
 
 ---
 
@@ -396,7 +444,7 @@ desktop stays over the sofa on a phone.
 |-----|---------|---------|
 | `url` | — | Image URL (`/local/...`, `/api/image/serve/...`, or absolute) |
 | `auto_aspect` | `true` | Canvas takes the image's intrinsic aspect ratio (overridden only by `aspect_ratio`) |
-| `fit` | `contain` | `contain`, `cover` (crops), `stretch` (distorts), `native` |
+| `fit` | `contain` | `contain`, `cover` (crops), `stretch` (or `fill`, distorts), `native` (or `auto`, the image's own pixel size) |
 | `rendering` | `auto` | CSS `image-rendering` — use `pixelated` for hand-drawn or low-resolution plans |
 | `size` | — | Raw CSS `background-size`; overrides `fit` when set |
 | `position` / `repeat` / `blend_mode` / `opacity` | CSS defaults | Passed straight through |
@@ -522,7 +570,7 @@ effect_presets:
 
 When all controlled lights share the same active effect, the matching preset button shows a ring indicator — the same behavior as color presets.
 
-Effect presets can be configured in the visual editor's **Effect Presets** section.
+Effect presets can be configured in the visual editor's **Presets** section.
 
 ---
 
@@ -573,7 +621,7 @@ Add beautiful, customizable glow effects behind your light entities. Glows respo
 
 ### Basic Usage
 
-Enable glow in the visual editor's **Glow** section, or in YAML:
+Enable glow in the visual editor's **Light Projection** section, or in YAML:
 
 ```yaml
 glow:
@@ -599,15 +647,15 @@ glow:
 |-----------|------|---------|-------------|
 | `enabled` | boolean | `false` | Enable glow for all entities. |
 | `shape` | string | `"cone"` | Glow shape (see table above). |
-| `direction` | number | `0` | Direction in degrees. 0 = down, 90 = right, 180 = up, 270 = left. |
-| `length` | number | `80` | Glow length/diameter in pixels. |
-| `width` | number | `60` | Glow width in pixels. |
+| `direction` | number | `0` | Direction in degrees, clockwise from down: 0 = down, 90 = **left**, 180 = up, 270 = **right**. (The shape is drawn pointing down and rotated clockwise, so 90 lands on the left.) |
+| `length` | number or `'NN%'` | `80` | Glow length/diameter in pixels. |
+| `width` | number or `'NN%'` | `60` | Glow width in pixels. |
 | `intensity` | number | `0.7` | Maximum opacity (0–1). |
 | `blur` | number | `12` | Blur radius in pixels for soft edges. |
 | `offset_x` | number | `0` | Horizontal offset from entity center (px). |
 | `offset_y` | number | `0` | Vertical offset from entity center (px). |
 | `spread` | number | `1.5` | Far-end width multiplier (1 = no spread). |
-| `start_width` | number | `0` | Origin width fraction (0–1). 0 = pointed, 1 = full width. Used by cone and semicone. |
+| `start_width` | number | `0` (`0.35` for `semicone`) | Origin width fraction (0–1). 0 = pointed, 1 = full width. `semicone` substitutes 0.35 when this is 0 — a semicone with a pointed origin is just a cone. |
 | `edge_softness` | number | `0` | Edge feathering (0–1). Higher values produce softer, more organic edges. |
 | `falloff` | string | `"smooth"` | Gradient curve: `smooth`, `linear`, `exponential`, `sharp`, or `uniform`. |
 | `scale_with_brightness` | boolean | `true` | Scale glow opacity with entity brightness. |
@@ -628,7 +676,7 @@ glow:
   falloff: smooth
 ```
 
-**Directional cone pointing right:**
+**Directional cone pointing left:**
 ```yaml
 glow:
   enabled: true
@@ -694,7 +742,7 @@ glow_overrides:
     shape: round
     intensity: 0.9
   light.wall_sconce:
-    direction: 90      # Points right
+    direction: 90      # Points left (clockwise from down)
     length: 150
   light.floor_lamp:
     enabled: false      # Disable glow for this entity
@@ -831,7 +879,17 @@ glow_walls:
   - {x: 20, y: 20, width: 60, height: 60}  # Rectangular wall
 ```
 
-Coordinates use the same 0–100% coordinate system as entity positions. You can mix line segments and boxes:
+**Polyline** (a run of connected points — what the wall editor writes when you
+trace a room, and the tidiest way to hand-author one):
+```yaml
+glow_walls:
+  - points: [[10, 10], [90, 10], [90, 60], [10, 60]]
+    closed: true          # join the last point back to the first
+```
+Each adjacent pair becomes a segment, so a closed polyline of four points is a
+room. Doors apply to the whole run, not to one edge.
+
+Coordinates use the same 0–100% coordinate system as entity positions. You can mix all three forms:
 ```yaml
 glow_walls:
   - [0, 50, 40, 50]                       # Left wall segment
@@ -839,7 +897,7 @@ glow_walls:
   - {x: 30, y: 70, width: 40, height: 30} # Bottom room box
 ```
 
-Glow walls can also be configured in the visual editor's **Glow Walls** section.
+Glow walls can also be configured in the visual editor's **Walls** section, which shows a count (e.g. "Walls (6)").
 
 > **Seeing your walls afterwards.** Walls are invisible on a live dashboard by
 > default — they are occluders, not decoration. Set `light_field.show_walls:
@@ -850,52 +908,6 @@ Glow walls can also be configured in the visual editor's **Glow Walls** section.
 > light_field:
 >   show_walls: always
 > ```
-
-#### Rotating the plan
-
-**Positions → Rotate plan** turns the whole layout a quarter at a time, so you
-can try your floor plan the other way round without re-placing anything.
-Lights, zones, walls, the plan image and the direction each light throws its
-light all turn together.
-
-It is a **view** setting, not a rewrite. Everything you placed — `positions`,
-`canvas_elements`, `glow_walls`, `aspect_ratio` — stays exactly as you authored
-it, and the card applies the turn when it paints. So going back to 0° restores
-your layout precisely, and no arithmetic slip can scramble work you placed by
-hand.
-
-```yaml
-plan_rotation: 90     # 0 | 90 | 180 | 270, clockwise. Default 0.
-```
-
-Two things change shape, unavoidably, on a quarter turn:
-
-- **The card.** A wide plan becomes a tall one. In a fixed-width dashboard
-  column a 2:1 plan gets roughly four times taller, and the editor preview
-  will need scrolling — the full-size editor (below) is the comfortable way to
-  work while rotated.
-- **Nothing else.** Percent glow sizes are rescaled so a light still covers the
-  same part of the room; plain pixel sizes are left alone, because a pixel is a
-  pixel.
-
-The turn needs a ratio to turn: your plan image supplies one automatically. If
-you have no background image (or `auto_aspect: false`), set `aspect_ratio` to
-the plan's unrotated `W:H` and every orientation lines up — the card logs a
-warning naming this if it is missing.
-
-Icons keep their own upright orientation — `icon_rotation` is not touched, the
-same way map labels stay level when you turn a map.
-
-#### Placing lights
-
-The same full-size editor also places lights: **Positions → Open editor**, or
-switch to **Lights** in its header. Drag a light to move it, tap one to see
-which entity it is, hold `Alt` to ignore the grid. Walls stay visible as
-reference, because placing a light means placing it relative to a room.
-
-Selecting a light in the editor's **Entities** list also highlights it on the
-plan in gold — on a plan with twenty lights, a list row tells you nothing about
-where it is.
 
 #### Doors — walls that open
 
@@ -944,17 +956,67 @@ The editor form's per-wall panel has the same **Door sensor** picker and
 **Blocks when** selector, and tells you the current verdict — *"Currently off — blocking
 light."* — so you can check the wiring without leaving the dialog.
 
-#### Drawing walls on the plan
 
-Typing four numbers per wall is a poor way to lay out a floor plan, so the editor
-gives you a real drawing surface. Open the card editor, expand **Glow Walls**,
-and press **Open editor** next to *Draw walls on the plan*. A full-size editor
-opens over the page showing your plan at nearly the whole viewport, because
-HA's editor preview pane is far too small to trace a floor plan in. **Done**
-(or a second `Esc`) closes it.
+---
 
-> Exact route: **card editor → Walls → Open editor**. The section is titled
-> *Walls* and shows a count, e.g. "Walls (6)".
+## 🧭 Rotating the Plan
+
+**Positions → Rotate plan** turns the whole layout a quarter at a time, so you
+can try your floor plan the other way round without re-placing anything.
+Lights, zones, walls, the plan image and the direction each light throws its
+light all turn together.
+
+It is a **view** setting, not a rewrite. Everything you placed — `positions`,
+`canvas_elements`, `glow_walls`, `aspect_ratio` — stays exactly as you authored
+it, and the card applies the turn when it paints. So going back to 0° restores
+your layout precisely, and no arithmetic slip can scramble work you placed by
+hand.
+
+```yaml
+plan_rotation: 90     # 0 | 90 | 180 | 270, clockwise. Default 0.
+```
+
+Two things change shape, unavoidably, on a quarter turn:
+
+- **The card.** A wide plan becomes a tall one. In a fixed-width dashboard
+  column a 2:1 plan gets roughly four times taller, and the editor preview
+  will need scrolling — the full-size editor (below) is the comfortable way to
+  work while rotated.
+- **Nothing else.** Percent glow sizes are rescaled so a light still covers the
+  same part of the room; plain pixel sizes are left alone, because a pixel is a
+  pixel.
+
+The turn needs a ratio to turn: your plan image supplies one automatically. If
+you have no background image (or `auto_aspect: false`), set `aspect_ratio` to
+the plan's unrotated `W:H` and every orientation lines up — the card logs a
+warning naming this if it is missing.
+
+Icons keep their own upright orientation — `icon_rotation` is not touched, the
+same way map labels stay level when you turn a map.
+
+
+---
+
+## 🖼 The Full-Size Editor
+
+Both wall drawing and light placement happen in the same modal, which
+opens at nearly the full viewport. The card editor gives its preview a
+narrow column, and tracing a floor plan or nudging a light in a 250px-wide
+pane is miserable; this is the comfortable way to do either.
+
+Open it from the card editor, from either end:
+
+- **Walls → Draw walls on the plan → Open editor**
+- **Positions → Place lights on the plan → Open editor**
+
+A **Walls / Lights** switch in its header moves between the two modes without
+closing it, and **Done** (or a second `Esc`) closes it.
+
+### Drawing walls
+
+Typing four numbers per wall is a poor way to lay out a floor plan, so the
+editor gives you a real drawing surface. The **Walls** section shows a count,
+e.g. "Walls (6)", so you can tell at a glance whether you have any.
 
 | Gesture | Result |
 |---------|--------|
@@ -984,6 +1046,21 @@ segments at that point, since its sides can then move independently.
 
 ---
 
+
+### Placing lights
+
+The same full-size editor also places lights: **Positions → Open editor**, or
+switch to **Lights** in its header. Drag a light to move it, tap one to see
+which entity it is, hold `Alt` to ignore the grid. Walls stay visible as
+reference, because placing a light means placing it relative to a room.
+
+Selecting a light in the editor's **Entities** list also highlights it on the
+plan in gold — on a plan with twenty lights, a list row tells you nothing about
+where it is.
+
+
+---
+
 ## Canvas Elements
 
 Place non-entity elements on the canvas alongside your lights. Useful for navigation links, sensor readouts, or custom labels.
@@ -994,9 +1071,13 @@ Three element types are supported:
 |------|-------------|
 | `link` | An icon button with configurable tap/hold/double-tap actions. |
 | `sensor` | Displays an entity's state value (with optional prefix/suffix) and icon. |
-| `template` | Displays static text content with an optional icon. |
+| `template` | Renders a Home Assistant Jinja template **live** (subscribed via `render_template`), with an optional icon. |
 
 ### Element Properties
+
+Every element also accepts an optional `id`. One is generated (`canvas_el_0`, ...) if
+you leave it out, but setting your own keeps a stable handle for the element when
+you reorder the list — which is what the drag-to-reposition editing writes back to.
 
 All element types share these properties:
 
@@ -1015,7 +1096,14 @@ All element types share these properties:
 
 **Sensor** elements also accept `entity` (required), `prefix`, `suffix` (default: entity's `unit_of_measurement`), `show_icon` (default `true`), and `icon` (default: entity's icon).
 
-**Template** elements also accept `content` (static text) and `icon`.
+**Template** elements also accept `content` — a Jinja template string, re-rendered live whenever its inputs change — and `icon`:
+
+```yaml
+- type: template
+  position: {x: 50, y: 20}
+  content: "{{ states('sensor.living_room_temperature') }}°C"
+  icon: mdi:thermometer
+```
 
 ### Actions
 
