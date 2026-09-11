@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.28.4 (fork-maxi1134)';
+  static BUILD = 'v1.29.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -1322,7 +1322,7 @@ class SpatialLightColorCard extends HTMLElement {
       source_radius: 6,       // px emitter radius, only meaningful when samples > 1
       max_pixels: 2600000,    // backing-store budget in device pixels
       show_walls: 'auto',     // auto (edit mode only) | always | never
-      wall_color: '',         // '' = derive from the theme's border token
+      wall_color: '',         // '' = the built-in grey; see _drawFieldWalls
       wall_width: 2,
     };
     if (obj === true) return { ...defaults, enabled: true };
@@ -9673,12 +9673,20 @@ class SpatialLightColorCard extends HTMLElement {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(0.5, lf.wall_width);
-    const solidColor = lf.wall_color || (drawing ? 'rgba(120,190,255,0.95)' : 'rgba(160,170,185,0.5)');
+    // Assign the fallback FIRST and let the user's colour overwrite it. Canvas
+    // IGNORES an invalid strokeStyle rather than throwing, so `strokeStyle =
+    // badValue` would leave whatever the context already had -- black on a
+    // fresh one -- and a single typo in the colour field turned every wall
+    // black. This order makes the browser's own parser the validator and lets
+    // a bad value fall back to the default, which is also why wall_color is
+    // deliberately NOT validated in the normalizer: any CSS colour is legal,
+    // including the rgba() forms these defaults use.
+    ctx.strokeStyle = drawing ? 'rgba(120,190,255,0.95)' : 'rgba(160,170,185,0.5)';
+    if (lf.wall_color) ctx.strokeStyle = lf.wall_color;
 
     // Solid walls and open doors are drawn separately: a door standing open
     // still needs to be visible as geometry, but must not look like something
     // that blocks light.
-    ctx.strokeStyle = solidColor;
     ctx.setLineDash([]);
     ctx.beginPath();
     for (const w of walls) {
@@ -10987,13 +10995,22 @@ class SpatialLightColorCard extends HTMLElement {
     // Light field — only emit the keys that differ from the defaults so the
     // YAML modal stays readable.
     const lf = this._config.light_field;
-    if (lf && lf.enabled) {
-      const lfDefaults = this._normalizeLightField(null);
+    const lfDefaults = this._normalizeLightField(null);
+    // The block is emitted when the renderer is on OR when any key differs from
+    // its default. Gating on `enabled` alone dropped wall_color and wall_width
+    // for anyone on the classic renderer -- and walls are drawn there too, both
+    // while placing them and with show_walls: 'always'.
+    const lfKeys = lf
+      ? Object.keys(lfDefaults).filter((k) => k !== 'enabled' && lf[k] !== lfDefaults[k])
+      : [];
+    if (lf && (lf.enabled || lfKeys.length)) {
       yamlLines.push('light_field:');
-      yamlLines.push(`${indent}enabled: true`);
-      Object.keys(lfDefaults).forEach((k) => {
-        if (k === 'enabled') return;
-        if (lf[k] === lfDefaults[k]) return;
+      // Only when true. Emitting `enabled: false` is noise, and emitting
+      // nothing is correct: it re-parses to false. Emitting it unconditionally
+      // as true would switch a classic-renderer user to diffusion the moment
+      // they pasted their own YAML back.
+      if (lf.enabled) yamlLines.push(`${indent}enabled: true`);
+      lfKeys.forEach((k) => {
         const v = lf[k];
         // Strings are always quoted: an unquoted '#ff0000' is a YAML comment,
         // so wall_color round-tripped as nothing at all.
@@ -13059,7 +13076,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         </div>
 
         <!-- Appearance Section -->
-        <div class="section${(config.theme_mode && config.theme_mode !== 'auto') || (config.theme && Object.keys(config.theme).length) ? '' : ' collapsed'}" id="section-appearance">
+        <div class="section${(config.theme_mode && config.theme_mode !== 'auto') || (config.theme && Object.keys(config.theme).length) || (config.light_field && config.light_field !== true && (config.light_field.wall_color || config.light_field.wall_width != null)) ? '' : ' collapsed'}" id="section-appearance">
           <div class="section-header" data-section="appearance">
             <h3>Appearance</h3>
             <span class="chevron">&#9660;</span>
@@ -13177,6 +13194,20 @@ class SpatialLightColorCardEditor extends HTMLElement {
               </div>
             </div>
             <div class="sublabel">All colors accept any CSS color (hex, rgb(), rgba(), color names). Leave a field empty to use the theme's value.</div>
+            <div class="two-col">
+              <div class="input-row">
+                <label>Wall Color</label>
+                <div class="color-input-row">
+                  <input type="color" id="cfgLfWallColorPicker" value="#a0aab9">
+                  <input type="text" id="cfgLfWallColor" placeholder="Default grey">
+                </div>
+              </div>
+              <div class="input-row">
+                <label for="cfgLfWallWidth">Wall Thickness (px)</label>
+                <input type="number" id="cfgLfWallWidth" min="0" max="24" step="1" placeholder="2">
+              </div>
+            </div>
+            <div class="sublabel">The walls you drew on the plan. Open doors use the same color, dashed. Walls show on the dashboard only when Light Projection &rsaquo; Show Walls is set to <em>always</em> &mdash; otherwise they appear while you are placing them.</div>
           </div>
         </div>
 
@@ -13681,6 +13712,19 @@ class SpatialLightColorCardEditor extends HTMLElement {
       setVal(id, val || '');
       if (val && /^#[0-9a-fA-F]{6}$/.test(val)) setVal(`${id}Picker`, val);
     }
+    // Wall appearance, same asymmetry: the text field is always written so an
+    // unset value shows its placeholder, the picker only on a six-hex match.
+    // Without this the row looks right until an EXTERNAL config change
+    // re-renders (YAML mode, a drag in the preview, closing the wall editor),
+    // after which the text keeps stale browser state and the picker snaps back
+    // to the literal in the markup.
+    const lfRaw = (c.light_field && c.light_field !== true && typeof c.light_field === 'object'
+      && !Array.isArray(c.light_field)) ? c.light_field : {};
+    setVal('cfgLfWallColor', lfRaw.wall_color || '');
+    if (lfRaw.wall_color && /^#[0-9a-fA-F]{6}$/.test(lfRaw.wall_color)) {
+      setVal('cfgLfWallColorPicker', lfRaw.wall_color);
+    }
+    setVal('cfgLfWallWidth', lfRaw.wall_width != null ? lfRaw.wall_width : '');
     setVal('cfgLightSize', c.light_size || 56);
     setVal('cfgBarHeight', c.color_bar_height || 34);
 
@@ -14223,6 +14267,19 @@ class SpatialLightColorCardEditor extends HTMLElement {
     this._bindThemeColor('cfgThemeGrid', 'cfgThemeGridPicker', 'grid_color');
     this._bindThemeColor('cfgThemeLabelBg', 'cfgThemeLabelBgPicker', 'label_background');
     this._bindThemeColor('cfgThemeLabelText', 'cfgThemeLabelTextPicker', 'label_text');
+
+    // Wall appearance sits in Appearance but stores under config.light_field,
+    // where the card already reads it. The section is a UI grouping, not a
+    // config namespace -- cfgThemeMode above writes the top-level
+    // config.theme_mode for the same reason. Routing it through config.theme
+    // instead would look right and do nothing: _normalizeThemeConfig copies
+    // only its eleven whitelisted colorKeys and silently drops the rest.
+    this._bindColorField('cfgLfWallColor', 'cfgLfWallColorPicker',
+      (val) => this._setLightFieldKey('wall_color', val));
+    this._bindNumberInput('cfgLfWallWidth', (val) => {
+      if (val == null) this._setLightFieldKey('wall_width', null);
+      else if (val >= 0 && val <= 24) this._setLightFieldKey('wall_width', val);
+    });
 
     // Light size slider
     const lsSlider = root.getElementById('cfgLightSize');
@@ -14819,22 +14876,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // --- Glow Walls ---
     // Add wall buttons
     // --- Light diffusion ---
-    const lfSet = (key, value) => {
-      // `light_field: true` is a documented shorthand; preserve what it means
-      // instead of replacing it with an empty object and silently turning
-      // diffusion off the first time any control is touched.
-      if (this._config.light_field === true) {
-        this._config.light_field = { enabled: true };
-      } else if (!this._config.light_field || typeof this._config.light_field !== 'object'
-                 || Array.isArray(this._config.light_field)) {
-        this._config.light_field = {};
-      }
-      if (value === null || value === undefined || value === '') delete this._config.light_field[key];
-      else this._config.light_field[key] = value;
-      // An empty block is noise in the saved YAML.
-      if (Object.keys(this._config.light_field).length === 0) delete this._config.light_field;
-      this._fireConfigChanged();
-    };
+    // The writer is a method (`_setLightFieldKey`) because two binding blocks
+    // ~600 lines apart now use it, and a const declared here is only reachable
+    // from below. (It would not actually have THROWN from up there -- the
+    // Appearance bindings call it from inside deferred callbacks, which run
+    // long after this initializes -- so this is about reach, not a dead zone.)
+    const lfSet = (key, value) => this._setLightFieldKey(key, value);
     // Renderer choice, not a second enable switch: the two are one feature
     // (glow.* says WHAT each light emits, light_field.* says HOW it is
     // composited), and presenting them as peer toggles made users enable Glow
@@ -15140,6 +15187,30 @@ class SpatialLightColorCardEditor extends HTMLElement {
     });
   }
 
+  /**
+   * Set/delete a key under config.light_field, pruning the block when empty.
+   *
+   * The sibling of _setThemeKey, with two deliberate differences. It rescues
+   * the documented `light_field: true` shorthand instead of clobbering it with
+   * `{}` (which would turn diffusion off the first time any control is
+   * touched), and it does NOT treat `false` as a delete the way _setThemeKey
+   * does -- `enabled: false` is a real stored value that selects the classic
+   * renderer, not an absent one.
+   */
+  _setLightFieldKey(key, value) {
+    if (this._config.light_field === true) {
+      this._config.light_field = { enabled: true };
+    } else if (!this._config.light_field || typeof this._config.light_field !== 'object'
+               || Array.isArray(this._config.light_field)) {
+      this._config.light_field = {};
+    }
+    if (value === null || value === undefined || value === '') delete this._config.light_field[key];
+    else this._config.light_field[key] = value;
+    // An empty block is noise in the saved YAML.
+    if (Object.keys(this._config.light_field).length === 0) delete this._config.light_field;
+    this._fireConfigChanged();
+  }
+
   /** Set/delete a key under config.theme, pruning the object when empty. */
   _setThemeKey(key, val) {
     if (!this._config.theme || typeof this._config.theme !== 'object') this._config.theme = {};
@@ -15157,6 +15228,31 @@ class SpatialLightColorCardEditor extends HTMLElement {
    * inherit from the theme" semantics instead of a hardcoded fallback.
    */
   _bindThemeColor(textId, pickerId, key) {
+    this._bindColorField(textId, pickerId, (val) => this._setThemeKey(key, val));
+  }
+
+  /**
+   * The picker/text-field pair behind every colour row, wired once.
+   *
+   * `store` receives the trimmed string and decides where it goes -- which is
+   * the only thing that differs between a theme colour and a light_field one,
+   * so the 400ms debounce and the six-hex regex live here rather than in a
+   * near-identical copy per namespace.
+   *
+   * Three asymmetries are deliberate. The text field debounces on `input` so a
+   * half-typed `#ff` does not round-trip through HA, and `change` (blur/Enter)
+   * flushes that timer rather than firing a second time. The picker is NOT
+   * debounced, and that is inherited rather than chosen: engines fire its
+   * `input` continuously while the swatch is dragged, so a drag does cost one
+   * config-changed per tick. All eleven theme rows have always behaved this
+   * way, and diverging for one row would be the larger cost -- if it needs
+   * fixing it gets fixed here, for all of them at once.
+   * The picker is synced back from text ONLY for a six-digit hex, because
+   * `input[type=color]` silently coerces anything else -- `rgba(...)`, `#fff`,
+   * `red` -- to #000000 with no event and no error, which would misreport the
+   * stored colour as black.
+   */
+  _bindColorField(textId, pickerId, store) {
     const root = this.shadowRoot;
     const textEl = root.getElementById(textId);
     const pickerEl = root.getElementById(pickerId);
@@ -15164,7 +15260,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     let timer = null;
     const commit = (val) => {
-      this._setThemeKey(key, val.trim());
+      store(val.trim());
       if (/^#[0-9a-fA-F]{6}$/.test(val.trim())) pickerEl.value = val.trim();
     };
     textEl.addEventListener('input', () => {
@@ -15177,7 +15273,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
     });
     pickerEl.addEventListener('input', () => {
       textEl.value = pickerEl.value;
-      this._setThemeKey(key, pickerEl.value);
+      store(pickerEl.value);
     });
   }
 

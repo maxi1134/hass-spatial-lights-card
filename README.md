@@ -811,7 +811,7 @@ light_field:
 | `quality` | `auto` | `auto`, `low`, `medium`, `high` — backing-store resolution |
 | `max_pixels` | `2600000` | Backing-store budget in device pixels |
 | `show_walls` | `auto` | `auto` (only while drawing), `always` (also on the live dashboard), `never` |
-| `wall_color` / `wall_width` | theme / `2` | Appearance of the drawn wall outline |
+| `wall_color` / `wall_width` | grey / `2` | Appearance of the drawn wall outline. Any CSS colour; empty uses a built-in grey. Editable under **Appearance -> Wall Color**, and it applies to the classic renderer too |
 
 **Choosing `over_plan`.** `normal` reads correctly on any plan and is the
 default. `screen` suits dark blueprints (it is a no-op over white). `multiply`
@@ -1212,7 +1212,7 @@ controls_below: false
 
 By default (`theme_mode: auto`) the card follows your dashboard's Home Assistant theme: card background, text and accent colors, dividers, and corner radius all come from the theme — including translucent "glass" themes, where the canvas stays transparent so the blurred card background shows through. Use `theme_mode: dark` to keep the card's original fixed dark look regardless of theme, or `theme_mode: light` for a fixed light palette.
 
-Everything can be fine-tuned under `theme:` (also available in the visual editor's **Appearance** section):
+Everything can be fine-tuned under `theme:` (also available in the visual editor's **Appearance** section, which additionally carries **Wall Color** and **Wall Thickness** — those two live under `light_field:`, not `theme:`, because the card reads them there):
 
 ```yaml
 theme_mode: auto

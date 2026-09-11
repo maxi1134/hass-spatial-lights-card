@@ -239,7 +239,7 @@ Both renderers resolve: the field in `_getFieldEmitter`, the legacy path in `_up
 
 **They are not two features.** `glow.*` says WHAT each light emits — shape, width, length, direction, spread, start_width, intensity, falloff, gradient_stops, offsets, colour, custom_shape, scale_with_brightness — and the field renderer reads ALL of those; `light_field.*` says HOW that emission is composited (renderer choice, blend, exposure, ambient, soft-shadow samples, quality). Only `glow.blur` and `glow.edge_softness` are field-inert, because it models soft edges with `samples`/`source_radius` instead. `light_field.radius` applies only to lights with no glow config of their own.
 
-The editor therefore presents ONE "Light Projection" section: a single enable switch, a **Renderer** select (Diffused / Classic) writing `light_field.enabled`, a shared Emission block, and a Diffusion block shown only for the field. Two peer sections with two "Enable" switches led users to turn on Glow and never discover that diffusion is what makes wall shadows and colour mixing exact. `cfgGlowBlur`/`cfgGlowEdgeSoftness` are disabled and suffixed "(classic only)" under the field.
+The editor therefore presents ONE "Light Projection" section: a single enable switch, a **Renderer** select (Diffused / Classic) writing `light_field.enabled`, a shared Emission block, and a Diffusion block shown only for the field. (Two `light_field` keys live outside it, under **Appearance** -- `wall_color` and `wall_width`; see §8e for why that is placement rather than an exception.) Two peer sections with two "Enable" switches led users to turn on Glow and never discover that diffusion is what makes wall shadows and colour mixing exact. `cfgGlowBlur`/`cfgGlowEdgeSoftness` are disabled and suffixed "(classic only)" under the field.
 
 **Legacy (default).** `_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. When `_fieldActive`, `_renderLightsHTML` does not emit the div and `_updateAllGlows` returns immediately.
 
@@ -469,6 +469,75 @@ The undo stacks stay valid across a rotation precisely because nothing they snap
 
 `.harness/load-card.js` loads the card class under node (stubbed DOM), which is what makes
 `.harness/rot-math.test.js` a real unit test of the shipped primitives rather than a copy of the maths.
+
+## 8e. Wall appearance (Appearance -> Wall Color)
+
+`light_field.wall_color` and `wall_width` existed and were consumed by `_drawFieldWalls` long
+before anything could set them; the editor row is the whole feature. It lives under **Appearance**
+but writes `config.light_field.*`, and that split is deliberate: the section is a UI grouping, not
+a config namespace -- `cfgThemeMode` already sits there writing the top-level `config.theme_mode`.
+
+**Routing it through `config.theme` would look right and do nothing.** `_normalizeThemeConfig`
+copies only the eleven names in its `colorKeys` whitelist and silently drops everything else, so
+the control would persist to YAML, survive the editor round trip, and change no pixel, with no
+error anywhere.
+
+**The draw site assigns the fallback FIRST and lets the user's colour overwrite it.** Canvas
+IGNORES an invalid `strokeStyle` rather than throwing, so the old `lf.wall_color || fallback`
+order left whatever the context already had -- `#000000` on a fresh one -- and a single typo in
+the colour field turned every wall black (measured: `ctx.strokeStyle = 'not-a-color'` leaves
+`#000000`). Reversing the order makes the browser's own parser the validator and degrades a bad
+value to the default. That is also why `wall_color` is deliberately NOT validated in the
+normalizer: every CSS colour is legal, including the `rgba()` forms the defaults themselves use,
+and `_parseColorToRGB` accepts neither those nor named colours.
+
+`_bindColorField(textId, pickerId, store)` is the shared picker/text pair, extracted from
+`_bindThemeColor` (which now delegates) so the 400ms debounce and the six-hex regex exist once.
+The picker syncs back from the text field ONLY for a six-digit hex, because `input[type=color]`
+silently coerces `rgba(...)`, `#fff` and named colours to `#000000` with no event -- it would
+report the stored colour as black.
+
+`_setLightFieldKey` is the promoted form of the `lfSet` closure: two binding blocks ~600 lines
+apart now write light_field keys, and a `const` declared at the bottom of
+`_attachEditorListeners` is only reachable from below it. (An earlier draft of this note claimed
+a temporal-dead-zone `ReferenceError` -- that was wrong, and adversarial review caught it: the
+Appearance bindings call it from inside deferred callbacks that run on an event, long after the
+const initializes. The reason is reach, not a dead zone.) It rescues the `light_field: true`
+shorthand, and unlike `_setThemeKey` it does NOT treat `false` as a delete -- `enabled: false` is
+a real value that selects the classic renderer.
+
+**The YAML gate had to widen.** It emitted the `light_field` block only when `enabled` was true,
+so a classic-renderer user's wall colour vanished from their own YAML -- and walls are drawn on
+that renderer too, both while placing them and under `show_walls: 'always'`. It now emits when any
+key differs from its default, with `enabled: true` written only when true: emitting it
+unconditionally would switch a classic user to diffusion the moment they pasted their YAML back.
+
+The gold selection stroke and the white/blue endpoint handles stay hardcoded. They are editor
+chrome that says which wall is selected and where the grab points are; a user who set them to
+white could not undo it while looking at the problem, because `showModal()` has made the form
+inert behind the overlay.
+
+**`.harness/css-backticks.test.js` was vacuous for its entire life**, and got rewritten twice
+before it worked. Version one sliced from the first `<style>` to the first `</style>` -- three
+lines whose only content is `${this._styles()}` -- so it never examined one byte of CSS and
+passed unconditionally, including on the four occasions the bug it guards against actually
+shipped. Version two hand-rolled a scanner and was better but still wrong three ways: it did not
+know about `_themeTokens()` (a THIRD CSS producer, whose literals are palette fragments in an
+object rather than one fenced return), its brace counting ran over raw text so a stray `{` in a
+CSS comment would fabricate a failure, and it read a backtick inside a JS string within `${...}`
+as a nested template.
+
+Version three stops parsing. It asks the ENGINE whether the file is valid (`vm.Script`, naming
+the line and the likely cause), then asks the CLASSES whether their CSS came out whole -- loading
+them through `load-card.js` and asserting each producer still emits its sentinels and a length
+near its real size. The second half is what a syntax check cannot do, and covers any CSS producer
+added later. Two details are load-bearing and both were found by testing the test: the sentinels
+come from the END of each stylesheet, because a stray backtick truncates everything AFTER it and
+the first rule proves nothing; and they must not be substrings of other rules -- deleting the
+whole `.wall-editor-viewport` block still passed while `.wall-editor-viewport.panning` survived
+to contain it. `minLen` is a floor near the real size for the same reason: 20000 against 61000
+chars waves through a 40000-char amputation. Verified against both failure modes -- a stray
+backtick, and a truncation that `node --check` passes.
 
 ## 8a. Label legibility over the field
 
