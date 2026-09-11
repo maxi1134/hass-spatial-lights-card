@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.26.0 (fork-maxi1134)';
+  static BUILD = 'v1.27.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -4414,6 +4414,13 @@ class SpatialLightColorCard extends HTMLElement {
         font-weight: 600; cursor: pointer;
       }
       .wall-editor-btn:hover { background: rgba(255,255,255,0.2); }
+      /* Quieter than Done: discarding is the rarer intent, and it should not
+         read as the obvious way out. */
+      .wall-editor-btn.ghost {
+        background: transparent; border-color: rgba(255,255,255,0.22);
+        color: rgba(255,255,255,0.7);
+      }
+      .wall-editor-btn.ghost:hover { background: rgba(255,80,80,0.22); color: #fff; }
       .wall-editor-modes { display: flex; gap: 0; border-radius: 8px; overflow: hidden;
         border: 1px solid rgba(255,255,255,0.22); }
       .wall-editor-mode {
@@ -4899,6 +4906,8 @@ class SpatialLightColorCard extends HTMLElement {
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? '' : ' active'}" id="wallModeWalls">Walls</button>
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? ' active' : ''}" id="wallModeLights">Lights</button>
           </div>
+          <button class="wall-editor-btn ghost" id="wallEditorCancel"
+                  title="Discard everything done since the editor opened">Cancel</button>
           <button class="wall-editor-btn" id="wallEditorDone">Done</button>
         </div>
         <div class="wall-editor-stage${this._planRotationClass()}" id="wallEditorStage"
@@ -5812,6 +5821,23 @@ class SpatialLightColorCard extends HTMLElement {
       if (mw) mw.addEventListener('click', () => setMode('walls'));
       const ml = this.shadowRoot.getElementById('wallModeLights');
       if (ml) ml.addEventListener('click', () => setMode('lights'));
+
+      const cancel = this.shadowRoot.getElementById('wallEditorCancel');
+      if (cancel) {
+        cancel.addEventListener('click', () => {
+          // The editor owns the revert: everything drawn or dragged was
+          // committed to config as it happened, so there is nothing for the
+          // card to undo -- only a snapshot the editor took when it opened.
+          if (typeof window !== 'undefined' && this._wallEditorId) {
+            window.dispatchEvent(new CustomEvent('spatial-card-wall-cancel', {
+              detail: { editorId: this._wallEditorId },
+            }));
+          }
+          this._draftWalls = null;
+          this._invalidateWallGeometry();
+          this._exitWallMode();
+        });
+      }
 
       const done = this.shadowRoot.getElementById('wallEditorDone');
       if (done) {
@@ -10901,6 +10927,30 @@ class SpatialLightColorCardEditor extends HTMLElement {
     };
     window.addEventListener('spatial-card-wall-delta', this._boundWallDelta);
 
+    // Cancel: put back the snapshot taken when the modal opened, and close.
+    if (this._boundWallCancel) window.removeEventListener('spatial-card-wall-cancel', this._boundWallCancel);
+    this._boundWallCancel = (e) => {
+      const d = e.detail || {};
+      if (!d.editorId || d.editorId !== this._editorId) return;
+      const snap = this._wallEditorSnapshot;
+      this._wallEditorSnapshot = null;
+      this._wallDrawActive = false;
+      if (snap) {
+        this._config.positions = snap.positions;
+        this._config.canvas_elements = snap.canvas_elements;
+        this._config.glow_walls = snap.glow_walls;
+        // Both stacks hold states from the session being thrown away; an undo
+        // into them would restore a half-edited plan the user just rejected.
+        this._wallHistory = [];
+        this._wallRedoStack = [];
+        this._positionHistory = [];
+        this._positionRedoStack = [];
+        this._fireConfigChanged();
+      }
+      this._render();
+    };
+    window.addEventListener('spatial-card-wall-cancel', this._boundWallCancel);
+
     // Keep the editor's idea of "is the wall editor open" in step with the
     // card's. Without this, closing the editor left _wallDrawActive true, the
     // next click re-broadcast a state the card was already in, and the card's
@@ -10916,6 +10966,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
       }
       if (!this._wallDrawActive) return;
       this._wallDrawActive = false;
+      // Closing any other way (Done, Escape, the switch) KEEPS the work, so
+      // the snapshot has served its purpose. Dropping it stops a later Cancel
+      // reverting to a session the user already accepted.
+      this._wallEditorSnapshot = null;
       this._render();
     };
     window.addEventListener('spatial-card-wall-mode', this._boundWallModeEcho);
@@ -11039,6 +11093,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
     }
     if (this._boundWallDelta) {
       window.removeEventListener('spatial-card-wall-delta', this._boundWallDelta);
+      if (this._boundWallCancel) {
+        window.removeEventListener('spatial-card-wall-cancel', this._boundWallCancel);
+        this._boundWallCancel = null;
+      }
       this._boundWallDelta = null;
     }
     if (this._boundWallModeEcho) {
@@ -14563,6 +14621,16 @@ class SpatialLightColorCardEditor extends HTMLElement {
           }));
         }
         this._wallDrawMode = 'walls';
+        if (this._wallDrawActive) {
+        // Everything the modal can change, as it stands right now. Wall
+        // strokes and light drops commit to config as they happen, so Cancel
+        // has nothing to undo unless the state it started from was kept.
+        this._wallEditorSnapshot = {
+          positions: JSON.parse(JSON.stringify(this._config.positions || {})),
+          canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
+          glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
+        };
+        }
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: this._wallDrawActive, mode: 'walls' },
         }));
@@ -14586,6 +14654,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
           }));
         }
         this._wallDrawMode = 'lights';
+        // Everything the modal can change, as it stands right now. Wall
+        // strokes and light drops commit to config as they happen, so Cancel
+        // has nothing to undo unless the state it started from was kept.
+        this._wallEditorSnapshot = {
+          positions: JSON.parse(JSON.stringify(this._config.positions || {})),
+          canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
+          glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
+        };
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: true, mode: 'lights' },
         }));

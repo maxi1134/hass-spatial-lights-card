@@ -1010,7 +1010,10 @@ Open it from the card editor, from either end:
 - **Positions → Place lights on the plan → Open editor**
 
 A **Walls / Lights** switch in its header moves between the two modes without
-closing it, and **Done** (or a second `Esc`) closes it.
+closing it. **Done** (or a second `Esc`) closes it and keeps your work;
+**Cancel** closes it and puts the plan back exactly as it was when you opened
+the editor — every wall drawn, moved or deleted, and every light placed, in
+both modes.
 
 It sizes itself to your plan: at most 95% of the viewport in either
 direction, as tall as will fit, and only as wide as the plan's own shape

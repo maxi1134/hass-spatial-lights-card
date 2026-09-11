@@ -265,6 +265,14 @@ It is a **`<dialog>` opened with `showModal()`**, NOT a `position: fixed` div. T
 
 **Right-click deletes a wall (mouse only).** Handled in the POINTERDOWN handlers, not on `contextmenu`: only pointerdown carries both `pointerType` and `button`, so "mouse only" is a fact rather than a guess -- Android's long-press raises `contextmenu` with nothing to distinguish it from a real right-click, and binding there would delete a wall twice over since the hold timer already handles touch. It also fixed a live bug: the overlay stage's pointerdown listener had NO button guard, so a right-click was starting a draw. `_handleWallRightClick` repairs the selection index before removing, since indices shift down past the removal.
 
+**Cancel is a restore, not a close.** Wall strokes and light drops commit to config as they happen —
+that is the whole delta protocol — so by the time the button is pressed there is nothing left to
+"not save". The EDITOR snapshots `positions`, `canvas_elements` and `glow_walls` when the modal opens,
+and `spatial-card-wall-cancel` puts them back and fires one `config-changed`. The card only sends the
+event and exits; it owns none of the revert. Both undo stacks are cleared with it, or an undo would
+restore the half-edited plan the user just rejected. Closing any other way (Done, Escape, the mode
+switch) drops the snapshot, so a later Cancel cannot revert a session already accepted.
+
 **The mode survives the preview rebuild, and that takes a handshake field.** HA recreates the preview
 card on EVERY config change — including the one a light-drag commit causes — and the rebuilt card
 asks any live editor for state via `spatial-card-preview-hello`. That reply carried `editPositions` and
