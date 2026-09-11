@@ -134,6 +134,8 @@ The controls are four stacked full-width bars:
 - **Drag** to sweep; the lights follow live, throttled to about seven updates a
   second so a long drag doesn't flood the connection.
 - **Arrow keys** step whichever bar has focus.
+- **Height** is configurable: `color_bar_height` (px, default 34), or the
+  **Control Bar Height** slider in the editor's Appearance section.
 - On mobile, starting a vertical scroll on a bar releases it so the page can
   scroll, rather than the bar swallowing the gesture.
 
@@ -142,6 +144,13 @@ temperature sliders. There is no magnifier or full-screen picker any more
 either: a bar running the full width of the controls has nothing left to aim
 at. The numeric readouts (the brightness percentage and the Kelvin value) went
 with the old sliders — ask if you want them back.
+
+### Overlaid controls
+
+With `controls_below: false` the controls float over the plan. They anchor
+themselves to whichever end the selection is **not** at — select a light near
+the bottom and the controls move to the top, so they never sit on the lights
+you are adjusting.
 
 ### Color Presets & Live Colors
 

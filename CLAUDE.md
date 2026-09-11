@@ -139,6 +139,16 @@ The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements a
 them is already element-guarded, so they are inert rather than broken and would light up again if the
 labels ever came back.
 
+**Bar height is `color_bar_height`** (px, default 34, clamped 12–120). It feeds `--color-bar-h`, which the
+track AND thumb rules both derive from, so the thumb stays proportional at any height.
+
+**The floating controls flip ends.** `_placeFloatingControls` anchors the box to whichever end of the
+plan the selection is NOT at (`.at-top` swaps `bottom` for `top`), because overlaid controls that cover
+the very lights you just selected are the worst case — and with four stacked bars the box is often
+taller than half the canvas, so this is common rather than rare. It averages the selection in SCREEN
+percentages via `_toScreenPct`: the box is anchored to the canvas, so on a rotated plan a
+plan-bottom light may well be on the screen left and must NOT trigger a flip.
+
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use
 `hsl()` for the fully saturated end, where the two models agree.

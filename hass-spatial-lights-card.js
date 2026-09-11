@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.22.0 (fork-maxi1134)';
+  static BUILD = 'v1.23.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
   // Natural dimensions of plan images, keyed by URL and shared across cards so
@@ -228,6 +228,11 @@ class SpatialLightColorCard extends HTMLElement {
     const lightSize = config.light_size != null ? parseInt(config.light_size, 10) : 56;
     const normalizedLightSize = Number.isFinite(lightSize) && lightSize > 0 ? lightSize : 56;
 
+    // Control-bar height. 34px is the default; the range keeps a bar tappable
+    // at the low end and stops it swallowing the card at the high end.
+    const barHeight = config.color_bar_height != null ? parseInt(config.color_bar_height, 10) : 34;
+    const normalizedBarHeight = Number.isFinite(barHeight) ? Math.max(12, Math.min(120, barHeight)) : 34;
+
     // Normalize size_overrides (per-entity sizes)
     const sizeOverrides = {};
     if (config.size_overrides && typeof config.size_overrides === 'object') {
@@ -296,6 +301,11 @@ class SpatialLightColorCard extends HTMLElement {
 
       // Light size customization
       light_size: normalizedLightSize,
+
+      // Height of the four control bars, in px. Clamped rather than trusted:
+      // the thumb is sized from this, so a silly value would push the bars
+      // out of the controls box.
+      color_bar_height: normalizedBarHeight,
       size_overrides: sizeOverrides,
 
       // Minimal UI mode (hides circles completely except when selected)
@@ -3460,6 +3470,8 @@ class SpatialLightColorCard extends HTMLElement {
         mix-blend-mode: var(--lf-blend, normal);
       }
 
+      .color-bars { --color-bar-h: ${this._config.color_bar_height}px; }
+
       .light {
         --light-size: ${this._config.light_size}px;
         --icon-scale: 1;
@@ -3965,6 +3977,9 @@ class SpatialLightColorCard extends HTMLElement {
         z-index: 50;
       }
       .controls-floating.visible { opacity: 1; pointer-events: auto; }
+      /* Anchored to whichever end of the plan the selection is NOT at, so the
+         controls do not sit on top of the lights being adjusted. */
+      .controls-floating.at-top { top: 20px; bottom: auto; }
 
       .controls-below {
         padding: 20px; border-top: 1px solid var(--border-subtle); background: var(--controls-below-bg, var(--surface-secondary));
@@ -7522,6 +7537,34 @@ class SpatialLightColorCard extends HTMLElement {
     });
   }
 
+  /**
+   * Put the floating controls at whichever end of the plan the selection is
+   * not. Overlaid controls that cover the very lights you just selected are
+   * the worst case, and with four stacked bars the box is tall enough that
+   * this is common rather than rare.
+   *
+   * Measured in SCREEN percentages, not plan ones: the box is anchored to the
+   * canvas, so a rotated plan has to be mapped through first or the flip
+   * happens on the wrong axis.
+   */
+  _placeFloatingControls() {
+    const el = this._els && this._els.controlsFloating;
+    if (!el) return;
+    const ids = this._selectedLights.size
+      ? [...this._selectedLights]
+      : (this._config.default_entity ? [this._config.default_entity] : []);
+    let sum = 0, n = 0;
+    for (const id of ids) {
+      const pos = this._config.positions[id];
+      if (!pos) continue;
+      sum += this._toScreenPct(pos.x, pos.y).y;
+      n++;
+    }
+    // Nothing to avoid: leave it at the bottom, which is where it has always
+    // sat and where a card with no selection reads most naturally.
+    el.classList.toggle('at-top', n > 0 && (sum / n) > 50);
+  }
+
   /** The colour the two bars currently describe. */
   _colorBarsRGB() {
     const hue = this._els.hueSlider ? parseFloat(this._els.hueSlider.value) : 0;
@@ -9983,6 +10026,7 @@ class SpatialLightColorCard extends HTMLElement {
     // Show/hide floating controls if used
     if (this._els.controlsFloating) {
       this._els.controlsFloating.classList.toggle('visible', shouldShowControls);
+      this._placeFloatingControls();
     }
     // Show/hide below controls if used
     if (this._els.controlsBelow) {
@@ -10133,6 +10177,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     // Light size settings
     if (this._config.light_size !== 56) yamlLines.push(`light_size: ${this._config.light_size}`);
+    if (this._config.color_bar_height !== 34) yamlLines.push(`color_bar_height: ${this._config.color_bar_height}`);
     if (this._config.icon_only_mode) yamlLines.push(`icon_only_mode: true`);
 
     // Per-entity size overrides
@@ -12215,6 +12260,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
               </div>
             </div>
             <div class="option-row">
+              <div class="label">Control Bar Height</div>
+              <div class="slider-row" style="flex:0 0 auto;">
+                <input type="range" id="cfgBarHeight" min="12" max="120" style="width:120px;">
+                <span class="slider-value" id="cfgBarHeightValue">34px</span>
+              </div>
+            </div>
+            <div class="option-row">
               <div class="label">Icon Rotation</div>
               <div class="slider-row" style="flex:0 0 auto;">
                 <input type="range" id="cfgIconRotation" min="0" max="360" step="1" style="width:120px;">
@@ -12825,7 +12877,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
       if (val && /^#[0-9a-fA-F]{6}$/.test(val)) setVal(`${id}Picker`, val);
     }
     setVal('cfgLightSize', c.light_size || 56);
+    setVal('cfgBarHeight', c.color_bar_height || 34);
 
+    const bhv = root.getElementById('cfgBarHeightValue');
+    if (bhv) bhv.textContent = `${c.color_bar_height || 34}px`;
     const lsv = root.getElementById('cfgLightSizeValue');
     if (lsv) lsv.textContent = `${c.light_size || 56}px`;
 
@@ -13372,6 +13427,16 @@ class SpatialLightColorCardEditor extends HTMLElement {
       lsSlider.addEventListener('change', () => {
         const v = parseInt(lsSlider.value, 10);
         if (Number.isFinite(v) && v > 0) { this._config.light_size = v; this._fireConfigChanged(); }
+      });
+    }
+
+    const bhSlider = root.getElementById('cfgBarHeight');
+    const bhVal = root.getElementById('cfgBarHeightValue');
+    if (bhSlider) {
+      bhSlider.addEventListener('input', () => { if (bhVal) bhVal.textContent = `${bhSlider.value}px`; });
+      bhSlider.addEventListener('change', () => {
+        const v = parseInt(bhSlider.value, 10);
+        if (Number.isFinite(v) && v > 0) { this._config.color_bar_height = v; this._fireConfigChanged(); }
       });
     }
 
