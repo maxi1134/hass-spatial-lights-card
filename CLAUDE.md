@@ -588,6 +588,32 @@ to contain it. `minLen` is a floor near the real size for the same reason: 20000
 chars waves through a 40000-char amputation. Verified against both failure modes -- a stray
 backtick, and a truncation that `node --check` passes.
 
+## 8h. The editor markup is one template literal, so structure needs a test
+
+An unclosed `<div>` in the editor template does not throw. The HTML parser
+silently ADOPTS everything after it as a child, and the result still looks
+almost right -- slightly indented sections, every id still resolving.
+
+That shipped. A `.sublabel` inside the Light Projection section (the "a plain
+number is CSS pixels" note) was never closed, so `section-glow-walls`,
+`section-interaction` and `section-custom-css` became CHILDREN of
+`section-glow` and could only be opened while Light Projection was expanded.
+Verified in the DOM: all three reported `parentElement.id === 'section-glow'`.
+Upstream's markup is balanced (depth 0); this was introduced when the two glow
+sections were restructured into one "Light Projection" block, and survived from
+v1.19.0 to v1.31.0 because nothing checked structure.
+
+Indentation actively hid it: the closing tags were indented as if they closed
+the `.input-row` and the `.two-col`, and they did -- it was the sublabel one
+level deeper that stayed open, so every subsequent tag was one level too deep
+and the final `</div>` closed `.section-body` instead of `.section`.
+
+`.harness/editor-structure.test.js` walks each `id="section-*"` to the next and
+asserts each region's div depth returns to 0, naming the section and the depth
+when it does not. Verified by re-opening the bug: it reports
+`section-glow (line 13689) ends at depth 1`. Balance is the right assertion
+because the failure is structural rather than textual, and it needs no DOM.
+
 ## 8f. Teardown must be reversible (first paint after a move)
 
 **Reported: "the walls and light projections do not load until you interact with the map or an

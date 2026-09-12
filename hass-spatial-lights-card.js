@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.31.0 (fork-maxi1134)';
+  static BUILD = 'v1.31.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -13758,7 +13758,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
                   <input type="text" id="cfgGlowWidth" placeholder="60 or 25%" inputmode="decimal">
                 </div>
                 <div class="input-row" style="grid-column:1/-1;">
-                  <div class="sublabel">A plain number is CSS pixels, which covers a different share of the plan at every card width &mdash; so the editor preview and the dashboard disagree. A percentage (e.g. <b>25%</b>) is measured against the canvas, like light positions and walls, and renders the same everywhere.
+                  <div class="sublabel">A plain number is CSS pixels, which covers a different share of the plan at every card width &mdash; so the editor preview and the dashboard disagree. A percentage (e.g. <b>25%</b>) is measured against the canvas, like light positions and walls, and renders the same everywhere.</div>
                 </div>
               </div>
               <div class="two-col">
