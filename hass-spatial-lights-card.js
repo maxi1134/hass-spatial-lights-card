@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.34.0 (fork-maxi1134)';
+  static BUILD = 'v1.35.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -9267,6 +9267,40 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * How much light an ON entity is putting out, 0..1.
+   *
+   * ABSENT means FULL, not dark. A `color_mode: 'onoff'` bulb never reports a
+   * brightness attribute, and neither do switches, binary sensors, scenes, or
+   * integrations old enough to predate `supported_color_modes`. The rule used
+   * to be written per-DOMAIN at each renderer -- scenes and binaries got 255,
+   * lights got 0 -- so an on/off bulb projected a 5%-alpha, 10%-reach stub
+   * while its marker sat fully lit. That is what "no projection of light"
+   * looked like. The rule is about the ATTRIBUTE being missing, not about the
+   * domain.
+   *
+   * A REPORTED 0 stays dark, which is why this is a finite test and not `||`.
+   * The brightness bar runs 0..255 and `_handleBrightnessChange` sends that 0
+   * verbatim, so a light can be sitting at a user-commanded 0 -- and the same
+   * card already renders it as "0%" on the bar and in the aria label. Folding
+   * it into "full" would have the card say 0% and paint 100% at once.
+   *
+   * `Number.isFinite` rather than `?? `, because a non-numeric brightness (a
+   * template light exposing a string) would otherwise reach the emitter as
+   * NaN, propagate into the frame, and make the visibility sweep run on a NaN
+   * geometry. Clamped, because an integration reporting 300 would overshoot
+   * the authored glow length.
+   *
+   * Callers must already have established the entity is ON -- both renderers
+   * bail earlier for anything off, and that is what stops this lighting up a
+   * dark plan.
+   */
+  _brightnessRatio(attributes) {
+    const b = Number(attributes && attributes.brightness);
+    if (!Number.isFinite(b)) return 1;
+    return Math.max(0, Math.min(1, b / 255));
+  }
+
+  /**
    * Update the glow element for a single light based on entity state.
    * Supports multiple glow shapes: cone, round, oval, beam, spotlight, bar.
    * Each shape produces a different visual effect with configurable
@@ -9278,7 +9312,6 @@ class SpatialLightColorCard extends HTMLElement {
 
     const [domain] = entityId.split('.');
     const isScene = domain === 'scene';
-    const isBinaryDomain = domain === 'switch' || domain === 'input_boolean' || domain === 'binary_sensor';
     const isOn = state.state === 'on' || isScene;
     if (!isOn) {
       glowEl.style.opacity = '0';
@@ -9295,9 +9328,8 @@ class SpatialLightColorCard extends HTMLElement {
       width: this._resolveGlowLength(gcRaw.width, canvasRect),
       length: this._resolveGlowLength(gcRaw.length, canvasRect),
     };
-    // Switches, binary sensors, scenes don't have brightness — treat as full (255)
-    const brightness = state.attributes.brightness || ((isScene || isBinaryDomain) ? 255 : 0); // 0-255
-    const ratio = brightness / 255;
+    // Absent brightness means full output; see _brightnessRatio.
+    const ratio = this._brightnessRatio(state.attributes);
 
     // Determine the glow color
     let rgb;
@@ -10254,7 +10286,6 @@ class SpatialLightColorCard extends HTMLElement {
       if (!st) continue;
       const [domain] = entityId.split('.');
       const isScene = domain === 'scene';
-      const isBinary = domain === 'switch' || domain === 'input_boolean' || domain === 'binary_sensor';
       const isOn = st.state === 'on' || isScene;
       if (!isOn) continue;
 
@@ -10265,8 +10296,9 @@ class SpatialLightColorCard extends HTMLElement {
       // documented `light_field: true` one-liner, and what getStubConfig
       // produces. Walls are unaffected: _drawFieldWalls runs after this loop.
       if (gc && gc.enabled_set && !gc.enabled) continue;
-      const brightness = st.attributes.brightness || ((isScene || isBinary) ? 255 : 0);
-      const ratio = brightness / 255;
+      // Same rule as the legacy renderer, through the same helper, so the two
+      // cannot drift apart again the way they did over this exact question.
+      const ratio = this._brightnessRatio(st.attributes);
 
       let rgb = gc && gc.color ? this._parseColorToRGB(gc.color) : null;
       if (!rgb) rgb = this._parseColorToRGB(this._resolveEntityColor(entityId, true, st.attributes));

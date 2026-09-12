@@ -419,6 +419,32 @@ first click on a light projecting by inheritance killed it. All four now show th
 `_glowProjectsEffective()`. The group's visibility is set by the change handler as well as by
 `_setDOMValues`, because the editor does not rebuild itself after its own change.
 
+**Absent brightness means FULL, and that is one helper on purpose.** `_brightnessRatio(attributes)`
+is the single answer to "how much light is this entity putting out", used by both renderers. The rule
+used to be written per-DOMAIN and inline at each of them -- scenes, switches and binary sensors got
+255, lights got 0 -- so a `color_mode: 'onoff'` bulb, which never reports the attribute, projected a
+stub while its own marker sat fully lit. Measured: painted energy 799278 against 15411785 for the
+same light at brightness 255, i.e. 1/19th, which is what "no projection of light" looked like. It was
+never literally zero because `Math.max(ratio, 0.05)` and `Math.max(ratio, 0.1)` floor it. The rule is
+about the ATTRIBUTE being missing, not the domain, and the duplication IS how it went wrong: the
+fallback was extended for scenes at one site, copied to the other, and never extended to lights at
+either.
+
+**A REPORTED 0 stays dark**, which is why this is `Number.isFinite`, not `||`. The brightness bar runs
+0..255 and `_handleBrightnessChange` sends that 0 verbatim, so a light can sit at a user-commanded 0 --
+and the same card already renders it as "0%" on the bar and in the aria label. `||` cannot tell 0 from
+absent, so it would have the card say 0% and paint 100% at once. `?? ` is not the answer either: a
+non-numeric brightness would reach the emitter as NaN, propagate into the frame and run the visibility
+sweep on NaN geometry. The value is clamped to [0,1] because an integration reporting 300 would
+overshoot the authored glow length.
+
+Safe because both renderers have already established the entity is ON -- `_updateGlow` early-returns
+and `_renderLightField` `continue`s for anything off -- so the fallback can never light a dark plan.
+Verified: an off light still paints 0. Two consequences worth knowing, both intended: an onoff light
+now casts real wall shadows (its emitter frame grows from a 10%-reach stub, so walls stop being
+culled), and `scale_with_brightness: false` users see no change at all, since that branch never read
+the ratio -- which is also why it was the existing workaround.
+
 **Legacy (default).** `_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. When `_fieldActive`, `_renderLightsHTML` does not emit the div and `_updateAllGlows` returns immediately.
 
 **Light field (`light_field.enabled`).** One shared `<canvas class="light-field">` inside `#canvas`, between `.grid` and the `.light` markers. `.light-halo` (the icon-only / minimal-ui colour carrier) is gated on `!_fieldActive` alongside `.light-glow` — it is a second projected-light source, and left ungated it painted inside `.light`'s own stacking context (i.e. above the field canvas), double-glowing and escaping every wall. Each `.light` is its own stacking context (its glow sits at `z-index:-1` inside it), which is the structural reason the legacy glows can never merge — one surface fixes it. `_renderLightField()` draws every lit entity with `globalCompositeOperation='lighter'`, so overlapping colours add.

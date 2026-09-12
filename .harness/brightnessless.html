@@ -1,0 +1,151 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Brightness-less lights</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:700px}</style>
+</head><body><div id="host"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+
+// One light per brightness shape, each alone on its own card so its pool can be
+// measured without a neighbour's light adding into it.
+const CASES={
+  full:        {brightness:255, color_mode:'hs'},
+  half:        {brightness:128, color_mode:'hs'},
+  // The reported case: an on/off-only bulb. HA gives these color_mode 'onoff'
+  // and NO brightness attribute at all.
+  onoff:       {color_mode:'onoff'},
+  // Same shape, but reached a different way: a light whose integration simply
+  // omits brightness.
+  noAttr:      {},
+  // An ON light reporting brightness 0. Worth pinning either way.
+  zero:        {brightness:0, color_mode:'hs'},
+};
+
+const mk=(attrs)=>({entity_id:'light.x', state:'on',
+  attributes:Object.assign({friendly_name:'X', rgb_color:[255,255,255],
+    supported_color_modes:['hs']}, attrs)});
+
+let card;
+async function mountOne(attrs, over){
+  const st=mk(attrs);
+  if (attrs && attrs.state) st.state=attrs.state;
+  const states={'light.x':st};
+  const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+    connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:['light.x'],
+    positions:{'light.x':{x:50,y:50}}, aspect_ratio:'1:1',
+    background_image:{url:'floorplan.svg'},
+    glow:{enabled:true, shape:'round', width:'60%', intensity:0.8},
+    light_field:{enabled:true}}, over||{}));
+  card.hass=hass; host.appendChild(card);
+  await tick(700); window.card=card;
+}
+
+// Total painted light on the field canvas, the same honest measure used for the
+// master-switch work: peak alpha alone would miss the pool changing size.
+function energy(){
+  const cv=card.shadowRoot.querySelector('canvas.light-field');
+  if(!cv) return {noCanvas:true, energy:0};
+  if(!(cv.width>0)) return {unsized:true, energy:0};
+  const d=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;
+  let e=0, lit=0, peak=0;
+  for(let i=0;i<d.length;i+=4){
+    const a=d[i+3]/255;
+    const l=(0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2])*a;
+    e+=l; if(a>0.02) lit++; if(l>peak) peak=l;
+  }
+  return {energy:Math.round(e), litFrac:Math.round(lit/(cv.width*cv.height)*1000)/1000,
+          peak:Math.round(peak)};
+}
+
+// The DIFFUSED renderer.
+window.field=async function(){
+  const out={};
+  for (const [name,attrs] of Object.entries(CASES)) {
+    await mountOne(attrs);
+    out[name]=energy();
+  }
+  // An ON light reporting a NUMERIC 0 must stay dark: the bar runs 0..255 and
+  // sends that 0 verbatim, and the card already renders it as 0% on the bar and
+  // in the aria label. Absent is full; zero is dim.
+  await mountOne({state:'off'});
+  out.off=energy();
+  out._verdict={
+    onoffProjects: (out.onoff.energy||0)>0,
+    noAttrProjects: (out.noAttr.energy||0)>0,
+    onoffMatchesFull: out.onoff.energy===out.full.energy,
+    fullBrighterThanHalf: (out.full.energy||0)>(out.half.energy||0),
+    zeroStaysDim: (out.zero.energy||0) < (out.full.energy||0)/5,
+  };
+  return out;
+};
+
+// The CLASSIC renderer paints a .light-glow div instead, so measure its box.
+window.classic=async function(){
+  const out={};
+  for (const [name,attrs] of Object.entries(CASES)) {
+    await mountOne(attrs, {light_field:{enabled:false}});
+    const g=card.shadowRoot.querySelector('.light-glow');
+    const cs=g?getComputedStyle(g):null;
+    const b=g?g.getBoundingClientRect():null;
+    out[name]=g?{opacity:cs.opacity, w:Math.round(b.width), h:Math.round(b.height)}:{noGlow:true};
+  }
+  out._verdict={
+    onoffVisible: parseFloat(out.onoff.opacity||0)>0 && (out.onoff.w||0)>0,
+    onoffMatchesFull: out.onoff.opacity===out.full.opacity && out.onoff.w===out.full.w,
+  };
+  return out;
+};
+
+// scale_with_brightness:false bypasses ratio entirely, so an onoff light under
+// it looked right even before the fix -- and must look IDENTICAL after.
+window.noScale=async function(){
+  const out={};
+  for (const name of ['full','onoff']) {
+    await mountOne(CASES[name], {glow:{enabled:true, shape:'round', width:'60%',
+      intensity:0.8, scale_with_brightness:false}, light_field:{enabled:true}});
+    out[name]=energy();
+  }
+  out.identical = out.full.energy===out.onoff.energy;
+  return out;
+};
+
+// The per-entity opt-out has to survive: a light.* that should not emit.
+window.optOut=async function(){
+  await mountOne(CASES.onoff, {glow_overrides:{'light.x':{enabled:false}}});
+  const e=energy();
+  return {energy:e.energy, stillCulled:(e.energy||0)===0};
+};
+
+// The brightness SLIDER must not be dragged to 100% by an onoff light that
+// cannot accept a brightness command in the first place.
+window.slider=async function(){
+  const states={
+    'light.dim':Object.assign(mk({brightness:64, color_mode:'hs'}),{entity_id:'light.dim'}),
+    'light.onoff':Object.assign(mk({color_mode:'onoff', supported_color_modes:['onoff']}),{entity_id:'light.onoff'}),
+  };
+  states['light.dim'].attributes.friendly_name='Dim';
+  states['light.onoff'].attributes.friendly_name='OnOff';
+  const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+    connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig({type:'custom:spatial-light-color-card',entities:['light.dim','light.onoff'],
+    positions:{'light.dim':{x:30,y:50},'light.onoff':{x:70,y:50}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    controls_below:true, always_show_controls:true,
+    light_field:{enabled:true}});
+  card.hass=hass; host.appendChild(card);
+  await tick(700); window.card=card;
+  card._selectedLights=new Set(['light.dim','light.onoff']);
+  card.updateLights(); await tick(300);
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  return {sliderValue:b?b.value:null, disabled:b?b.disabled:null};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>
