@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.32.0 (fork-maxi1134)';
+  static BUILD = 'v1.33.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -49,6 +49,10 @@ class SpatialLightColorCard extends HTMLElement {
 
     /** Selection & interactions */
     this._selectedLights = new Set();
+    this._cfSide = null;                // side of the selection the floating controls last took
+    this._cfAt = null;                  // last '<x>,<y>' written by _placeFloatingControls
+    this._cfKey = null;                 // selection+geometry the free-axis offset below was computed for
+    this._cfFreeY = null;               // held free-axis offset for the sideways placements
     this._dragState = null;             // { entity, startX, startY, initialLeft, initialTop, rect, moved }
     this._selectionBox = null;          // HTMLElement for rubberband selection (created lazily on drag)
     this._selectionStart = null;        // { x, y, clientX, clientY } — armed on empty-canvas pointerdown
@@ -2459,6 +2463,30 @@ class SpatialLightColorCard extends HTMLElement {
       return score;
     };
 
+    // The floating panel is an obstacle too. It is opaque, it now sits right
+    // NEXT TO the selection rather than parked at an end of the plan, and a
+    // label is the one thing the placement cannot model: `soft` inflates the
+    // selection by the label BAND (height), because a label's width is its
+    // own offsetWidth and that is only known here -- after placement has run.
+    // So the two meet in the middle: placement clears the band, and a label
+    // that would still land under the panel pays the same 50 as one landing
+    // under another label. Enough to prefer a clear side, not enough to beat
+    // the 1000-point "belongs to the wrong light" constraint.
+    // Safe to read here: updateLights calls _placeFloatingControls before
+    // this, so the rect is current, and this method already flushes layout.
+    const cfEl = this._els && this._els.controlsFloating;
+    if (cfEl && cfEl.classList.contains('visible')) {
+      const cfBox = cfEl.getBoundingClientRect();
+      if (cfBox.width > 0 && cfBox.height > 0) {
+        placedRects.push({
+          x: cfBox.left - canvasRect.left,
+          y: cfBox.top - canvasRect.top,
+          w: cfBox.width,
+          h: cfBox.height,
+        });
+      }
+    }
+
     // Greedy assignment: process labels, picking best direction for each
     for (const light of visibleLabels) {
       let bestDir = 'below';
@@ -3383,6 +3411,17 @@ class SpatialLightColorCard extends HTMLElement {
     // measures it, so labels and the light field see the final geometry.
     this._applyBackgroundAspect();
     this._els.controlsFloating = this.shadowRoot.getElementById('controlsFloating');
+    // A fresh element carries no 'auto-placed' class and may be a different
+    // size (bar height and the presets row come from config), so every memo
+    // _placeFloatingControls keeps describes a node that no longer exists.
+    // The class check inside it catches _cfAt on its own; _cfSide and the
+    // held free-axis offset have no such backstop and would carry a decision
+    // made for the previous geometry into the first placement on this one --
+    // visible in the editor, which re-renders on every keystroke.
+    this._cfAt = null;
+    this._cfSide = null;
+    this._cfKey = null;
+    this._cfFreeY = null;
     this._els.controlsBelow = this.shadowRoot.getElementById('controlsBelow');
     this._els.powerToggle = this.shadowRoot.getElementById('powerToggle');
     this._els.brightnessSlider = this.shadowRoot.getElementById('brightnessSlider');
@@ -3476,8 +3515,12 @@ class SpatialLightColorCard extends HTMLElement {
     if (typeof window === 'undefined' || !('ResizeObserver' in window)) return;
     this._canvasObserver = new ResizeObserver(() => {
       // Cheap, and it is the only thing that reliably runs once the canvas
-      // has a real box: _renderAll can legitimately run detached.
-      this._applyFloatingPos();
+      // has a real box: _renderAll can legitimately run detached. Goes
+      // through _placeFloatingControls, not _applyFloatingPos: BOTH
+      // placements are measured against a canvas box that just changed, and
+      // that entry point routes a hand-placed one to _applyFloatingPos on its
+      // own.
+      this._placeFloatingControls();
       // Leading + trailing debounce. The leading call keeps the initial
       // layout flush instant (this observer is what renders walls on first
       // paint); during a continuous window resize the per-frame size
@@ -3546,9 +3589,10 @@ class SpatialLightColorCard extends HTMLElement {
   _repaintCanvasLayers() {
     if (!this._config || !this._hass) return;
     if (!this._els || !this._els.canvas) return;
-    // The canvas can be a different size under its new parent, and the
-    // floating controls are stored as fractions of it.
-    this._applyFloatingPos();
+    // The canvas can be a different size under its new parent: a hand-placed
+    // box is stored as fractions of it, and an automatic one was measured
+    // against it.
+    this._placeFloatingControls();
     this._updateAllGlows();
     this._requestLightFieldDraw();
     this._requestWallEditorDraw();
@@ -4227,14 +4271,25 @@ class SpatialLightColorCard extends HTMLElement {
         z-index: 50;
       }
       .controls-floating.visible { opacity: 1; pointer-events: auto; }
-      /* Anchored to whichever end of the plan the selection is NOT at, so the
-         controls do not sit on top of the lights being adjusted. */
-      .controls-floating.at-top { top: 20px; bottom: auto; }
-      /* Dragged: explicit placement wins over both anchors, and the centring
-         transform has to go with them or the box jumps half its width. */
+      /* Placed by pixel offsets instead of by the default bottom-centre
+         anchor. Two classes, one mechanism, different AUTHORITY:
+         auto-placed is _placeFloatingControls tracking the selection,
+         dragged is a position the user set by hand and which nothing
+         automatic may overwrite. The centring transform has to go with the
+         anchors or the box jumps half its width. */
+      .controls-floating.auto-placed,
       .controls-floating.dragged {
         left: var(--cf-x, 50%); top: var(--cf-y, 20px);
         right: auto; bottom: auto; transform: none;
+      }
+      /* Only the AUTOMATIC placement animates. It moves on its own, so the
+         slide is what ties it to the selection that caused it; a dragged box
+         is already following a finger and must not lag behind it. The global
+         prefers-reduced-motion rule zeroes --transition-fast, so this
+         inherits that opt-out rather than needing its own. */
+      .controls-floating.auto-placed {
+        transition: opacity var(--transition-base),
+                    left var(--transition-fast), top var(--transition-fast);
       }
       .cf-grip {
         flex: 0 0 auto; align-self: center;
@@ -7558,7 +7613,15 @@ class SpatialLightColorCard extends HTMLElement {
       });
       this._bindPresetHandlers();
       this._refreshEffectPresetIcons();
-      requestAnimationFrame(() => this._updateSeparatorVisibility());
+      requestAnimationFrame(() => {
+        this._updateSeparatorVisibility();
+        // It can un-hide the power separator, which re-wraps .presets-row and
+        // changes the panel's height a frame AFTER _placeFloatingControls
+        // measured it. Re-place, or an above/left placement keeps last tick's
+        // gap until something else happens to call it. Write-guarded, so this
+        // is free when the height did not actually move.
+        this._placeFloatingControls();
+      });
     }
   }
 
@@ -8329,6 +8392,11 @@ class SpatialLightColorCard extends HTMLElement {
     const cy = maxY < 0 ? maxY : Math.max(0, Math.min(maxY, pos.fy * hb.height));
     el.style.setProperty('--cf-x', `${Math.round(cx)}px`);
     el.style.setProperty('--cf-y', `${Math.round(cy)}px`);
+    // The two placements share --cf-x/--cf-y, so the automatic one has to let
+    // go of them here or _placeFloatingControls' write guard would still
+    // believe the last value it wrote is on the element.
+    this._cfAt = null;
+    el.classList.remove('auto-placed');
     el.classList.add('dragged');
   }
 
@@ -8346,6 +8414,12 @@ class SpatialLightColorCard extends HTMLElement {
       if (st) return;
       const host = el.parentElement;
       if (!host) return;
+      // BEFORE the rects are read: '.dragging' kills the left/top transition,
+      // so grabbing the panel mid-slide measures where it is going rather
+      // than where it happens to be this frame. Reading first seeded the
+      // drag from an interpolated position and the box jumped on the first
+      // pointermove.
+      el.classList.add('dragging');
       const hb = host.getBoundingClientRect();
       const eb = el.getBoundingClientRect();
       const mX = hb.width - eb.width;
@@ -8368,7 +8442,6 @@ class SpatialLightColorCard extends HTMLElement {
       // find later.
       e.stopPropagation();
       try { grip.setPointerCapture(e.pointerId); } catch (_) { /* pointer may be gone */ }
-      el.classList.add('dragging');
     });
     grip.addEventListener('pointermove', (e) => {
       if (!st || e.pointerId !== st.pointerId) return;
@@ -8379,6 +8452,12 @@ class SpatialLightColorCard extends HTMLElement {
       const y = Math.max(Math.min(0, maxY), Math.min(Math.max(0, maxY), st.originY + (e.clientY - st.grabY)));
       el.style.setProperty('--cf-x', `${Math.round(x)}px`);
       el.style.setProperty('--cf-y', `${Math.round(y)}px`);
+      // Swapped rather than dropped-then-set: both classes carry the same
+      // rules, so the handover is invisible -- and dropping 'auto-placed' at
+      // pointerdown instead would snap the box back to the CSS anchor the
+      // instant it was grabbed.
+      this._cfAt = null;
+      el.classList.remove('auto-placed');
       el.classList.add('dragged');
       st.last = { x, y };
     });
@@ -8397,8 +8476,7 @@ class SpatialLightColorCard extends HTMLElement {
     grip.addEventListener('dblclick', () => {
       this._saveFloatingPos(null);
       el.classList.remove('dragged');
-      el.style.removeProperty('--cf-x');
-      el.style.removeProperty('--cf-y');
+      this._clearAutoPlacement(el);
       this._placeFloatingControls();
     });
     // The grip is focusable and announces itself as a button, so it has to be
@@ -8412,8 +8490,7 @@ class SpatialLightColorCard extends HTMLElement {
         e.preventDefault();
         this._saveFloatingPos(null);
         el.classList.remove('dragged');
-        el.style.removeProperty('--cf-x');
-        el.style.removeProperty('--cf-y');
+        this._clearAutoPlacement(el);
         this._placeFloatingControls();
         return;
       }
@@ -8437,40 +8514,258 @@ class SpatialLightColorCard extends HTMLElement {
       const y = Math.max(Math.min(0, maxY), Math.min(Math.max(0, maxY), (eb.top - hb.top) + dy));
       el.style.setProperty('--cf-x', `${Math.round(x)}px`);
       el.style.setProperty('--cf-y', `${Math.round(y)}px`);
+      this._cfAt = null;
+      el.classList.remove('auto-placed');
       el.classList.add('dragged');
       this._saveFloatingPos({ fx: x / hb.width, fy: y / hb.height });
     });
   }
 
   /**
-   * Put the floating controls at whichever end of the plan the selection is
-   * not. Overlaid controls that cover the very lights you just selected are
-   * the worst case, and with four stacked bars the box is tall enough that
-   * this is common rather than rare.
+   * Clearances for the automatic placement of the floating controls, in CSS px.
    *
-   * Measured in SCREEN percentages, not plan ones: the box is anchored to the
-   * canvas, so a rotated plan has to be mapped through first or the flip
-   * happens on the wrong axis.
+   *   RING  - margin around a light marker, for its selection ring and glow.
+   *   LABEL - the band a light label occupies: _repositionLabels own GAP (8)
+   *           plus its LABEL_H (21). A SELECTED light shows its label
+   *           (`.light.selected .light-label { opacity: 1 }`), so covering
+   *           that band is covering part of the selection.
+   *   GAP   - breathing room between the selection and the panel.
+   *   EDGE  - minimum inset from the edge of the plan.
+   *   SLOP  - hysteresis: how much better a different side has to be before
+   *           the panel is allowed to move to it.
+   */
+  static get CF_PLACEMENT() {
+    return { RING: 6, LABEL: 29, GAP: 12, EDGE: 10, SLOP: 8 };
+  }
+
+  /**
+   * A light marker on-screen RADIUS in px, including the mobile clamp the
+   * stylesheet applies (`.light { --light-size: min(light_size, 50) }` under
+   * 768px). _repositionLabels measures the same thing the same way and the
+   * two have to agree, or the panel would clear a marker the labels believe
+   * is a different size.
+   */
+  _lightScreenRadius(entityId) {
+    const size = this._config.size_overrides[entityId] || this._config.light_size;
+    const onScreen = (typeof window !== 'undefined' && window.innerWidth <= 768)
+      ? Math.min(size, 50)
+      : size;
+    return onScreen / 2;
+  }
+
+  /** Hand the panel back to its CSS anchor (bottom centre). */
+  _clearAutoPlacement(el) {
+    this._cfAt = null;
+    el.classList.remove('auto-placed');
+    el.style.removeProperty('--cf-x');
+    el.style.removeProperty('--cf-y');
+  }
+
+  /**
+   * Put the floating controls NEXT TO the selection: offset just clear of the
+   * bounding box of the selection, centred on it across the band, clamped
+   * inside the plan. The colour bars belong beside the lights they act on,
+   * not at an end of the plan the selection may be nowhere near.
+   *
+   * Measured in SCREEN pixels, not plan ones: the panel is anchored to the
+   * CANVAS, so every selection coordinate goes through _toScreenPct on BOTH
+   * axes -- a quarter-turned plan otherwise gets tracked along the wrong one.
+   *
+   * A multi-light selection has an EXTENT, so this works from the union box
+   * of the markers rather than from their centroid: the centroid of two
+   * lights at opposite corners is an empty patch of floor, and a panel placed
+   * politely next to THAT sits on top of both of them.
+   *
+   * Three things keep it from jittering, which matters because updateLights
+   * runs this on every watched state change:
+   *
+   *  - Placement cannot change the size of the panel, so there is no
+   *    measure -> move -> re-measure loop to converge. Its width and
+   *    max-height are percentages of #canvas, never of the room left in the
+   *    band it was put in. Do not introduce one.
+   *  - The side is sticky (SLOP): the side in use only has to still fit,
+   *    while a different one has to fit with room to spare before it wins.
+   *  - Nothing is written unless the answer actually changed, so a tick that
+   *    moves nothing leaves layout clean for _repositionLabels right after.
    */
   _placeFloatingControls() {
     const el = this._els && this._els.controlsFloating;
     if (!el) return;
-    // A hand-placed box stays where it was put; automatic avoidance is only
-    // for the default placement.
+    // A hand-placed box stays where it was put. Automatic tracking is the
+    // DEFAULT placement, never an override of a position the user chose.
     if (this._loadFloatingPos()) { this._applyFloatingPos(); return; }
+    // A gesture in flight is the source of truth.
+    if (el.classList.contains('dragging')) return;
+    const host = el.parentElement;
+    if (!host) return;
+
     const ids = this._selectedLights.size
       ? [...this._selectedLights]
       : (this._config.default_entity ? [this._config.default_entity] : []);
-    let sum = 0, n = 0;
+    const marks = [];
     for (const id of ids) {
       const pos = this._config.positions[id];
       if (!pos) continue;
-      sum += this._toScreenPct(pos.x, pos.y).y;
-      n++;
+      const s = this._toScreenPct(pos.x, pos.y);
+      marks.push({ sx: s.x, sy: s.y, r: this._lightScreenRadius(id) });
     }
-    // Nothing to avoid: leave it at the bottom, which is where it has always
-    // sat and where a card with no selection reads most naturally.
-    el.classList.toggle('at-top', n > 0 && (sum / n) > 50);
+    // Nothing to track: back to the CSS anchor, which is where a card with no
+    // selection reads most naturally. This is the idle path, and it returns
+    // before reading a single rect.
+    if (!marks.length) {
+      if (el.classList.contains('auto-placed')) this._clearAutoPlacement(el);
+      return;
+    }
+
+    const hb = host.getBoundingClientRect();
+    const eb = el.getBoundingClientRect();
+    // Before first layout there is nothing to measure against; the canvas
+    // ResizeObserver runs this again the moment there is.
+    if (!(hb.width > 0) || !(hb.height > 0)) return;
+    if (!(eb.width > 0) || !(eb.height > 0)) return;
+
+    const { RING, LABEL, GAP, EDGE, SLOP } = SpatialLightColorCard.CF_PLACEMENT;
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const m of marks) {
+      const cx = m.sx / 100 * hb.width;
+      const cy = m.sy / 100 * hb.height;
+      const rad = m.r + RING;
+      if (cx - rad < l) l = cx - rad;
+      if (cx + rad > r) r = cx + rad;
+      if (cy - rad < t) t = cy - rad;
+      if (cy + rad > b) b = cy + rad;
+    }
+    // Two boxes, because the labels are worth clearing but not at any price.
+    // `soft` includes them and is tried first; `hard` is the markers alone
+    // and is the fallback, so a tight plan gives up the label band rather
+    // than giving up on tracking the selection.
+    const hard = { l, t, r, b };
+    const soft = { l: l - LABEL, t: t - LABEL, r: r + LABEL, b: b + LABEL };
+    const mx = (l + r) / 2, my = (t + b) / 2;
+
+
+    // The escape axis is what the user asked for -- the panel sits GAP px
+    // clear of the selection -- and it is derived from the selection alone.
+    // The FREE axis is cosmetic centring, and for the sideways placements it
+    // is the one number in here that depends on the panel's own HEIGHT. That
+    // height is not a stable input: _getLiveColors walks every entity in the
+    // card for state === 'on', so a lamp turning on anywhere adds a preset
+    // swatch, .presets-row is flex-wrap: wrap, and the box grows a row. Fed
+    // straight into `my - ph / 2` that slides the panel by half the row on a
+    // state change the user cannot connect to it -- and back again when the
+    // lamp turns off, forever, with the left/top transition animating each
+    // one. So the free axis is computed ONCE per selection and then held; it
+    // is still re-clamped every tick, so a growing box cannot push it off
+    // the plan, it is simply not re-centred. Above/below need no equivalent:
+    // their free axis uses the panel WIDTH, which is min(420px, 100% - 20px)
+    // and moves only when the canvas does -- which is in the key below.
+    const selKey = ids.slice().sort().join(',') + '|' + this._planRotation()
+      + '|' + Math.round(hb.width) + 'x' + Math.round(hb.height);
+    if (selKey !== this._cfKey) { this._cfKey = selKey; this._cfFreeY = null; }
+    const freeY = () => (this._cfFreeY === null ? (this._cfFreeY = my - ph / 2) : this._cfFreeY);
+
+    const pw = eb.width, ph = eb.height;
+    const maxX = hb.width - pw;
+    const maxY = hb.height - ph;
+    // Clamp into the plan, keeping EDGE off the sides. A panel with no inside
+    // to sit in (a narrow dashboard column) centres its overflow rather than
+    // snapping to one edge.
+    const clampX = (v) => (maxX <= 2 * EDGE)
+      ? Math.round(maxX / 2)
+      : Math.round(Math.max(EDGE, Math.min(maxX - EDGE, v)));
+    // The vertical clamp carries one extra rule, the same one
+    // _applyFloatingPos enforces on restore: a panel TALLER than the plan
+    // pins to the BOTTOM, never the top, because the presets row and the
+    // power toggle live at its bottom and are what you press.
+    const clampY = (v) => {
+      if (maxY < 0) return Math.round(maxY);
+      if (maxY <= 2 * EDGE) return Math.round(maxY / 2);
+      return Math.round(Math.max(EDGE, Math.min(maxY - EDGE, v)));
+    };
+
+    // One side, with the slack it has. slack >= 0 means the panel fits
+    // between `box` and that edge of the plan; the other axis tracks the
+    // selection, so the panel is centred on what it is controlling.
+    const place = (side, box) => {
+      switch (side) {
+        case 'below': return {
+          x: clampX(mx - pw / 2), y: Math.round(box.b + GAP),
+          slack: (hb.height - EDGE) - (box.b + GAP + ph),
+        };
+        case 'above': return {
+          x: clampX(mx - pw / 2), y: Math.round(box.t - GAP - ph),
+          slack: (box.t - GAP - ph) - EDGE,
+        };
+        case 'right': return {
+          x: Math.round(box.r + GAP), y: clampY(freeY()),
+          slack: (hb.width - EDGE) - (box.r + GAP + pw),
+        };
+        default: return {
+          x: Math.round(box.l - GAP - pw), y: clampY(freeY()),
+          slack: (box.l - GAP - pw) - EDGE,
+        };
+      }
+    };
+
+    // Below first: it is the direction a popover is read in, and preferring
+    // one fixed order (rather than whichever side happens to be roomiest) is
+    // half of why this does not wander.
+    const SIDES = ['below', 'above', 'right', 'left'];
+    const prev = this._cfSide;
+    let chosen = null;
+    for (const box of [soft, hard]) {
+      // Hysteresis. The incumbent only has to still fit; anything else has to
+      // fit with SLOP to spare. Without it a one-pixel change in the height
+      // of the panel -- a preset appearing, a font settling -- could send it
+      // across the plan on an otherwise unrelated state tick.
+      if (prev) {
+        const keep = place(prev, box);
+        if (keep.slack >= 0) { chosen = { side: prev, ...keep }; break; }
+      }
+      for (const side of SIDES) {
+        if (side === prev) continue;
+        const cand = place(side, box);
+        if (cand.slack >= SLOP) { chosen = { side, ...cand }; break; }
+      }
+      if (chosen) break;
+    }
+
+    if (!chosen) {
+      // The panel does not fit clear of the selection ANYWHERE: it is simply
+      // large against this plan. Cover as little as possible -- take the side
+      // with the most room and pin the panel flush to THAT edge -- instead of
+      // retreating to an end of the plan the selection is nowhere near. The
+      // free axis still tracks the selection, so it stays alongside it.
+      for (const side of SIDES) {
+        const cand = { side, ...place(side, hard) };
+        if (!chosen) { chosen = cand; continue; }
+        // The incumbent keeps a tie, so a selection sitting symmetrically in
+        // the middle of the plan cannot oscillate between two equals.
+        const bias = (cand.side === prev ? SLOP : 0) - (chosen.side === prev ? SLOP : 0);
+        if (cand.slack + bias > chosen.slack) chosen = cand;
+      }
+      if (chosen.side === 'below') chosen.y = clampY(Infinity);
+      else if (chosen.side === 'above') chosen.y = clampY(-Infinity);
+      else if (chosen.side === 'right') chosen.x = clampX(Infinity);
+      else chosen.x = clampX(-Infinity);
+    }
+
+    // Safe on both paths: on a side that fitted, its own slack proves the
+    // clamp is a no-op in the direction that would have pushed the panel back
+    // over the selection; on one that did not, it is the correction.
+    const x = clampX(chosen.x);
+    const y = clampY(chosen.y);
+    this._cfSide = chosen.side;
+    const at = x + ',' + y;
+    // Only touch the DOM when the answer changed. The class check is what
+    // catches a re-render, a drag and the two resets, all of which clobber
+    // --cf-x/--cf-y behind the back of this guard.
+    if (this._cfAt !== at || !el.classList.contains('auto-placed')) {
+      this._cfAt = at;
+      el.style.setProperty('--cf-x', `${x}px`);
+      el.style.setProperty('--cf-y', `${y}px`);
+      el.classList.add('auto-placed');
+    }
   }
 
   /** The colour the two bars currently describe. */
@@ -10978,13 +11273,17 @@ class SpatialLightColorCard extends HTMLElement {
     // Show/hide floating controls if used
     if (this._els.controlsFloating) {
       this._els.controlsFloating.classList.toggle('visible', shouldShowControls);
-      this._placeFloatingControls();
     }
     // Show/hide below controls if used
     if (this._els.controlsBelow) {
       this._els.controlsBelow.classList.toggle('visible', shouldShowControls);
     }
     this._refreshColorPresets();
+    // AFTER the presets refresh, not before it. Placement MEASURES the panel
+    // now that it tracks the selection, and a preset appearing or leaving
+    // changes the panel's height -- measuring first placed it against the
+    // previous tick's size and left it a frame behind.
+    this._placeFloatingControls();
     this._refreshEntityIcons();
     this._updateCanvasElements();
     this._updateAllGlows();

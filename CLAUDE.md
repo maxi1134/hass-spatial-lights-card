@@ -192,12 +192,71 @@ no specificity, so source order is all that decides which wins when both match.
 **Bar height is `color_bar_height`** (px, default 34, clamped 12–120). It feeds `--color-bar-h`, which the
 track AND thumb rules both derive from, so the thumb stays proportional at any height.
 
-**The floating controls flip ends.** `_placeFloatingControls` anchors the box to whichever end of the
-plan the selection is NOT at (`.at-top` swaps `bottom` for `top`), because overlaid controls that cover
-the very lights you just selected are the worst case — and with four stacked bars the box is often
-taller than half the canvas, so this is common rather than rare. It averages the selection in SCREEN
-percentages via `_toScreenPct`: the box is anchored to the canvas, so on a rotated plan a
-plan-bottom light may well be on the screen left and must NOT trigger a flip.
+**The floating controls TRACK the selection.** `_placeFloatingControls` offsets the box just clear of
+the selection's bounding box, centred on it across the band and clamped inside the plan: the colour bars
+belong beside the lights they act on, not at an end of the plan the selection may be nowhere near. (It
+used to be a binary `.at-top` flip between the two ends — that class is gone.) `.auto-placed` carries
+the result through the same `--cf-x`/`--cf-y` the hand-placed `.dragged` uses. Same mechanism, different
+AUTHORITY: a stored hand position short-circuits the whole function on its first line, and the drag
+swaps `auto-placed` for `dragged` at the first `pointermove` rather than at `pointerdown`, so the
+handover cannot make the box jump the instant it is grabbed.
+
+Four sides are tried in a FIXED order — below, above, right, left — against TWO boxes. `soft` includes
+the label band a selected light shows (`_repositionLabels`' `GAP` 8 + `LABEL_H` 21, so `_lightScreenRadius`
+has to mirror that function's mobile size clamp); `hard` is the markers alone. Soft first, hard as the
+fallback, so a tight plan gives up the LABELS rather than giving up on tracking. When nothing fits
+anywhere — the panel is 420×~320 and plenty of plans are smaller — it takes the side with the most room
+and pins the panel flush to THAT edge, the free axis still tracking the selection, instead of retreating
+to an end of the plan.
+
+It works from the UNION BOX of the markers, never their centroid: the centroid of two lights in opposite
+corners is an empty patch of floor, and a panel placed politely next to that sits on top of both. Every
+coordinate goes through `_toScreenPct` on BOTH axes (the old flip only needed y) — the box is anchored to
+the canvas, so on a quarter-turned plan a plan-bottom light is on the screen LEFT and has to be tracked
+there.
+
+**Four things stop it jittering**, which matters because `updateLights` runs it on every watched state
+change. Placement cannot change the panel's own SIZE — its width and `max-height` are percentages of
+`#canvas`, never of the room left in the band it was put in — so there is no measure → move → re-measure
+loop to converge; do not introduce one. The side is STICKY: the incumbent only has to still fit (slack
+≥ 0) while any other side has to fit with `SLOP` to spare, so a one-pixel change in the panel's height
+cannot send it across the plan. And nothing is written unless the answer actually changed, so an idle
+tick leaves layout clean for the `_repositionLabels` that follows it. The call moved to AFTER
+`_refreshColorPresets()` in `updateLights` for the same reason placement now measures at all: a preset
+appearing or leaving changes the panel's height.
+
+The fourth is the one that is easiest to undo by accident. **The FREE axis is computed once per
+selection and then HELD** (`_cfKey` / `_cfFreeY`). The escape axis -- the one that puts the box `GAP` px
+clear of the selection -- is derived from the selection alone. The free axis is cosmetic centring, and
+on the `right`/`left` sides it is the one number in the function that depends on the panel's own HEIGHT.
+That height is NOT a stable input: `_getLiveColors` walks every entity in the card for `state === 'on'`,
+so a lamp turning on anywhere adds a preset swatch, `.presets-row` is `flex-wrap: wrap`, and the box
+grows a row. Fed straight into `my - ph / 2` that slid the panel 16px on a state change the user cannot
+connect to it, and back when the lamp turned off, forever, animating each one. The held value is still
+RE-CLAMPED every tick, so a growing box cannot push it off the plan -- it is simply not re-centred.
+`_cfKey` carries the rounded canvas size, so a real resize or a rotation does re-centre. `below`/`above`
+need no equivalent: their free axis uses the panel WIDTH, which is `min(420px, 100% - 20px)` and moves
+only when the canvas does. `above` legitimately moves `--cf-y` as the box grows -- it anchors by `top`,
+so keeping the gap constant means the top edge climbs; the edge facing the selection does not move.
+
+Three lifecycle details that are load-bearing and invisible. `_renderAll` RESETS all four memos next to
+`_els.controlsFloating`, because a fresh element carries no `auto-placed` class and may be a different
+size -- the editor re-renders on every keystroke, and `_cfSide`/`_cfFreeY` would otherwise carry a
+decision made for the previous geometry into the first placement on this one. The grip's `pointerdown`
+adds `.dragging` BEFORE it reads the rects, because that class kills the `left`/`top` transition, so
+grabbing the panel mid-slide measures where it is going rather than where it happens to be this frame.
+And `_refreshColorPresets`' `requestAnimationFrame` re-places after `_updateSeparatorVisibility`, which
+can un-hide the power separator, re-wrap the presets row and change the panel's height a frame AFTER
+placement measured it.
+
+`.harness/cf-jitter.test.js` locks the stability half against the SHIPPED method body -- it extracts
+`_placeFloatingControls` out of the file rather than re-implementing it, and it fails on the pre-hold
+code with the panel taking three distinct positions and 16 style writes across eight ticks.
+
+`.harness/controls-place.html` drives the rest: `sweep()` walks a selection round every corner and edge and
+reports overlap, gap and whether the box stayed inside the canvas; `stability()` asserts it does not move
+across five ticks and an unrelated state change; `handPlaced()` asserts a dropped position survives a
+reselection.
 
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use
