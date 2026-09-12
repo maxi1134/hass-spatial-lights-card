@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.33.0 (fork-maxi1134)';
+  static BUILD = 'v1.33.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -5108,8 +5108,8 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
         <div class="cf-grip" id="cfGrip" role="button" tabindex="0"
-             aria-label="Move controls (double-click to reset)"
-             title="Drag to move — double-click to reset"></div>
+             aria-label="Move controls (double-click to follow the selection)"
+             title="Drag to move — double-click to follow the selection"></div>
         ${this._colorBarsHTML(avgState, tempRange)}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
@@ -8472,7 +8472,11 @@ class SpatialLightColorCard extends HTMLElement {
     };
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);
-    // Back to automatic placement.
+    // Back to automatic placement -- which now means TRACKING the selection,
+    // not returning to the bottom-centre anchor, so the grip's own tooltip
+    // says that. A dropped position is stored per card in localStorage and
+    // outlives a reload, so without a way back a single drag silently pins the
+    // panel for good and it reads as "it stopped following my selection".
     grip.addEventListener('dblclick', () => {
       this._saveFloatingPos(null);
       el.classList.remove('dragged');

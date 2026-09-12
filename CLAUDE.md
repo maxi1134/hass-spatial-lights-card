@@ -264,6 +264,16 @@ label's WIDTH is its own `offsetWidth` and that is only known HERE, after placem
 Reading the rect here is safe and free: `updateLights` calls `_placeFloatingControls` before
 `_repositionLabels`, and this method already flushes layout for `offsetWidth`.
 
+**A dragged panel stops tracking, permanently, and that reads as a bug.** `_saveFloatingPos`
+writes to `localStorage` keyed per card, so a position survives reloads, and
+`_placeFloatingControls` short-circuits on it in its first line. Measured: auto-placement tracks
+[10,143] -> [470,99] across selections; after one hand-drop the panel sits at [36,242] and stays
+there through every reselection. Double-clicking the grip (or Escape on it, since it is
+focusable) clears the stored position and tracking resumes -- verified. The grip's tooltip says
+so; it used to say "double-click to reset", which described returning to the bottom anchor and
+stopped being true when tracking landed. The authority is deliberate -- a hand-placed box stays
+put -- but the way back has to be discoverable or the feature reads as broken.
+
 `.harness/controls-place.html` drives the rest: `sweep()` walks a selection round every corner and edge and
 reports overlap, gap and whether the box stayed inside the canvas; `stability()` asserts it does not move
 across five ticks and an unrelated state change; `handPlaced()` asserts a dropped position survives a

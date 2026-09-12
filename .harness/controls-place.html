@@ -1,0 +1,169 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Floating controls placement</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:640px}</style>
+</head><body><div id="host"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const NAMES=['kitchen','living','hall','bed_left','bed_right','office','porch','garage'];
+const ids=NAMES.map(n=>'light.'+n);
+const states={};
+ids.forEach(i=>states[i]={entity_id:i,state:'on',attributes:{friendly_name:i.split('.')[1],
+ brightness:255,rgb_color:[255,170,80],color_mode:'rgb',supported_color_modes:['rgb','color_temp'],
+ min_color_temp_kelvin:2000,max_color_temp_kelvin:6500,color_temp_kelvin:3000}});
+const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+ connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||90));
+
+// Spread the lights so a selection can sit in any corner or edge.
+const POS={
+  'light.kitchen':{x:15,y:12}, 'light.living':{x:50,y:12}, 'light.hall':{x:85,y:12},
+  'light.bed_left':{x:15,y:50}, 'light.bed_right':{x:85,y:50},
+  'light.office':{x:15,y:88}, 'light.porch':{x:50,y:88}, 'light.garage':{x:85,y:88},
+};
+const CFG=(over)=>Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+  positions:JSON.parse(JSON.stringify(POS)),
+  aspect_ratio:'16:10', background_image:{url:'floorplan.svg'},
+  controls_below:false, always_show_controls:true},over||{});
+
+let card;
+window.mount=async function(over, widthPx){
+  // A dropped position is stored per card key and outlives a remount, so a
+  // handPlaced() run would otherwise poison every sweep after it.
+  try{localStorage.clear();}catch(_){}
+  const host=document.getElementById('host');
+  host.style.width=(widthPx||640)+'px';
+  host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(CFG(over)); card.hass=hass; host.appendChild(card);
+  await tick(700); window.card=card; return true;
+};
+
+const R=(el)=>el.getBoundingClientRect();
+const canvasEl=()=>card.shadowRoot.getElementById('canvas');
+const panelEl=()=>card.shadowRoot.querySelector('.controls-floating');
+
+// Geometry of the selection as it actually sits on screen: the union of the
+// selected light markers' boxes. Using the markers (not config percentages)
+// keeps this honest under rotation, where plan and screen axes differ.
+function selBox(){
+  const sel=[...card.shadowRoot.querySelectorAll('.light.selected')];
+  if(!sel.length) return null;
+  const bs=sel.map(R);
+  return {left:Math.min(...bs.map(b=>b.left)), right:Math.max(...bs.map(b=>b.right)),
+          top:Math.min(...bs.map(b=>b.top)), bottom:Math.max(...bs.map(b=>b.bottom))};
+}
+function overlapArea(a,b){
+  const w=Math.min(a.right,b.right)-Math.max(a.left,b.left);
+  const h=Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top);
+  return (w>0&&h>0)?w*h:0;
+}
+// Gap from the panel to the selection, 0 when they touch or overlap.
+function gap(a,b){
+  const dx=Math.max(0, Math.max(a.left-b.right, b.left-a.right));
+  const dy=Math.max(0, Math.max(a.top-b.bottom, b.top-a.bottom));
+  return Math.round(Math.hypot(dx,dy));
+}
+
+window.select=async function(list){
+  card._selectedLights=new Set(list);
+  card.updateLights();
+  // The panel now ANIMATES to its new place (left/top, --transition-fast).
+  // getComputedStyle during a running transition returns the interpolated
+  // value, so a short wait measures where the box WAS, not where it landed --
+  // that is what made an earlier sweep report a frozen position. Wait out the
+  // transition, then wait for two clean frames.
+  await tick(650);
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+};
+
+window.probe=function(){
+  const p=panelEl(), c=canvasEl();
+  if(!p) return {noPanel:true};
+  const pb=R(p), cb=R(c), sb=selBox();
+  const visible=getComputedStyle(p).opacity!=='0';
+  const out={
+    visible,
+    panel:[Math.round(pb.left-cb.left),Math.round(pb.top-cb.top),Math.round(pb.width),Math.round(pb.height)],
+    canvas:[Math.round(cb.width),Math.round(cb.height)],
+    panelTallerThanHalf: pb.height > cb.height/2,
+    insideCanvas: pb.left>=cb.left-1 && pb.right<=cb.right+1 && pb.top>=cb.top-1 && pb.bottom<=cb.bottom+1,
+    classes:[...p.classList].filter(c=>c!=='controls-floating').join(' '),
+  };
+  if(sb){
+    out.selection=[Math.round(sb.left-cb.left),Math.round(sb.top-cb.top),
+                   Math.round(sb.right-sb.left),Math.round(sb.bottom-sb.top)];
+    out.overlapPx=Math.round(overlapArea(pb,sb));
+    out.coversSelection=out.overlapPx>0;
+    out.gapToSelection=gap(pb,sb);
+    // distance between centres, as a fraction of the canvas diagonal: this is
+    // the "is it CLOSE" measure the request is really about
+    const pc={x:(pb.left+pb.right)/2,y:(pb.top+pb.bottom)/2};
+    const sc={x:(sb.left+sb.right)/2,y:(sb.top+sb.bottom)/2};
+    const diag=Math.hypot(cb.width,cb.height);
+    out.centreDistFrac=Math.round(Math.hypot(pc.x-sc.x,pc.y-sc.y)/diag*100)/100;
+  }
+  return out;
+};
+
+// Every corner and edge, so "near" is tested everywhere rather than once.
+window.sweep=async function(over, widthPx){
+  await window.mount(over, widthPx);
+  const cases={
+    topLeft:['light.kitchen'], topCentre:['light.living'], topRight:['light.hall'],
+    midLeft:['light.bed_left'], midRight:['light.bed_right'],
+    bottomLeft:['light.office'], bottomCentre:['light.porch'], bottomRight:['light.garage'],
+    spreadTop:['light.kitchen','light.hall'],
+    spreadAll:['light.kitchen','light.garage'],
+    none:[],
+  };
+  const out={};
+  for (const [k,v] of Object.entries(cases)) {
+    await window.select(v);
+    out[k]=window.probe();
+  }
+  const withSel=Object.entries(out).filter(([k])=>k!=='none').map(([,v])=>v);
+  out._summary={
+    neverCovers: withSel.every(v=>!v.coversSelection),
+    alwaysInside: Object.values(out).every(v=>v.insideCanvas),
+    maxCentreDist: Math.max(...withSel.map(v=>v.centreDistFrac||0)),
+  };
+  return out;
+};
+
+// It must not move on an unrelated state tick, or it will twitch constantly.
+window.stability=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const a=window.probe().panel;
+  for (let i=0;i<5;i++){ card.updateLights(); await tick(120); }
+  const b=window.probe().panel;
+  // a brightness change on an unrelated light
+  hass.states['light.garage']={...hass.states['light.garage'],
+    attributes:{...hass.states['light.garage'].attributes, brightness:120}};
+  card.hass=hass; await tick(300);
+  const c=window.probe().panel;
+  return {first:a, afterFiveTicks:b, afterUnrelatedStateChange:c,
+    stable: a.join()===b.join() && b.join()===c.join()};
+};
+
+// A hand-placed panel must win over any automatic placement.
+window.handPlaced=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const auto=window.probe().panel;
+  // drop it somewhere deliberate
+  card._saveFloatingPos({ fx: 0.05, fy: 0.60 });
+  card._applyFloatingPos();
+  await tick(200);
+  const placed=window.probe().panel;
+  await window.select(['light.garage']);   // selection moves to the far corner
+  const afterReselect=window.probe().panel;
+  return {auto, placed, afterReselect,
+    handPlacedWins: placed.join()===afterReselect.join()};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>
