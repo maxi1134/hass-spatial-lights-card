@@ -253,6 +253,17 @@ placement measured it.
 `_placeFloatingControls` out of the file rather than re-implementing it, and it fails on the pre-hold
 code with the panel taking three distinct positions and 16 style writes across eight ticks.
 
+**The panel is an obstacle for the LABELS too.** `_repositionLabels` scores label directions
+against other markers, already-placed labels and canvas clipping, but knew nothing about the
+panel -- which barely mattered while it parked at an end of the plan and matters a lot now that
+it sits beside the selection. Its rect goes into `placedRects` before the greedy loop, so a
+direction landing under the panel pays the same 50 as one landing under another label: enough to
+prefer a clear side, not enough to beat the 1000-point "belongs to the wrong light" constraint.
+The two halves meet in the middle -- placement clears the label BAND via `soft`, because a
+label's WIDTH is its own `offsetWidth` and that is only known HERE, after placement has run.
+Reading the rect here is safe and free: `updateLights` calls `_placeFloatingControls` before
+`_repositionLabels`, and this method already flushes layout for `offsetWidth`.
+
 `.harness/controls-place.html` drives the rest: `sweep()` walks a selection round every corner and edge and
 reports overlap, gap and whether the box stayed inside the canvas; `stability()` asserts it does not move
 across five ticks and an unrelated state change; `handPlaced()` asserts a dropped position survives a
