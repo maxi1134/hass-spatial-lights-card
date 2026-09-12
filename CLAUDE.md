@@ -588,6 +588,35 @@ to contain it. `minLen` is a floor near the real size for the same reason: 20000
 chars waves through a 40000-char amputation. Verified against both failure modes -- a stray
 backtick, and a truncation that `node --check` passes.
 
+## 8i. The entity list is a responsive grid
+
+`.entity-list` is `grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr))`. That
+one line is the whole feature: the browser fits as many tracks as the section body can hold and
+shares the remainder, so the column count follows the editor's width with no JS, no breakpoints and
+no ResizeObserver. Measured 1 / 1 / 1 / 1 / 2 / 3 / 4 columns across dialog widths 380 to 1990, and
+in HA's own narrow edit-card column it resolves to a single track -- byte-for-byte the old layout.
+
+**`min(280px, 100%)`, never a bare `280px`.** The floor in `minmax()` is a HARD minimum, so in a
+container narrower than the floor the track overflows it rather than shrinking. Measured before
+clamping: a 212px list laid out a 240px card that stuck out the side. HA's edit dialog reaches that
+width on a phone.
+
+**280 is measured, not chosen.** A row is an icon, a name, an entity_id and two buttons, about 110px
+of which is chrome. At a 240px floor a 1500px dialog packed four 253px columns and clipped 10 of 12
+entity_ids and 3 of 12 names. At 280 nothing clipped at any width from 560px up, while still giving
+2/3/4 columns. Floors above 280 bought no extra legibility, only fewer columns. Below ~317px of list
+width everything truncates whatever the layout does, which is the single-column behaviour that was
+always there.
+
+**`.entity-item.expanded { grid-column: 1 / -1; }` is what makes it usable.** The overrides panel is
+a stack of label+control rows that is unreadable in a 280px cell, so the open card takes the whole
+row. This can never fight a second spanning row because only ONE entity is ever expanded --
+`_expandedEntity` is a single value and `toggleExpand` clears the class from every other item.
+
+Nothing in the markup or the JS changed. The names and ids already carried
+`min-width: 0` + `text-overflow: ellipsis`, which is why narrow cells degrade instead of overflowing,
+and nothing measures entity-item geometry, so there was no layout code to keep in step.
+
 ## 8h. The editor markup is one template literal, so structure needs a test
 
 An unclosed `<div>` in the editor template does not throw. The HTML parser

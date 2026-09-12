@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.31.1 (fork-maxi1134)';
+  static BUILD = 'v1.32.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -12254,7 +12254,36 @@ class SpatialLightColorCardEditor extends HTMLElement {
       .section.collapsed .section-body { display: none; }
       .section-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
 
-      .entity-list { display: flex; flex-direction: column; gap: 4px; }
+      /* A responsive grid, not a column. auto-fill + minmax is the whole
+         mechanism: the browser fits as many 240px tracks as the section body
+         can hold and shares the remainder between them, so the column count
+         follows the editor's width with no JS and no breakpoints. In HA's
+         narrow edit-card column (~315px measured) that resolves to a single
+         track, i.e. exactly the old layout.
+         280px is measured, not guessed: a row is an icon, a name, an
+         entity_id and two buttons, and roughly 110px of that is chrome. At a
+         240px floor a 1500px dialog packed four 253px columns and clipped 10
+         of 12 entity_ids and 3 of 12 names; at 280 nothing clipped at any
+         width tested while still giving 2 / 3 / 4 columns. Wider floors than
+         280 bought no extra legibility, only fewer columns.
+         align-items: start keeps each card its natural height instead of
+         stretching every card in a row to match the tallest. */
+      .entity-list {
+        display: grid;
+        /* min(240px, 100%) rather than a bare 240px: the floor in minmax() is
+           a HARD minimum, so in a container narrower than the floor the track
+           overflows it. Measured before clamping: a 212px list still laid out
+           a 240px card and it stuck out the side. HA's edit dialog gets this
+           narrow on a phone, and the floor is wider now. */
+        grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+        gap: 4px;
+        align-items: start;
+      }
+      /* The open one takes the full width. Only ONE entity is ever expanded
+         (_expandedEntity is a single value, and toggleExpand clears the rest),
+         so this can never fight another spanning row -- and the overrides panel
+         is a stack of label+control rows that is unusable in a 240px cell. */
+      .entity-item.expanded { grid-column: 1 / -1; }
       .entity-item {
         border: 1px solid var(--divider-color, rgba(0,0,0,0.08));
         border-radius: 8px; overflow: hidden;
