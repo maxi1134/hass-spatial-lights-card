@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.33.1 (fork-maxi1134)';
+  static BUILD = 'v1.34.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -166,6 +166,29 @@ class SpatialLightColorCard extends HTMLElement {
     /** Touch affordances */
     this._longPressTimer = null;
     this._longPressTriggered = false;
+    /**
+     * The light the armed hold belongs to, plus the pointer type that armed
+     * it. Android raises `contextmenu` from the same touch long-press that
+     * arms `_longPressTimer`, and that event carries no pointerType — this is
+     * how `_handleCanvasContextMenu` tells a finger from a right-click.
+     * Lives until pointerup/cancel, not until the timer fires, because the
+     * contextmenu can arrive on either side of it.
+     */
+    this._holdArm = null;
+    this._holdPulseTimer = null;    // one-shot ring pulse after a hold-to-add
+    /**
+     * When the last light hold was PERFORMED (ms epoch), or null. The durable
+     * half of the once-per-gesture latch.
+     *
+     * `_longPressTriggered` and `_holdArm` are NOT enough on their own: both
+     * are cleared by `_onPointerUp` and by `_cancelActiveInteractions`, and
+     * Android's real sequence is timer -> pointercancel -> contextmenu. By the
+     * time the menu arrives both guards read "no hold here" and it falls
+     * through to more-info, which then opens on top of the selection the hold
+     * just edited. Measured: the light is added AND the dialog appears.
+     * Nothing clears this except the next arm.
+     */
+    this._longPressHandledAt = null;
     this._pendingTap = null;
     this._lastTap = null;
     /**
@@ -3685,6 +3708,12 @@ class SpatialLightColorCard extends HTMLElement {
           ? `aspect-ratio: ${this._viewAspectRatio().w} / ${this._viewAspectRatio().h}; height: auto;`
           : `height: ${this._config.canvas_height}px;`}
         overflow: hidden; user-select: none; touch-action: none;
+        /* iOS honours the prefixed pair only, and the hold on a light is now
+           long enough to be seen: it used to be masked by more-info opening
+           instantly, and with a selection live it no longer opens anything.
+           Without these, holding a marker raises the selection callout over
+           the light's label instead. */
+        -webkit-user-select: none; -webkit-touch-callout: none;
       }
       /* Locked mode with canvas_touch_scroll: touch-action auto, with gesture
          ownership decided in JS (_handleCanvasTouchMove) on the first
@@ -3995,6 +4024,21 @@ class SpatialLightColorCard extends HTMLElement {
       .light.selected.off.minimal-ui { --light-dim: 1; }
       /* Always show label for selected lights */
       .light.selected .light-label { opacity: 1; }
+
+      /* Long-press membership feedback. The ring arriving or leaving is the
+         real answer, but the finger that caused it is parked on the marker, so
+         the confirmation has to happen in the halo AROUND it. The shadow is on
+         .light itself and not on ::before (the selection ring) or ::after (the
+         "on" bloom) — both are already spoken for, and animating either would
+         mean the pulse fighting the very ring it is confirming. */
+      .light.hold-pulse-in { animation: sle-hold-pulse-in 400ms ease-out; }
+      @keyframes sle-hold-pulse-in {
+        from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-primary) 75%, transparent); }
+        to { box-shadow: 0 0 0 18px color-mix(in srgb, var(--accent-primary) 0%, transparent); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .light.hold-pulse-in { animation: none; }
+      }
       /* Dim unselected lights when a selection is active to increase contrast */
       .canvas.has-selection .light:not(.selected) {
         --light-desat: brightness(0.55) saturate(0.6); --light-dim: 0.6;
@@ -6210,6 +6254,11 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._visPolyCache) this._visPolyCache.clear();
     this._pendingTap = null;
     this._longPressTriggered = false;
+    this._holdArm = null;
+    if (this._holdPulseTimer) {
+      clearTimeout(this._holdPulseTimer);
+      this._holdPulseTimer = null;
+    }
     this._moreInfoOpen = false;
     this._largeWheelGesture = null;
     this._cancelLiveWheelThrottle();
@@ -6566,6 +6615,109 @@ class SpatialLightColorCard extends HTMLElement {
     this.updateLights();
   }
 
+  /**
+   * The payload of a long-press on a light, shared by the hold timer and by
+   * Android's `contextmenu` (the same ~500 ms touch hold raises both, and they
+   * race). Idempotent through `_longPressTriggered`: whichever arrives first
+   * performs the gesture, the other is swallowed.
+   *
+   * With an EMPTY selection it opens more-info, exactly as before. With a
+   * selection live it ADDS this light to the group — one direction, never a
+   * toggle.
+   *
+   * Add rather than toggle, deliberately. Shift-click and Enter can toggle
+   * because they SHOW what they are about to do: the modifier is held and felt,
+   * and the Enter path has a focus ring on the light it will act on. A hold has
+   * no arming state at all — the finger is down and the marker is underneath
+   * it, with the selection ring hidden by the fingertip — so the outcome would
+   * depend on membership the user cannot currently see. And the natural
+   * response to a gesture that seemed not to register is to repeat it, which
+   * under a toggle silently removes what the first hold added. Add is monotone:
+   * no hold on any light ever makes the group smaller, so repeating is always
+   * safe. Removal keeps the homes it already has — Shift/Ctrl/Meta-click, Enter
+   * on a focused light, and tapping empty canvas to clear.
+   *
+   * Entities that can never join a selection (`binary_sensor`, per
+   * `_isSelectableEntity`) keep more-info in both states — there is nothing
+   * for the selection branch to do, and a gesture that does nothing reads as
+   * a broken card.
+   */
+  _applyHoldGesture(entity, pointerType) {
+    if (this._longPressTriggered || this._longPressJustHandled()) return;
+    this._longPressTriggered = true;
+    this._longPressHandledAt = Date.now();
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+    // The hold has consumed the gesture: the release must not also tap-select,
+    // and it must not count towards the double-tap-to-toggle window.
+    this._pendingTap = null;
+    this._lastTap = null;
+    const canBuzz = pointerType !== 'mouse' && typeof navigator !== 'undefined' && !!navigator.vibrate;
+
+    if (this._selectedLights.size === 0 || !this._isSelectableEntity(entity)) {
+      if (canBuzz) navigator.vibrate(30);
+      this._openMoreInfo(entity);
+      return;
+    }
+
+    // Already a member: adding is the identity operation, so skip the commit
+    // rather than pushing an identical Set through updateLights().
+    const already = this._selectedLights.has(entity);
+    const next = new Set(this._selectedLights);
+    if (!already) {
+      next.add(entity);
+      this._commitSelection(next);
+    }
+    // The no-op case still did real work: `_longPressTriggered` above is what
+    // stops the RELEASE running the tap path, and a tap REPLACES the selection
+    // with this one light. So holding a marker that is already selected
+    // actively protects the group the same press would otherwise have wiped.
+    // Feedback fires either way, because a gesture that reports nothing is a
+    // gesture the user repeats -- and repeating is only safe because this adds.
+    this._pulseLight(entity);
+    if (canBuzz) navigator.vibrate(30);
+    const friendly = this._hass?.states?.[entity]?.attributes?.friendly_name || entity;
+    this._announce(`${already ? 'Already selected' : 'Added'} ${friendly}. ` +
+      `${next.size} ${next.size === 1 ? 'light' : 'lights'} selected`);
+  }
+
+  /**
+   * True while the last completed hold is recent enough that a `contextmenu`
+   * arriving now belongs to it. Bounded well under the 500ms hold delay plus
+   * the arm-site reset, so it can never swallow a deliberate second hold.
+   */
+  _longPressJustHandled() {
+    return this._longPressHandledAt != null
+      && (Date.now() - this._longPressHandledAt) < 1000;
+  }
+
+  /**
+   * One-shot ring pulse on a marker, so a hold that lands under the user's own
+   * finger still reports itself in the halo around it. The class is dropped by
+   * a timer rather than `animationend`, because `prefers-reduced-motion` makes
+   * the animation a no-op and that event would then never fire.
+   */
+  _pulseLight(entity) {
+    if (!this.shadowRoot) return;
+    const node = this.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(entity)}"]`);
+    if (!node) return;
+    node.classList.remove('hold-pulse-in');
+    // Re-adding a class in the same frame does not restart an animation; the
+    // reflow between the two writes is what does. It is one forced layout on a
+    // deliberate gesture, and `updateLights` has already flushed one above.
+    void node.offsetWidth;
+    node.classList.add('hold-pulse-in');
+    // Tracked, so two holds inside the animation cannot strand the first
+    // marker mid-pulse with its class never removed.
+    if (this._holdPulseTimer) clearTimeout(this._holdPulseTimer);
+    this._holdPulseTimer = setTimeout(() => {
+      this._holdPulseTimer = null;
+      node.classList.remove('hold-pulse-in');
+    }, 450);
+  }
+
   /** ---------- Keyboard ---------- */
   _handleKeyDown(e) {
     // True if focus is inside this card's shadow DOM, or this card is itself
@@ -6795,49 +6947,47 @@ class SpatialLightColorCard extends HTMLElement {
           this._longPressTimer = null;
         }
         this._longPressTriggered = false;
+        // Cleared HERE and nowhere else, so a deliberate second hold is never
+        // swallowed by the latch the first one set.
+        this._longPressHandledAt = null;
+        // What the hold DOES is decided when it fires, not here: a tap, a
+        // rubber band or a state change can empty the selection while the
+        // finger is still down, and the branch has to follow.
+        this._holdArm = { entity, pointerType, pointerId: e.pointerId };
         const longPressDelay = pointerType === 'mouse' ? 650 : 500;
         this._longPressTimer = setTimeout(() => {
           this._longPressTimer = null;
-          this._longPressTriggered = true;
-          this._pendingTap = null;
-          this._lastTap = null;
-          if (pointerType !== 'mouse' && typeof navigator !== 'undefined' && navigator.vibrate) {
-            navigator.vibrate(30);
-          }
-          this._openMoreInfo(entity);
+          this._applyHoldGesture(entity, pointerType);
         }, longPressDelay);
-        if (pointerType === 'touch' || pointerType === 'pen') {
-          this._pendingTap = {
-            entity,
-            pointerId: e.pointerId,
-            startX: e.clientX,
-            startY: e.clientY,
-            additive,
-            pointerType,
-            toggleOnSingleTap,
-          };
-        } else {
-          if (toggleOnSingleTap) {
-            const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-            const isRepeat = this._lastTap && this._lastTap.entity === entity && (now - this._lastTap.time) < 350;
-            if (!isRepeat) {
-              this._toggleEntity(entity);
-            }
-            this._lastTap = { entity, time: now };
-            return;
+        if (pointerType === 'mouse' && toggleOnSingleTap) {
+          // switch_single_tap on a mouse keeps its press-to-toggle: it is not a
+          // selection, so the hold has nothing to race it for. (Touch defers
+          // the same toggle to pointerup via `_pendingTap`, where the hold can
+          // still cancel it.) The hold timer stays armed on purpose — with
+          // tap spent on toggling, the hold is the only route to more-info.
+          const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const isRepeat = this._lastTap && this._lastTap.entity === entity && (now - this._lastTap.time) < 350;
+          if (!isRepeat) {
+            this._toggleEntity(entity);
           }
-          if (this._isSelectableEntity(entity)) {
-            const newSelection = new Set(this._selectedLights);
-            if (additive) {
-              if (newSelection.has(entity)) newSelection.delete(entity);
-              else newSelection.add(entity);
-            } else {
-              newSelection.clear();
-              newSelection.add(entity);
-            }
-            this._commitSelection(newSelection);
-          }
+          this._lastTap = { entity, time: now };
+          return;
         }
+        // Selection now lands on RELEASE for every pointer type. It used to
+        // commit on mouse-DOWN, which cannot coexist with hold-to-add: the
+        // press had already replaced the selection with this one light, so
+        // 650 ms later there was nothing left to add it to. The pointerup
+        // path is the same code the touch branch has always used, and its
+        // `isTouch` guards already give the mouse exactly the old semantics.
+        this._pendingTap = {
+          entity,
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          additive,
+          pointerType,
+          toggleOnSingleTap,
+        };
         return;
       }
 
@@ -7005,6 +7155,9 @@ class SpatialLightColorCard extends HTMLElement {
           clearTimeout(this._longPressTimer);
           this._longPressTimer = null;
         }
+        // The hold is abandoned, so a contextmenu Android still raises for it
+        // must fall through to plain more-info rather than edit the selection.
+        this._holdArm = null;
         this._pendingTap = null;
         this._lastTap = null;
       }
@@ -7247,6 +7400,7 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     this._longPressTriggered = false;
+    this._holdArm = null;
 
     // Handle canvas element tap
     if (this._elementLongPressTimer) {
@@ -7402,6 +7556,20 @@ class SpatialLightColorCard extends HTMLElement {
     const entity = targetLight.dataset.entity;
     if (!entity) return;
     e.preventDefault();
+    // Android raises contextmenu from the SAME ~500ms touch hold that arms
+    // `_longPressTimer`, so the two race and either can land first.
+    // If the timer already ran, the gesture is spent: swallow the menu and do
+    // nothing. (This is also what stops the pre-existing double
+    // `_openMoreInfo` on Android — the old code re-opened it here.)
+    if (this._longPressTriggered || this._longPressJustHandled()) return;
+    // A touch hold has to take the hold path, or Android alone would get
+    // more-info where every other platform edits the selection.
+    if (this._holdArm && this._holdArm.entity === entity && this._holdArm.pointerType !== 'mouse') {
+      this._applyHoldGesture(entity, this._holdArm.pointerType);
+      return;
+    }
+    // Mouse right-click: more-info, unconditionally and whatever is selected.
+    // With the hold reassigned on touch, this is the desktop escape hatch.
     // Cancel any long-press timer started by the matching pointerdown so the
     // long-press doesn't double-fire `_openMoreInfo` ~500ms after the contextmenu.
     if (this._longPressTimer) {
@@ -7409,6 +7577,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._longPressTimer = null;
     }
     this._longPressTriggered = false;
+    this._holdArm = null;
     this._pendingTap = null;
     this._openMoreInfo(entity);
     this._lastTap = null;
@@ -7463,6 +7632,7 @@ class SpatialLightColorCard extends HTMLElement {
     }
     this._pendingTap = null;
     this._longPressTriggered = false;
+    this._holdArm = null;
     // Color-wheel gesture state
     this._cancelLiveWheelThrottle();
     this._suppressPresetClick = false;

@@ -125,7 +125,7 @@ resources:
 | Action | Desktop | Mobile |
 |--------|---------|--------|
 | Select a single light | Click | Tap |
-| Add/remove from selection | Shift+Click, Ctrl+Click, or Cmd+Click | — |
+| Add/remove from selection | Shift+Click, Ctrl+Click, Cmd+Click, or long-click (~650 ms) | Long-press a light (~500 ms) |
 | Select area (marquee) | Click and drag on empty canvas | Drag on empty canvas (a near-vertical drag scrolls instead — start at an angle, or hold ~0.3 s first) |
 | Add area to selection | Shift/Ctrl/Cmd + drag on empty canvas | — |
 | Select all lights | Ctrl+A / Cmd+A | — |
@@ -151,9 +151,19 @@ The **power button** sits at the start of the presets row — under the sliders 
 
 | Action | Desktop | Mobile |
 |--------|---------|--------|
-| Open more-info panel | Long-click (~650 ms) or right-click | Long-press (~500 ms) |
+| Open more-info panel | Right-click, or long-click (~650 ms) with nothing selected | Long-press (~500 ms) with nothing selected |
 
 The more-info panel is the standard Home Assistant entity dialog where you can see attributes, history, and settings.
+
+> **The long-press does two jobs, and the selection decides which.** With nothing selected it opens
+> more-info, as above. While lights *are* selected it **adds** the light you pressed to the group —
+> a phone has no Shift key, so this is the only gesture left that can build a selection by hand.
+> It only ever adds: holding a light that is already selected leaves the group exactly as it was, so
+> a press you are not sure registered is always safe to repeat. To remove one, Shift/Ctrl-click it on
+> a desktop, or press Enter with it focused; to drop the whole group, tap empty canvas or press
+> Escape. To reach more-info while a selection is live, clear the selection first and then
+> long-press — or right-click, which opens more-info on a desktop whatever is selected. Entities that
+> cannot be selected at all (binary sensors) keep long-press-for-more-info in both states.
 
 ### Colour bars
 
@@ -307,7 +317,8 @@ Position history stores up to 50 steps.
 4. Enable **live colors** to see and reuse colors already present in the room.
 5. Hover over a preset (or long-press on mobile) to see which lights currently have that color.
 6. Use **Ctrl+A** to quickly select all lights for batch adjustments.
-7. Right-click (or long-press on mobile) any light to open its full detail panel.
+7. Right-click (or long-press on mobile with nothing selected) any light to open its full detail panel.
+8. On mobile, long-press lights one after another to build a group — each press adds one, and pressing an already-selected light changes nothing, so it is safe to repeat.
 
 ---
 

@@ -85,7 +85,56 @@
 **Pointer events (`_attachEventListeners`):** All canvas pointer events flow into `_onPointerDown` / `_onPointerMove` / `_onPointerUp` / `_onPointerCancel`. `_handleCanvasContextMenu` opens more-info on right-click and clears any pending long-press.
 
 **Modes:**
-- Locked (default `_lockPositions = true`): tap → select / toggle (per `switch_single_tap`); 500 ms long-press → more-info. The canvas gets `touch-action: pan-y pinch-zoom` (class `touch-scroll`, gated by `canvas_touch_scroll`) so vertical swipes scroll the page.
+- Locked (default `_lockPositions = true`): tap → select / toggle (per `switch_single_tap`); 500 ms long-press (650 ms mouse) → `_applyHoldGesture`. The canvas gets `touch-action: pan-y pinch-zoom` (class `touch-scroll`, gated by `canvas_touch_scroll`) so vertical swipes scroll the page.
+
+**The long-press is selection-dependent, and that is the whole touch story.** With an EMPTY
+selection it opens more-info, as it always did. With a selection live it ADDS that light to the
+group, because a phone has no Shift key and the hold is the only gesture left that can say "and this
+one too". `binary_sensor` (anything `_isSelectableEntity` refuses) keeps more-info in both states:
+there is nothing for the selection branch to do, and a gesture that does nothing reads as broken.
+
+**Add, never toggle, and the reason is that a hold has no arming state.** Shift-click and Enter can
+toggle because they SHOW what they are about to do — the modifier is held and felt, the Enter path
+has a focus ring on its target. A hold shows nothing: the finger is down and the marker is under it,
+with the selection ring hidden by the fingertip, so a toggle's outcome would depend on membership the
+user cannot see. The failure compounds, because the natural response to a gesture that seemed not to
+register is to repeat it — and a toggle's second hold silently removes what the first one added. Add
+is monotone: no hold ever makes the group smaller, so repeating is always safe. Removal keeps the
+homes it has (Shift/Ctrl/Meta-click, Enter on a focused light, tap empty canvas to clear).
+
+Holding an ALREADY-selected light is therefore a set no-op — but not a dead gesture. Setting
+`_longPressTriggered` is what stops the RELEASE running the tap path, and a tap REPLACES the
+selection with that one light, so the hold actively protects the group the same press would otherwise
+have wiped. The feedback fires either way, because a gesture that reports nothing is one the user
+repeats.
+
+`_applyHoldGesture(entity, pointerType)` is the single implementation, and it is IDEMPOTENT through
+`_longPressTriggered` **plus the durable `_longPressHandledAt` timestamp** because two events race
+for it: the `_longPressTimer` callback, and the `contextmenu` Android raises from the same ~500 ms
+hold. The boolean alone is not enough — `_onPointerUp` and `_cancelActiveInteractions` both clear it
+AND `_holdArm`, and Android's real order is timer -> pointercancel -> contextmenu, so by the time the
+menu arrives both guards read "no hold here" and it falls through to more-info, which then opens on
+top of the selection the hold just edited. Measured in a browser: the light was added AND the dialog
+appeared. `_longPressHandledAt` is cleared ONLY at the arm site, so it cannot be wiped by the very
+events it exists to survive, and its 1000 ms window cannot swallow a deliberate second hold (which
+needs 500 ms of press to even start). `.harness/hold-gesture.test.js` pins it; removing the guard
+makes that one case fail and the rest pass. Whichever lands first performs the gesture;
+`_handleCanvasContextMenu` swallows the menu for the other. `_holdArm` (`{entity, pointerType,
+pointerId}`, armed at pointerdown, cleared at pointerup/cancel/slop) is how that handler tells a
+finger from a right-click — a `contextmenu` event carries no `pointerType`. Mouse right-click is
+therefore still unconditional more-info, and with the hold reassigned on touch it is the desktop
+escape hatch. On touch the escape is to clear the selection first (a tap on empty plan, or Escape),
+which is one tap and already existed.
+
+**Selection commits on RELEASE for every pointer type**, via `_pendingTap`. It used to commit on
+mouse-DOWN, which cannot coexist with hold-to-add: the press had already replaced the selection with
+the one light under the cursor, so 650 ms later there was nothing left to add it to. The mouse now
+walks the same `_onPointerUp` path touch always used, whose `isTouch` guards give it exactly the old
+semantics. Two deliberate consequences: a mouse press that slides >12 px off the marker no longer
+selects it (`_onPointerMove`'s slop cancel now applies to the mouse too), and `switch_single_tap` on
+a mouse is the one branch that still fires at pointerdown — it is a toggle, not a selection, so the
+hold has nothing to race it for. `.harness/hold-gesture.test.js` extracts both methods out of the
+shipped file and drives the race, the toggle-out, the `binary_sensor` fallback and the haptics.
 - Edit positions (`_editPositionsMode`): tap → select; drag → reposition; arrow keys nudge. This is **editor-session state, never config**: the editor broadcasts `spatial-card-edit-mode` window events (and answers `spatial-card-preview-hello` from recreated preview cards); only a card inside `hui-card-preview` (`_isInsideEditorPreview`) honors them. Legacy `_edit_positions`/`_editor_id` keys in saved configs are ignored by the card and stripped by the editor.
 - Rubber-band: a pointerdown on empty canvas arms `_selectionStart`/`_selectionPointerId`; the `.selection-box` materializes only after 5 px of movement, hit-testing is rAF-coalesced and diffed, and a completed tap (not pointerdown) is what deselects. Touch ownership is decided in JS, not by touch-action: the canvas is `touch-action: auto` (class `touch-scroll`) and `_handleCanvasTouchMove` (non-passive) rules on the first cancelable touchmove — movement within ~22° of vertical is declined to the browser (native scroll → pointercancel, selection kept, box never created thanks to a touch gate on box creation), anything else claims `_selectionTouchClaim = 'select'` and preventDefaults every subsequent touchmove so the marquee can then travel in any direction. A ~300 ms still hold (`_selectionHoldTimer`) claims 'select' outright for deliberately vertical box drags; `_handleCanvasContextMenu` swallows Android's ~500 ms long-press contextmenu while claimed.
 - Preset hold-to-preview sets `_suppressPresetClick` so the synthesized click on release never applies the preset.

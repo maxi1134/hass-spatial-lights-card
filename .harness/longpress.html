@@ -1,0 +1,174 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Long-press to add</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:720px}</style>
+</head><body><div id="host"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const ids=['light.a','light.b','light.c','switch.fan','binary_sensor.door'];
+const states={};
+ids.forEach((i,n)=>{
+  const [dom]=i.split('.');
+  states[i]={entity_id:i,state:'on',attributes:{friendly_name:i.split('.')[1],
+    ...(dom==='light'?{brightness:255,rgb_color:[255,170,80],color_mode:'rgb',
+      supported_color_modes:['rgb','color_temp'],min_color_temp_kelvin:2000,
+      max_color_temp_kelvin:6500,color_temp_kelvin:3000}:{})}};
+});
+const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+ connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+
+const POS={'light.a':{x:20,y:25},'light.b':{x:50,y:25},'light.c':{x:80,y:25},
+  'switch.fan':{x:35,y:70},'binary_sensor.door':{x:65,y:70}};
+const CFG=(over)=>Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+  positions:JSON.parse(JSON.stringify(POS)), aspect_ratio:'16:10',
+  background_image:{url:'floorplan.svg'}, controls_below:true},over||{});
+
+let card, moreInfoEvents=[];
+window.mount=async function(over){
+  try{localStorage.clear();}catch(_){}
+  moreInfoEvents=[];
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(CFG(over)); card.hass=hass; host.appendChild(card);
+  await tick(650);
+  // more-info is a bubbling, composed CustomEvent, so it reaches window.
+  // Remove the previous listener first: mount() runs several times per test and
+  // stacking them made one real event look like three or four.
+  if (window._miListener) window.removeEventListener('hass-more-info', window._miListener);
+  window._miListener=(e)=>{ moreInfoEvents.push(e.detail && e.detail.entityId); };
+  window.addEventListener('hass-more-info', window._miListener);
+  window.card=card; return true;
+};
+
+const lightEl=(id)=>card.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(id)}"]`);
+const centre=(el)=>{const b=el.getBoundingClientRect();return {x:b.left+b.width/2, y:b.top+b.height/2};};
+const sel=()=>[...card._selectedLights].sort();
+
+function pev(el,type,x,y,opts){
+  const e=new PointerEvent(type,Object.assign({pointerId:11,pointerType:'touch',
+    button:0,buttons:type==='pointerup'?0:1,clientX:x,clientY:y,
+    bubbles:true,cancelable:true,composed:true},opts||{}));
+  el.dispatchEvent(e);
+  return e;
+}
+
+// A real long press: press, hold past the threshold WITHOUT moving, release.
+// Delay is 650ms for mouse and 500ms otherwise, so 900 clears both.
+window.longPress=async function(id, pointerType, holdMs){
+  const el=lightEl(id); const c=centre(el);
+  try{el.setPointerCapture=()=>{};el.releasePointerCapture=()=>{};}catch(_){}
+  pev(el,'pointerdown',c.x,c.y,{pointerType:pointerType||'touch'});
+  await tick(holdMs||900);
+  pev(el,'pointerup',c.x,c.y,{pointerType:pointerType||'touch'});
+  await tick(250);
+};
+
+// A plain tap, for contrast: press and release well under the threshold.
+window.tap=async function(id, pointerType){
+  const el=lightEl(id); const c=centre(el);
+  try{el.setPointerCapture=()=>{};el.releasePointerCapture=()=>{};}catch(_){}
+  pev(el,'pointerdown',c.x,c.y,{pointerType:pointerType||'touch'});
+  await tick(80);
+  pev(el,'pointerup',c.x,c.y,{pointerType:pointerType||'touch'});
+  await tick(250);
+};
+
+window.moreInfo=()=>moreInfoEvents.slice();
+window.clearMoreInfo=()=>{moreInfoEvents=[];};
+
+// THE HEADLINE: empty selection -> more-info; non-empty -> the light joins.
+window.core=async function(pointerType){
+  await window.mount();
+  const out={};
+  // 1. nothing selected: long press must still open more-info
+  await window.longPress('light.a', pointerType);
+  out.emptySelection={selection:sel(), moreInfo:window.moreInfo()};
+  // 2. select one by tapping, then long-press another: it must JOIN
+  await window.mount();
+  await window.tap('light.a', pointerType);
+  const afterTap=sel();
+  window.clearMoreInfo();
+  await window.longPress('light.b', pointerType);
+  out.withSelection={before:afterTap, after:sel(), moreInfo:window.moreInfo()};
+  // 3. a third one keeps accumulating
+  await window.longPress('light.c', pointerType);
+  out.third={selection:sel(), moreInfo:window.moreInfo()};
+  out.pass = out.emptySelection.moreInfo.length===1
+          && out.emptySelection.selection.length===0
+          && out.withSelection.after.join()==='light.a,light.b'
+          && out.withSelection.moreInfo.length===0
+          && out.third.selection.join()==='light.a,light.b,light.c'
+          && out.third.moreInfo.length===0;
+  return out;
+};
+
+// Long-pressing a light that is ALREADY in the group.
+window.repeat=async function(pointerType){
+  await window.mount();
+  await window.tap('light.a', pointerType);
+  await window.longPress('light.b', pointerType);
+  const two=sel();
+  window.clearMoreInfo();
+  await window.longPress('light.b', pointerType);   // same light again
+  return {afterTwo:two, afterRepeat:sel(), moreInfo:window.moreInfo()};
+};
+
+// The press must not ALSO act as a tap when it is released.
+window.noDoubleAction=async function(pointerType){
+  await window.mount();
+  await window.tap('light.a', pointerType);
+  const before=sel();
+  await window.longPress('light.b', pointerType);
+  const after=sel();
+  // a tap would have REPLACED the selection with just light.b
+  return {before, after, tapDidNotAlsoFire: after.length>1};
+};
+
+// Android raises contextmenu on a touch long-press: more-info must not
+// sneak in that way while a selection exists.
+window.androidContextMenu=async function(){
+  await window.mount();
+  await window.tap('light.a');
+  window.clearMoreInfo();
+  const el=lightEl('light.b'), c=centre(el);
+  try{el.setPointerCapture=()=>{};el.releasePointerCapture=()=>{};}catch(_){}
+  pev(el,'pointerdown',c.x,c.y,{pointerType:'touch'});
+  await tick(900);
+  el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,composed:true,
+    clientX:c.x,clientY:c.y}));
+  pev(el,'pointerup',c.x,c.y,{pointerType:'touch'});
+  await tick(300);
+  return {selection:sel(), moreInfo:window.moreInfo(), noMoreInfoLeak:window.moreInfo().length===0};
+};
+
+// Right-click is mouse-only and is the deliberate escape hatch to more-info.
+window.rightClick=async function(){
+  await window.mount();
+  await window.tap('light.a','mouse');
+  window.clearMoreInfo();
+  const el=lightEl('light.b'), c=centre(el);
+  el.dispatchEvent(new PointerEvent('pointerdown',{pointerId:12,pointerType:'mouse',button:2,
+    buttons:2,clientX:c.x,clientY:c.y,bubbles:true,cancelable:true,composed:true}));
+  el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,composed:true,
+    clientX:c.x,clientY:c.y}));
+  await tick(300);
+  return {selection:sel(), moreInfo:window.moreInfo(), stillReachable:window.moreInfo().length===1};
+};
+
+// Non-light entities: a switch/binary_sensor while a group is selected.
+window.nonLight=async function(){
+  await window.mount();
+  await window.tap('light.a');
+  window.clearMoreInfo();
+  await window.longPress('switch.fan');
+  const afterSwitch={selection:sel(), moreInfo:window.moreInfo()};
+  window.clearMoreInfo();
+  await window.longPress('binary_sensor.door');
+  return {afterSwitch, afterBinary:{selection:sel(), moreInfo:window.moreInfo()}};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>
