@@ -32,7 +32,7 @@ plan, walls that stop it, and controls that stay out of the way.
 | **[Uncropped plans](#background-image)** | The canvas adopts your plan's own aspect ratio, so nothing is cropped, stretched or letterboxed at any card width. |
 | **[Rotating the plan](#-rotating-the-plan)** | Turn the whole layout 90/180/270°: lights, zones, walls, image and emission directions together. Non-destructive — nothing you placed is rewritten. |
 | **[The full-size editor](#-the-full-size-editor)** | Draw walls and place lights on a near-fullscreen plan instead of a 250px preview pane. |
-| **[Colour bars](#colour-bars)** | The colour wheel is replaced by four full-width bars: brightness, saturation, hue, temperature. Easier to aim than a 128px circle. |
+| **[Colour bars](#colour-bars)** | The colour wheel is replaced by four full-width bars: brightness, colour, saturation, temperature. Easier to aim than a 128px circle. |
 | **[Draggable controls](#overlaid-controls)** | Overlaid controls can be dragged anywhere on the plan, remember where you put them, and compress on narrow cards. |
 | **[Script buttons](#script-buttons)** | Run any script, scene or service against the lights you have selected, from a button in the controls. |
 
@@ -77,7 +77,7 @@ over projected light.
 - Drawable walls, and doors that stop blocking light when an entity says they are open.
 - Plan rotation in quarter turns, applied as a view transform so your coordinates are never rewritten.
 - A full-size editor for drawing walls and placing lights.
-- Four full-width control bars (brightness, saturation, hue, temperature) at a configurable height.
+- Four full-width control bars (brightness, colour, saturation, temperature) at a configurable height.
 - Overlaid controls you can drag, that remember their position and compress on narrow cards.
 - Script buttons that run a script, scene or service against the current selection.
 - Canvas elements: place sensor readouts, navigation links, and text labels alongside your lights.
@@ -170,9 +170,14 @@ The more-info panel is the standard Home Assistant entity dialog where you can s
 The controls are four stacked full-width bars:
 
 1. **Brightness** — the bar is filled with the colour the lights are showing
-   right now; sliding left to right sets the brightness.
-2. **Tint** — the pure hue on the left running to white on the right.
-3. **Hue** — the full spectrum.
+   right now, *at* their current brightness: almost black at the bottom of the
+   range, full colour at the top. Sliding left to right sets the brightness. It
+   stops at 1% rather than 0, so the bar can dim a light but never switch it off.
+2. **Colour** — the full spectrum. Picking a hue here sets it at **full
+   saturation**; use the bar below to take it back toward white.
+3. **Saturation** — the pure hue on the left running to white on the right. It
+   sits directly under the colour bar because it modifies what that bar picked,
+   and it stays wherever you put it until you pick a new colour.
 4. **Temperature** — warm on the left, cool on the right.
 
 - **Tap/click** anywhere along a bar to jump straight to that value.

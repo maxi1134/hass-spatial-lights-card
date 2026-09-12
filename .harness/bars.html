@@ -1,0 +1,185 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Color bars</title>
+<style>body{margin:0;background:#141414;color:#ddd;font:12px system-ui;padding:12px}
+ #host{width:520px}</style></head><body>
+<div id="host"></div><pre id="log" style="color:#7fd18b"></pre>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+const ids=['light.a','light.b'];
+const states={};
+ids.forEach(i=>states[i]={entity_id:i,state:'on',attributes:{friendly_name:i.split('.')[1].toUpperCase(),
+  brightness:255,rgb_color:[247,202,160],color_mode:'rgb',supported_color_modes:['rgb','color_temp'],
+  min_color_temp_kelvin:2000,max_color_temp_kelvin:6500,color_temp_kelvin:3000}});
+const calls=[];
+const hass={states,entities:{},
+  callService:(d,srv,data)=>{calls.push([d,srv,JSON.stringify(data)]);return Promise.resolve();},
+  callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let card;
+window.boot=async function(){
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:30,y:40},'light.b':{x:70,y:60}},
+    background_image:{url:'floorplan.svg'},
+    always_show_controls:true, controls_below:true});
+  card.hass=hass; host.appendChild(card);
+  await sleep(900);
+  document.getElementById('log').textContent='BUILD '+card.constructor.BUILD;
+  window.card=card; window.calls=calls;
+  return true;
+};
+window.probe=()=>{
+  const r=card.shadowRoot;
+  const bars=r.getElementById('colorBars');
+  const hue=r.getElementById('hueSlider'), tint=r.getElementById('tintSlider');
+  // The brightness bar IS the preview now -- its track carries the light's
+  // actual colour -- so there is no separate swatch element any more.
+  const prev=r.getElementById('brightnessSlider');
+  const cs=(el)=>el?getComputedStyle(el):null;
+  const bx=(el)=>{const b=el.getBoundingClientRect();return [Math.round(b.width),Math.round(b.height)];};
+  return {
+    barsPresent: !!bars, wheelGone: !r.getElementById('colorWheelMini'),
+    overlayGone: !r.getElementById('colorWheelOverlay'),
+    hue:{value:hue.value,min:hue.min,max:hue.max,box:bx(hue)},
+    tint:{value:tint.value,min:tint.min,max:tint.max,box:bx(tint),
+          barHue:tint.style.getPropertyValue('--bar-hue')},
+    preview:{bg:cs(prev).getPropertyValue('--bar-color').trim(),box:bx(prev)},
+    temp:{present:!!r.getElementById('temperatureSlider'),
+          box:bx(r.getElementById('temperatureSlider'))},
+    stacked: bx(bars)[0] > 300
+  };
+};
+
+// ---- the four-bar rework ----
+const svc=[];
+window.svcCalls=()=>svc.slice();
+window.clearSvc=()=>{svc.length=0;};
+
+window.mountBars=async function(over){
+  const st={};
+  ids.forEach(i=>{st[i]={entity_id:i,state:'on',attributes:{
+    friendly_name:i.split('.')[1].toUpperCase(), brightness:128,
+    rgb_color:[247,202,160], color_mode:'rgb',
+    supported_color_modes:['rgb','color_temp'],
+    min_color_temp_kelvin:2000, max_color_temp_kelvin:6500, color_temp_kelvin:3000}};});
+  const h={states:st,entities:{},
+    callService:(d,s2,data)=>{svc.push([d,s2,JSON.parse(JSON.stringify(data))]);return Promise.resolve();},
+    callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  const el=document.createElement('spatial-light-color-card');
+  el.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:30,y:40},'light.b':{x:70,y:60}},
+    background_image:{url:'floorplan.svg'},
+    always_show_controls:true, controls_below:true}, over||{}));
+  el.hass=h; host.appendChild(el);
+  await sleep(700);
+  el._selectedLights=new Set(['light.a']); el.updateLights();
+  await sleep(300);
+  window.card=el; card=el; svc.length=0;
+  return true;
+};
+
+// 2. Order on screen, top to bottom, read from the DOM rather than the source.
+window.barOrder=()=>[...card.shadowRoot.querySelectorAll('.color-bars .color-bar-input')]
+  .map(e=>e.id);
+
+// 3. The brightness bar must not be able to command an off light.
+window.brightnessFloor=()=>{
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  return {min:b.min, max:b.max, minPct:Math.round((+b.min/255)*100*10)/10};
+};
+window.dragBrightnessToMin=async function(){
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  window.clearSvc();
+  b.value=b.min; b.dispatchEvent(new Event('change',{bubbles:true}));
+  await sleep(350);
+  const calls=window.svcCalls();
+  const brights=calls.filter(c=>c[1]==='turn_on').map(c=>c[2].brightness);
+  return {min:+b.min, calls:calls.map(c=>c[0]+'.'+c[1]), brightnessesSent:brights,
+    neverZero: brights.every(x=>x==null||x>=1),
+    neverTurnedOff: !calls.some(c=>c[1]==='turn_off')};
+};
+
+// 1. Moving HUE must snap saturation to full (tint 0), and the tint bar must
+//    stay free afterwards.
+window.hueResets=async function(){
+  const hue=card.shadowRoot.getElementById('hueSlider');
+  const tint=card.shadowRoot.getElementById('tintSlider');
+  tint.value='70'; tint.dispatchEvent(new Event('input',{bubbles:true}));
+  await sleep(200);
+  const desaturated=tint.value;
+  hue.value='200'; hue.dispatchEvent(new Event('input',{bubbles:true}));
+  await sleep(250);
+  const afterHue=tint.value;
+  // now the user sets saturation deliberately; hue must NOT fight it
+  tint.value='40'; tint.dispatchEvent(new Event('input',{bubbles:true}));
+  await sleep(250);
+  const afterUserTint=tint.value;
+  return {desaturated, afterHue, afterUserTint,
+    hueSnappedToFull: afterHue==='0', tintStaysFree: afterUserTint==='40'};
+};
+
+// 4. The brightness track colour must scale with brightness.
+const previewOf=()=>{
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  return getComputedStyle(b).getPropertyValue('--bar-preview').trim();
+};
+const lum=(css)=>{const m=/rgba?\(([^)]+)\)/.exec(css); if(!m) return null;
+  const p=m[1].split(',').map(Number); return Math.round(0.2126*p[0]+0.7152*p[1]+0.0722*p[2]);};
+window.dimPreview=async function(){
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  const rows=[];
+  for (const v of [+b.min, 64, 128, 255]) {
+    b.value=String(v); b.dispatchEvent(new Event('input',{bubbles:true}));
+    await sleep(160);
+    rows.push({value:v, pct:Math.round(v/255*100), preview:previewOf(), lum:lum(previewOf())});
+  }
+  const L=rows.map(r=>r.lum);
+  return {rows,
+    monotonic: L.every((x,i)=>i===0||x>=L[i-1]),
+    minIsNearlyBlack: L[0]!=null && L[0] <= L[L.length-1]*0.10,
+    fullIsFullColour: L[L.length-1]>0};
+};
+
+// The SERVICE CALL must keep sending the TRUE colour, never the dimmed preview.
+window.colourSentUndimmed=async function(){
+  const b=card.shadowRoot.getElementById('brightnessSlider');
+  const hue=card.shadowRoot.getElementById('hueSlider');
+  b.value='13'; b.dispatchEvent(new Event('input',{bubbles:true}));   // very dim
+  await sleep(200);
+  window.clearSvc();
+  hue.value='120'; hue.dispatchEvent(new Event('input',{bubbles:true}));
+  await sleep(400);
+  const rgbCalls=window.svcCalls().filter(c=>c[2] && c[2].rgb_color).map(c=>c[2].rgb_color);
+  return {rgbCalls, sentSaturated: rgbCalls.some(c=>Math.max(...c)>200)};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'" onload="boot()"><\/script>');</script>
+</body></html>
+<script>
+window.heightProbe=async function(){
+  const out=[];
+  for (const h of [null, 12, 20, 34, 60, 120, 500, 'nonsense']) {
+    const host=document.getElementById('host'); host.innerHTML='';
+    const el=document.createElement('spatial-light-color-card');
+    const cfg={type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:30,y:40},'light.b':{x:70,y:60}},
+      background_image:{url:'floorplan.svg'}, always_show_controls:true, controls_below:true};
+    if (h!==null) cfg.color_bar_height=h;
+    el.setConfig(cfg); el.hass=hass; host.appendChild(el);
+    await new Promise(r=>setTimeout(r,350));
+    el._selectedLights.add('light.a'); el.updateLights();
+    await new Promise(r=>setTimeout(r,200));
+    const r=el.shadowRoot;
+    const hue=r.getElementById('hueSlider');
+    const rect=hue.getBoundingClientRect();
+    out.push({asked:h, normalized:el._config.color_bar_height,
+              renderedH:Math.round(rect.height),
+              yaml: el._generateYAML().split('\n').filter(l=>l.startsWith('color_bar_height'))[0]||'(omitted)'});
+  }
+  return out;
+};
+</script>

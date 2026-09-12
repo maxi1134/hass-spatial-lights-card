@@ -166,9 +166,12 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 
 ## 7. Color Picker (bars)
 
-Four stacked full-width bars are the whole control surface: **brightness** (the track carries the
-light's current colour, the axis is brightness), **tint** (the pure hue to white), **hue** (the
-spectrum), and **temperature** (the warm-to-cool ramp). They replaced both the colour wheel AND the
+Four stacked full-width bars are the whole control surface, in this order: **brightness** (the track
+carries the light's colour AT its brightness), **hue** (the spectrum), **tint** (saturation, directly
+UNDER the colour it modifies), and **temperature** (the warm-to-cool ramp). Saturation sits below hue
+because it modifies what the bar above it picked; nothing in the code keys off bar order --
+`.color-bars` is a flex column with no nth-child rules and every consumer fetches by id -- so the
+swap is two lines, but it does change tab order to match reading order. They replaced both the colour wheel AND the
 separate brightness/temperature sliders, so `.slider` and its rules are gone from the card's
 stylesheet — the editor has its own copies and is unaffected.
 
@@ -346,6 +349,49 @@ syncs the bars FROM the lights unless `_activeSliderGesture === 'color'` -- a li
 through hass and returns as state, so writing it back mid-drag would make the thumb stutter against the
 finger. The preview swatch shows the light's ACTUAL colour rather than the bars' reconstruction, because a
 dim or warm-white light has a value the bars cannot express with V pinned to 100.
+
+**Picking a hue snaps saturation to full.** `_forceFullSaturationFromHue()` runs on the two paths a
+hue change can arrive by -- `_bindSliderGesture`'s move handler and the shared keyboard `input`
+listener -- and always BEFORE `_syncColorBars`/`_colorBarsRGB`, which read `tintSlider.value` back out
+of the DOM: a late reset ships one pastel frame and seeds `_lastLiveWheelRgb` with it. On EVERY hue
+change, not just at gesture start, because the keyboard path never reaches `_bindSliderGesture`.
+
+It is deliberately NOT in `_syncColorBars` or `_updateControlValues`. Those also run when state
+arrives FROM the lights, where snapping would make a genuinely pastel bulb misreport itself as fully
+saturated and would overwrite the saturation the user had just chosen, one round trip later.
+
+The scroll-abort has to put it back. `_bindSliderGesture` reverts `el.value` on a vertical swipe, and
+without `startTint` the swipe would still have destroyed the saturation on its way past -- the gesture
+changed nothing the user can see yet snapped the bar below. `updateVisuals(revert)` suppresses the
+snap on that path.
+
+**The brightness bar floors at 1%, and cannot turn a light off.** `BRIGHTNESS_MIN = 3`, because 1% of
+255 is 2.55 and HA's own `brightness_pct: 1` resolves to `round(255/100)` = 3 -- 3 IS one percent in
+the units the service speaks, where 2 would display as 1% while actually being 0.78%. The fill is
+measured against `MIN..255` rather than `0..255`, or it disagrees with where the native thumb lands.
+Clamped at three sites, but `_handleBrightnessChange` is the one that matters: it is the only seam
+that emits a `brightness:` value, and `_pendingBrightness` can have been captured before a re-render.
+`_brightnessRatio` is untouched -- a light REPORTING 0 still renders dark; only the bar lost the
+ability to command one.
+
+**The brightness track is the colour AT that brightness.** `dimPreviewRGB` multiplies per channel,
+linearly, because the request is literally "1% of colour": at the floor a warm white lands on
+rgb(3,2,2). A gamma curve would put 1% at roughly 13% grey, which is not almost-black.
+
+Two things make it correct rather than merely dim. `--bar-preview` holds the ALREADY-DIMMED value, so
+a brightness-only repaint must not read it back and dim again -- that compounds and the track walks to
+black as you drag. `_barBaseRGB` remembers the true colour and every repaint starts from it. And the
+dim never leaves the preview: `_colorBarsRGB()` keeps V pinned at 100 and is what `rgb_color` is built
+from, because brightness is its own axis on the light -- folding it in would dim twice on an rgb bulb
+and then walk toward black as each dimmed value round-tripped through hass. Verified: with the bar at
+5%, a hue move still sends `rgb_color: [0,255,0]`.
+
+**A dimmed track is a black track, so the hairline had to adapt.** The inset was a fixed
+`rgba(0,0,0,0.18)` -- black on black once the colour is dimmed, measured 1.15:1 against the slot at
+the floor, i.e. the control becomes a hole in the panel. `dimPreviewEdge` flips the ring to a light
+one below a quarter luminance. `:disabled` also gained `filter: grayscale(1)`, because a 40%-opacity
+coloured track and a near-black live one read the same at a glance; losing the colour is what says
+unavailable.
 
 **Two traps, both hit while building this.** Vendor track pseudo-elements need their OWN rules: a browser
 that does not recognise one selector in a comma list throws away the WHOLE rule, so pairing

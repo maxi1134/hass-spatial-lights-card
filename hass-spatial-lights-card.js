@@ -16,9 +16,19 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.35.0 (fork-maxi1134)';
+  static BUILD = 'v1.36.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
+
+  /**
+   * The brightness bar's floor, in HA's own 0-255 units. The bar must not be
+   * able to turn a light off, so it stops at 1% rather than 0.
+   *
+   * 3, not 1 or 2: 1% of 255 is 2.55, and HA's own `brightness_pct: 1`
+   * resolves to `round(255 / 100)` = 3, so 3 IS one percent in the units the
+   * service speaks. 2 would display as 1% while actually being 0.78%.
+   */
+  static BRIGHTNESS_MIN = 3;
 
   /**
    * Pixel allowance for the full-size editor's canvas. Larger than the card's
@@ -1567,8 +1577,17 @@ class SpatialLightColorCard extends HTMLElement {
     const hue = Math.round(hsv.h);
     const tint = Math.round(100 - hsv.s);
     const huePct = (hue / 359) * 100;
-    const bright = Number.isFinite(avgState && avgState.brightness) ? avgState.brightness : 128;
-    const brightPct = Math.min(100, Math.max(0, (bright / 255) * 100));
+    const MIN_B = SpatialLightColorCard.BRIGHTNESS_MIN;
+    const rawBright = Number.isFinite(avgState && avgState.brightness) ? avgState.brightness : 128;
+    // Clamped to the bar's own range, so the thumb, the fill and the value all
+    // agree. A light sitting below the floor (a scene set it to 1) shows the
+    // floor rather than a thumb the input would silently clamp anyway.
+    const bright = Math.min(255, Math.max(MIN_B, Math.round(rawBright)));
+    // Measured against MIN_B..255, not 0..255, or the fill and the native
+    // thumb disagree by the width of the floor.
+    const brightPct = ((bright - MIN_B) / (255 - MIN_B)) * 100;
+    const previewRGB = SpatialLightColorCard.dimPreviewRGB(rgb, bright);
+    const previewEdge = SpatialLightColorCard.dimPreviewEdge(previewRGB);
     const range = tempRange || { min: 2000, max: 6500 };
     const temp = this._clampTemperature(
       Number.isFinite(avgState && avgState.temperature) ? avgState.temperature : 4000, range);
@@ -1583,12 +1602,48 @@ class SpatialLightColorCard extends HTMLElement {
           </div>`;
     return `
         <div class="color-bars" id="colorBars">
-          ${bar('brightness', 'brightnessSlider', 0, 255, Math.round(bright), brightPct,
-                'Brightness', `--bar-preview:rgb(${rgb.join(',')});`)}
-          ${bar('tint', 'tintSlider', 0, 100, tint, tint, 'Saturation', `--bar-hue:${hue};`)}
+          ${bar('brightness', 'brightnessSlider', MIN_B, 255, bright, brightPct,
+                'Brightness', `--bar-preview:rgb(${previewRGB.join(',')});--bar-edge:${previewEdge};`)}
           ${bar('hue', 'hueSlider', 0, 359, hue, huePct, 'Hue')}
+          ${bar('tint', 'tintSlider', 0, 100, tint, tint, 'Saturation', `--bar-hue:${hue};`)}
           ${bar('temp', 'temperatureSlider', range.min, range.max, temp, tempPct, 'Color temperature')}
         </div>`;
+  }
+
+  /**
+   * The brightness bar's track colour: the light's colour scaled by its
+   * brightness, so the bar reads almost black at 1% and full colour at 100%.
+   *
+   * Linear per channel, because the request is literally "1% of colour": at
+   * the floor (3/255) a warm white lands on rgb(3,2,2). A gamma curve would
+   * put 1% at roughly 13% grey, which is not almost-black.
+   *
+   * PREVIEW ONLY. `_colorBarsRGB()` keeps V pinned at 100 and is what
+   * `rgb_color` is built from -- brightness is its own axis on the light, and
+   * folding it into the colour would dim twice on an rgb bulb AND walk the
+   * colour toward black as each dimmed value round-tripped through hass and
+   * was dimmed again. The two renderers apply `_brightnessRatio` themselves
+   * for the same reason.
+   */
+  static dimPreviewRGB(rgb, brightness) {
+    const ratio = Number.isFinite(brightness)
+      ? Math.max(0, Math.min(1, brightness / 255))
+      : 1;
+    return [0, 1, 2].map((i) => Math.round((Number(rgb && rgb[i]) || 0) * ratio));
+  }
+
+  /**
+   * The hairline around the brightness track, chosen from the track itself.
+   *
+   * The track used to carry a fixed `rgba(0,0,0,0.18)` inset, which is black
+   * on black once the colour is dimmed: measured 1.15:1 against the slot at
+   * the 1% floor, i.e. the control becomes a hole in the panel. Flipping the
+   * ring to a light one below a quarter luminance keeps it findable at every
+   * value (measured worst case 3.20:1).
+   */
+  static dimPreviewEdge(rgb) {
+    const lum = (0.2126 * (rgb[0] || 0) + 0.7152 * (rgb[1] || 0) + 0.0722 * (rgb[2] || 0)) / 255;
+    return lum < 0.25 ? 'rgba(255,255,255,0.40)' : 'rgba(0,0,0,0.18)';
   }
 
   /** Parse a CSS color string to {r, g, b}. Returns null if unparseable. */
@@ -4579,7 +4634,10 @@ class SpatialLightColorCard extends HTMLElement {
          temperature bars individually (a light may do colour but not
          temperature), so they mute on their own rather than via the
          whole-block .disabled class. */
-      .color-bar-input:disabled { opacity: 0.4; cursor: not-allowed; }
+      /* grayscale as well as fade: a dimmed brightness track is also dark and
+         low-contrast, so opacity alone made "unavailable" and "almost off"
+         look the same. Losing the colour is what says unavailable. */
+      .color-bar-input:disabled { opacity: 0.4; cursor: not-allowed; filter: grayscale(1); }
       /* Literal stops rather than var()-driven ones: iOS caches var()-resolved
          gradients on pseudo-elements and the spectrum would stop updating. */
       /* Vendor track pseudo-elements get their OWN rules, never a shared
@@ -4596,18 +4654,22 @@ class SpatialLightColorCard extends HTMLElement {
         background: linear-gradient(90deg, #f00 0%, #ff0 16.667%, #0f0 33.333%,
           #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%);
       }
-      /* Brightness: the bar carries the light's CURRENT colour, so the whole
-         row doubles as the preview it replaced. The axis is position only --
-         no ramp -- because a ramp would read as a second colour control. */
+      /* Brightness: the bar carries the light's current colour AT its current
+         brightness, so the row doubles as the preview it replaced and reads
+         almost black at the 1% floor. Still no ramp along the axis -- a
+         gradient would read as a second colour control.
+         The hairline comes from --bar-edge rather than being a fixed black,
+         because a dimmed track IS black and a black ring on it left the
+         control invisible (measured 1.15:1 against the slot). */
       .color-bar-input.brightness::-webkit-slider-runnable-track {
         height: var(--color-bar-h, 34px); border-radius: 9px;
         background: var(--bar-preview, var(--accent-primary));
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+        box-shadow: inset 0 0 0 1px var(--bar-edge, rgba(0,0,0,0.18));
       }
       .color-bar-input.brightness::-moz-range-track {
         height: var(--color-bar-h, 34px); border-radius: 9px;
         background: var(--bar-preview, var(--accent-primary));
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.18);
+        box-shadow: inset 0 0 0 1px var(--bar-edge, rgba(0,0,0,0.18));
       }
       /* Temperature: the same warm-to-cool ramp the old slider used, in the
          bar shape. A visual affordance, not a precise readout. */
@@ -5680,7 +5742,10 @@ class SpatialLightColorCard extends HTMLElement {
     const temperature = Number.isFinite(avgState?.temperature)
       ? this._clampTemperature(avgState.temperature, tempRange)
       : this._clampTemperature(4000, tempRange);
-    const brightnessPercent = Math.min(100, Math.max(0, (brightness / 255) * 100));
+    const MIN_B = SpatialLightColorCard.BRIGHTNESS_MIN;
+    // What the BAR shows, floored to its own range so thumb and fill agree.
+    const barBrightness = Math.min(255, Math.max(MIN_B, Math.round(brightness)));
+    const brightnessPercent = ((barBrightness - MIN_B) / (255 - MIN_B)) * 100;
     const tempPercent = (tempRange.max > tempRange.min)
       ? Math.min(100, Math.max(0, ((temperature - tempRange.min) / (tempRange.max - tempRange.min)) * 100))
       : 0;
@@ -5703,12 +5768,12 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._els.tintSlider) this._els.tintSlider.value = String(tint);
       }
       this._syncColorBars();
-      if (rgb && this._els.brightnessSlider) {
-        // The brightness bar shows the light's ACTUAL colour, which is not
-        // always what the two colour bars reconstruct: a dim or warm-white
-        // light has a value they cannot express with V pinned to 100.
-        this._els.brightnessSlider.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
-      }
+      // The brightness bar shows the light's ACTUAL colour, which is not always
+      // what the two colour bars reconstruct: a dim or warm-white light has a
+      // value they cannot express with V pinned to 100. Remembered as the base
+      // here; the dim itself is applied below, after the bar's value is
+      // written, so the two can never disagree.
+      if (rgb) this._barBaseRGB = rgb.slice();
     }
 
     if (this._els.brightnessSlider) {
@@ -5716,9 +5781,11 @@ class SpatialLightColorCard extends HTMLElement {
       // it — the gesture handler is the source of truth for both the thumb
       // (`value`) and the fill (`--slider-percent` / `--slider-ratio`).
       if (!brightnessActive) {
-        this._els.brightnessSlider.value = String(brightness);
+        this._els.brightnessSlider.value = String(barBrightness);
         this._els.brightnessSlider.style.setProperty('--slider-percent', `${brightnessPercent}%`);
         this._els.brightnessSlider.style.setProperty('--slider-ratio', `${brightnessPercent / 100}`);
+        // AFTER the value write: the preview dims by reading it back.
+        this._paintBrightnessPreview();
       }
       // Fill color (`--slider-fill`) reflects the averaged color of the
       // selected lights; safe to update at any time since brightness changes
@@ -5782,15 +5849,25 @@ class SpatialLightColorCard extends HTMLElement {
   _bindSliderGesture(el) {
     if (!el) return;
 
-    const updateVisuals = () => {
+    const updateVisuals = (revert) => {
       this._updateSliderVisual(el);
       // Manually update labels since programmatic changes don't fire input events
-      if (el.id === 'brightnessSlider' && this._els.brightnessValue) {
-        const pct = Math.round((parseInt(el.value, 10) / 255) * 100);
-        this._els.brightnessValue.textContent = `${pct}%`;
+      if (el.id === 'brightnessSlider') {
+        // The track carries the colour AT this brightness, so it repaints as
+        // the thumb moves.
+        this._paintBrightnessPreview();
+        if (this._els.brightnessValue) {
+          this._els.brightnessValue.textContent =
+            `${Math.max(1, Math.round((parseInt(el.value, 10) / 255) * 100))}%`;
+        }
       } else if (el.id === 'temperatureSlider' && this._els.temperatureValue) {
         this._els.temperatureValue.textContent = `${el.value}K`;
       } else if (el.id === 'hueSlider' || el.id === 'tintSlider') {
+        // Picking a colour means picking it at full saturation. Before
+        // _syncColorBars/_colorBarsRGB, which read tintSlider.value back out
+        // of the DOM. Skipped on a revert, or an aborted vertical swipe across
+        // the hue bar would still have destroyed the user's saturation.
+        if (el.id === 'hueSlider' && !revert) this._forceFullSaturationFromHue();
         this._syncColorBars();
         // Throttled, so dragging the length of the bar does not become a
         // service call per frame.
@@ -5803,6 +5880,10 @@ class SpatialLightColorCard extends HTMLElement {
       startX: 0,
       startY: 0,
       startValue: null,
+      // The saturation a hue gesture started from. A hue move snaps it to
+      // full, so an aborted vertical swipe has to put it back -- otherwise a
+      // scroll that never changed the colour still destroyed it.
+      startTint: null,
       isScrolling: false,
       locked: false
     };
@@ -5821,6 +5902,8 @@ class SpatialLightColorCard extends HTMLElement {
       state.startX = e.clientX;
       state.startY = e.clientY;
       state.startValue = el.value;
+      state.startTint = (el.id === 'hueSlider' && this._els.tintSlider)
+        ? this._els.tintSlider.value : null;
       state.isScrolling = false;
       state.locked = false;
       // Mark gesture active so `_updateControlValues` skips clobbering this
@@ -5849,7 +5932,11 @@ class SpatialLightColorCard extends HTMLElement {
           // Vertical scroll detected - Revert interaction
           state.isScrolling = true;
           el.value = state.startValue;
-          updateVisuals();
+          if (state.startTint != null && this._els.tintSlider) {
+            this._els.tintSlider.value = state.startTint;
+            this._updateSliderVisual(this._els.tintSlider);
+          }
+          updateVisuals(true);
           if (this._activeSliderGesture === gestureKind) this._activeSliderGesture = null;
           try { el.releasePointerCapture(e.pointerId); } catch (_) { /* may not have capture */ }
           return;
@@ -6478,6 +6565,9 @@ class SpatialLightColorCard extends HTMLElement {
       if (!el) return;
       // Keyboard and programmatic changes still have to reach the lights.
       el.addEventListener('input', () => {
+        // Arrow keys on the hue bar are colour picks too, and they never reach
+        // _bindSliderGesture -- so the snap has to live here as well.
+        if (el.id === 'hueSlider') this._forceFullSaturationFromHue();
         this._syncColorBars();
         this._applyColorWheelSelectionLive(this._colorBarsRGB());
       });
@@ -8942,6 +9032,52 @@ class SpatialLightColorCard extends HTMLElement {
     }
   }
 
+  /**
+   * Repaint the brightness track from a TRUE colour, dimmed by the bar.
+   *
+   * `--bar-preview` holds the already-dimmed value, so a brightness-only
+   * repaint cannot read it back and re-dim -- that compounds, and the track
+   * walks to black as the user drags. The undimmed colour is remembered in
+   * `_barBaseRGB` instead, and every repaint starts from it.
+   */
+  _paintBrightnessPreview(baseRGB) {
+    const el = this._els.brightnessSlider;
+    if (!el) return;
+    if (Array.isArray(baseRGB) && baseRGB.length === 3) this._barBaseRGB = baseRGB.slice();
+    const base = this._barBaseRGB || [255, 165, 0];
+    const b = parseFloat(el.value);
+    const rgb = SpatialLightColorCard.dimPreviewRGB(base, b);
+    el.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
+    el.style.setProperty('--bar-edge', SpatialLightColorCard.dimPreviewEdge(rgb));
+    // The numeric readout element is gone, so this is the only thing that
+    // speaks the value -- and it must never say 0% for a position the thumb
+    // cannot reach.
+    el.setAttribute('aria-valuetext',
+      `${Math.max(1, Math.round((Number.isFinite(b) ? b : 255) / 255 * 100))}%`);
+  }
+
+  /**
+   * Picking a COLOUR sets saturation to full; the bar underneath is then free.
+   *
+   * Called only from the two paths a hue change can arrive by, and always
+   * BEFORE the colour is read -- `_colorBarsRGB()` reads `tintSlider.value`
+   * out of the DOM, so a late reset would ship one pastel frame and seed the
+   * live-apply dedupe with it.
+   *
+   * Deliberately NOT in `_syncColorBars` or `_updateControlValues`: those also
+   * run when state arrives FROM the lights, where snapping would make a
+   * genuinely pastel bulb misreport itself as fully saturated, and would
+   * overwrite the saturation the user had just chosen one round trip later.
+   * Assigning `.value` fires no `input` event, so this cannot recurse.
+   */
+  _forceFullSaturationFromHue() {
+    const tintEl = this._els.tintSlider;
+    if (!tintEl) return;
+    if ((parseFloat(tintEl.value) || 0) === 0) return;
+    tintEl.value = '0';
+    this._updateSliderVisual(tintEl);
+  }
+
   /** The colour the two bars currently describe. */
   _colorBarsRGB() {
     const hue = this._els.hueSlider ? parseFloat(this._els.hueSlider.value) : 0;
@@ -8965,11 +9101,9 @@ class SpatialLightColorCard extends HTMLElement {
       if (hueEl) tintEl.style.setProperty('--bar-hue', String(Math.round(parseFloat(hueEl.value) || 0)));
       tintEl.setAttribute('aria-valuetext', `${Math.round(100 - (parseFloat(tintEl.value) || 0))}% saturated`);
     }
-    // The brightness bar IS the preview: it carries the current colour.
-    if (this._els.brightnessSlider) {
-      const rgb = this._colorBarsRGB();
-      this._els.brightnessSlider.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
-    }
+    // The brightness bar IS the preview: it carries the current colour, at
+    // the current brightness.
+    this._paintBrightnessPreview(this._colorBarsRGB());
   }
 
   _applyColorWheelSelection(rgb, { announce = true } = {}) {
@@ -9112,9 +9246,13 @@ class SpatialLightColorCard extends HTMLElement {
       this._updateSliderVisual(e.target);
       return;
     }
-    if (this._els.brightnessValue) this._els.brightnessValue.textContent = `${Math.round((val / 255) * 100)}%`;
+    const clamped = Math.min(255, Math.max(SpatialLightColorCard.BRIGHTNESS_MIN, val));
+    if (this._els.brightnessValue) {
+      this._els.brightnessValue.textContent = `${Math.max(1, Math.round((clamped / 255) * 100))}%`;
+    }
     this._updateSliderVisual(this._els.brightnessSlider);
-    this._pendingBrightness = val;
+    this._paintBrightnessPreview();
+    this._pendingBrightness = clamped;
   }
   _handleBrightnessChange() {
     if (this._pendingBrightness == null) return;
@@ -9127,7 +9265,11 @@ class SpatialLightColorCard extends HTMLElement {
       : (this._config.default_entity ? [this._config.default_entity] : []);
     if (controlled.length === 0) { this._pendingBrightness = null; return; }
 
-    const b = this._pendingBrightness;
+    // The DOM `min` stops the pointer and the keyboard, but _pendingBrightness
+    // can have been captured before a re-render, so the commit clamps as well.
+    // This is the only place a `brightness:` value is emitted.
+    const b = Math.min(255, Math.max(SpatialLightColorCard.BRIGHTNESS_MIN,
+      Math.round(this._pendingBrightness)));
     this._pendingBrightness = null;
     const plan = this._planGroupedDispatch(controlled, 'brightness');
     for (const groupId of plan.groups) {
