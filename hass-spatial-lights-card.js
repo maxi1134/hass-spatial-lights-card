@@ -16,19 +16,29 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.36.0 (fork-maxi1134)';
+  static BUILD = 'v1.37.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
   /**
-   * The brightness bar's floor, in HA's own 0-255 units. The bar must not be
-   * able to turn a light off, so it stops at 1% rather than 0.
+   * The brightness bar's floor, in HA's own 0-255 units: 25% of 255.
    *
-   * 3, not 1 or 2: 1% of 255 is 2.55, and HA's own `brightness_pct: 1`
-   * resolves to `round(255 / 100)` = 3, so 3 IS one percent in the units the
-   * service speaks. 2 would display as 1% while actually being 0.78%.
+   * Two jobs. The bar must never be able to turn a light off -- that is what
+   * the power toggle is for -- and its track doubles as the colour preview,
+   * which a near-black value makes unreadable. At a 1% floor the preview was
+   * rgb(3,2,2): technically the right colour, and indistinguishable from off.
+   * 25% keeps enough of the hue on screen to tell red from orange.
+   *
+   * 64, because 25% of 255 is 63.75 and HA's own `brightness_pct: 25` resolves
+   * to `round(255 * 25 / 100)` = 64 -- so this IS twenty-five percent in the
+   * units the service speaks.
    */
-  static BRIGHTNESS_MIN = 3;
+  static BRIGHTNESS_MIN = 64;
+
+  /** The floor as a percentage, for the readouts that must not under-report it. */
+  static get BRIGHTNESS_MIN_PCT() {
+    return Math.round((SpatialLightColorCard.BRIGHTNESS_MIN / 255) * 100);
+  }
 
   /**
    * Pixel allowance for the full-size editor's canvas. Larger than the card's
@@ -1614,9 +1624,10 @@ class SpatialLightColorCard extends HTMLElement {
    * The brightness bar's track colour: the light's colour scaled by its
    * brightness, so the bar reads almost black at 1% and full colour at 100%.
    *
-   * Linear per channel, because the request is literally "1% of colour": at
-   * the floor (3/255) a warm white lands on rgb(3,2,2). A gamma curve would
-   * put 1% at roughly 13% grey, which is not almost-black.
+   * Linear per channel, so the track reads as the colour at the level the
+   * light is actually at. The bar's own floor (`BRIGHTNESS_MIN`) is what stops
+   * this bottoming out into an unreadable near-black -- at 25% a warm white
+   * still lands on a clearly coloured rgb(62,50,40).
    *
    * PREVIEW ONLY. `_colorBarsRGB()` keeps V pinned at 100 and is what
    * `rgb_color` is built from -- brightness is its own axis on the light, and
@@ -5858,7 +5869,8 @@ class SpatialLightColorCard extends HTMLElement {
         this._paintBrightnessPreview();
         if (this._els.brightnessValue) {
           this._els.brightnessValue.textContent =
-            `${Math.max(1, Math.round((parseInt(el.value, 10) / 255) * 100))}%`;
+            `${Math.max(SpatialLightColorCard.BRIGHTNESS_MIN_PCT,
+              Math.round((parseInt(el.value, 10) / 255) * 100))}%`;
         }
       } else if (el.id === 'temperatureSlider' && this._els.temperatureValue) {
         this._els.temperatureValue.textContent = `${el.value}K`;
@@ -9053,7 +9065,8 @@ class SpatialLightColorCard extends HTMLElement {
     // speaks the value -- and it must never say 0% for a position the thumb
     // cannot reach.
     el.setAttribute('aria-valuetext',
-      `${Math.max(1, Math.round((Number.isFinite(b) ? b : 255) / 255 * 100))}%`);
+      `${Math.max(SpatialLightColorCard.BRIGHTNESS_MIN_PCT,
+        Math.round((Number.isFinite(b) ? b : 255) / 255 * 100))}%`);
   }
 
   /**
@@ -9248,7 +9261,8 @@ class SpatialLightColorCard extends HTMLElement {
     }
     const clamped = Math.min(255, Math.max(SpatialLightColorCard.BRIGHTNESS_MIN, val));
     if (this._els.brightnessValue) {
-      this._els.brightnessValue.textContent = `${Math.max(1, Math.round((clamped / 255) * 100))}%`;
+      this._els.brightnessValue.textContent =
+        `${Math.max(SpatialLightColorCard.BRIGHTNESS_MIN_PCT, Math.round((clamped / 255) * 100))}%`;
     }
     this._updateSliderVisual(this._els.brightnessSlider);
     this._paintBrightnessPreview();

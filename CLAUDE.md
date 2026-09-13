@@ -365,10 +365,19 @@ without `startTint` the swipe would still have destroyed the saturation on its w
 changed nothing the user can see yet snapped the bar below. `updateVisuals(revert)` suppresses the
 snap on that path.
 
-**The brightness bar floors at 1%, and cannot turn a light off.** `BRIGHTNESS_MIN = 3`, because 1% of
-255 is 2.55 and HA's own `brightness_pct: 1` resolves to `round(255/100)` = 3 -- 3 IS one percent in
-the units the service speaks, where 2 would display as 1% while actually being 0.78%. The fill is
-measured against `MIN..255` rather than `0..255`, or it disagrees with where the native thumb lands.
+**The brightness bar floors at 25%, and cannot turn a light off.** `BRIGHTNESS_MIN = 64`, because 25%
+of 255 is 63.75 and HA's own `brightness_pct: 25` resolves to `round(255 * 25/100)` = 64 -- so it IS
+twenty-five percent in the units the service speaks. The fill is measured against `MIN..255` rather
+than `0..255`, or it disagrees with where the native thumb lands, and every percentage readout floors
+at `BRIGHTNESS_MIN_PCT` so the bar never announces a value its thumb cannot reach.
+
+The floor does two jobs, and the second is why it is 25% rather than 1%. Turning a light off is the
+power toggle's job, not the bar's -- that part only needs a floor above zero. But the track doubles as
+the COLOUR PREVIEW, and dimming it linearly means a low floor bottoms out into something unreadable:
+at 1% a warm white rendered rgb(3,2,2), technically the right hue and indistinguishable from off. At
+25% the same colour is rgb(62,51,40) -- luminance 53 against 2, with enough channel spread to tell
+warm from cool. The preview is why the floor is where it is; do not lower it without also decoupling
+the preview's dim from the bar's value.
 Clamped at three sites, but `_handleBrightnessChange` is the one that matters: it is the only seam
 that emits a `brightness:` value, and `_pendingBrightness` can have been captured before a re-render.
 `_brightnessRatio` is untouched -- a light REPORTING 0 still renders dark; only the bar lost the

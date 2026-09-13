@@ -172,7 +172,9 @@ The controls are four stacked full-width bars:
 1. **Brightness** — the bar is filled with the colour the lights are showing
    right now, *at* their current brightness: almost black at the bottom of the
    range, full colour at the top. Sliding left to right sets the brightness. It
-   stops at 1% rather than 0, so the bar can dim a light but never switch it off.
+   stops at 25% rather than 0: the bar dims a light but never switches it off
+   (that is the power button's job), and it stays bright enough to show you
+   which colour the lights are on.
 2. **Colour** — the full spectrum. Picking a hue here sets it at **full
    saturation**; use the bar below to take it back toward white.
 3. **Saturation** — the pure hue on the left running to white on the right. It

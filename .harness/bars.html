@@ -138,9 +138,15 @@ window.dimPreview=async function(){
     rows.push({value:v, pct:Math.round(v/255*100), preview:previewOf(), lum:lum(previewOf())});
   }
   const L=rows.map(r=>r.lum);
+  const chan=(css)=>{const m=/rgba?\(([^)]+)\)/.exec(css); return m?m[1].split(',').map(Number):[0,0,0];};
+  const spread=(css)=>{const p=chan(css); return Math.max(...p)-Math.min(...p);};
   return {rows,
     monotonic: L.every((x,i)=>i===0||x>=L[i-1]),
-    minIsNearlyBlack: L[0]!=null && L[0] <= L[L.length-1]*0.10,
+    // The floor exists so the track never bottoms out into an unreadable
+    // near-black: at 25% it must still be clearly DARKER than full, and must
+    // still carry enough channel spread to tell which colour it is.
+    minIsDarkerThanFull: L[0] < L[L.length-1]*0.6,
+    minStillShowsColour: spread(rows[0].preview) > 8,
     fullIsFullColour: L[L.length-1]>0};
 };
 
