@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.38.2 (fork-maxi1134)';
+  static BUILD = 'v1.38.3 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4470,6 +4470,19 @@ class SpatialLightColorCard extends HTMLElement {
         width: 44px; height: 5px; border-radius: 3px; margin: -4px 0 2px;
         background: var(--text-secondary, #9aa); opacity: 0.5;
         cursor: grab; touch-action: none;
+        position: relative;
+      }
+      /* The visible bar is 5px tall because that is what a grab handle should
+         look like; 5px is not what it should be to HIT. This carries the whole
+         drag gesture and, since the double-tap landed on it, the only way back
+         from a hand-placed position -- on a touchscreen, against a fingertip
+         nearer 40px across. The pseudo-element takes the hit area to 60x27
+         without changing a pixel of the look, which clears the 24x24 minimum.
+         It cannot swallow anything underneath: the grip is the panel's first
+         child and the padding it grows into is the panel's own. */
+      .cf-grip::before {
+        content: ''; position: absolute;
+        left: -8px; right: -8px; top: -11px; bottom: -11px;
       }
       .cf-grip:hover { opacity: 0.85; }
       .cf-grip:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
@@ -7881,6 +7894,12 @@ class SpatialLightColorCard extends HTMLElement {
     if (this.shadowRoot) {
       this.shadowRoot.querySelectorAll('.light.dragging').forEach(node => node.classList.remove('dragging'));
       this.shadowRoot.querySelectorAll('.canvas-element.dragging').forEach(node => node.classList.remove('dragging'));
+      // The floating panel's grip drag is a gesture like any other and has to
+      // end here too. The class sweep below it is the belt to this braces: the
+      // closure lives on whichever element _bindFloatingDrag last bound, and a
+      // re-render can leave an older node still wearing the class.
+      if (typeof this._endGripDrag === 'function') this._endGripDrag();
+      this.shadowRoot.querySelectorAll('.controls-floating.dragging').forEach(node => node.classList.remove('dragging'));
     }
     // Clear canvas element interaction state
     if (this._elementLongPressTimer) {
@@ -8954,13 +8973,38 @@ class SpatialLightColorCard extends HTMLElement {
       el.classList.add('dragged');
       st.last = { x, y };
     });
-    const end = (e) => {
-      if (!st || e.pointerId !== st.pointerId) return;
-      try { grip.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+    // The single ender, so the abort sink can reach it too. `.dragging` makes
+    // BOTH _placeFloatingControls and _applyFloatingPos bail, and `st` makes
+    // every later pointer event on the grip belong to a gesture whose finger is
+    // gone -- so a drag that ends without pointerup or pointercancel freezes
+    // placement outright. That is not exotic on a tablet: start dragging the
+    // panel, then switch apps or let the screen lock, and `visibilitychange`
+    // routes through _cancelActiveInteractions, which knew about `.light` and
+    // `.canvas-element` drags but not this one. Measured: the panel sat at
+    // [201,30] through three different selections, with NOTHING in localStorage
+    // -- so the double-tap reset could not help either, because there was no
+    // stored position to clear. Only a full _renderAll healed it.
+    const finish = () => {
+      if (!st) return;
+      try { grip.releasePointerCapture(st.pointerId); } catch (_) { /* already released */ }
       el.classList.remove('dragging');
       if (st.last) {
         this._saveFloatingPos({ fx: st.last.x / st.hb.width, fy: st.last.y / st.hb.height });
-      } else if (e.type === 'pointerup') {
+        // A drag is not half of a double-tap. Without this, tap-then-drag
+        // inside 350ms left a live timestamp and the NEXT tap read as the
+        // second of a pair, resuming tracking and discarding the position the
+        // user had just dropped.
+        this._gripTapAt = 0;
+      }
+      st = null;
+    };
+    this._endGripDrag = finish;
+    const end = (e) => {
+      if (!st || e.pointerId !== st.pointerId) return;
+      const tapped = !st.last && e.type === 'pointerup';
+      if (e.type !== 'pointerup') this._gripTapAt = 0;
+      finish();
+      if (tapped) {
         // A TAP on the grip, not a drag -- and two of them in quick succession
         // are the reset gesture, counted here in pointer events rather than
         // left to the 'dblclick' listener above.
@@ -8984,7 +9028,6 @@ class SpatialLightColorCard extends HTMLElement {
           this._gripTapAt = now;
         }
       }
-      st = null;
     };
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);

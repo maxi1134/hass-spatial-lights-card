@@ -452,6 +452,34 @@ i.e. one the drag threshold never promoted, and `pointercancel` is excluded so a
 cannot count as half a double-tap. The handler is idempotent, so a mouse firing both the tap pair and
 a real `dblclick` costs nothing.
 
+**A drag that never gets a pointerup froze placement outright, and that is worse than a pin.**
+`.dragging` makes BOTH `_placeFloatingControls` and `_applyFloatingPos` bail, and the `st` closure
+makes every later grip event belong to a gesture whose finger is gone. `_cancelActiveInteractions` --
+the single sink for "abort everything", reached from `pointercancel`, `visibilitychange`,
+`window.blur` and the top of `_renderAll` -- knew about `.light` and `.canvas-element` drags but not
+this one. Not exotic on a tablet: start dragging the panel, then switch apps or let the screen lock.
+Measured: the panel sat at [201,30] through three different selections with NOTHING in localStorage,
+so the double-tap could not help either -- there was no stored position to clear, and only a full
+`_renderAll` healed it. The drag now has one ender, `finish()`, exposed as `_endGripDrag` for the sink,
+with a class sweep beside it as belt-and-braces because the closure belongs to whichever element
+`_bindFloatingDrag` last bound.
+
+The abort COMMITS the drop rather than discarding it, matching what the sink already does for a
+pending slider value ("commit any pending slider value so end-of-gesture survives DOM rebuild") --
+and it must, because `_renderAll` calls it on every config change. So the panel ends up pinned exactly
+as if the finger had lifted: an ORDINARY hand-placed panel, which the double-tap can undo.
+
+**A drag is not half of a double-tap.** `_gripTapAt` is cleared whenever a drag commits and on
+`pointercancel`, or tap-then-drag inside 350ms left a live timestamp and the NEXT tap read as the
+second of a pair -- resuming tracking and discarding the position just dropped.
+
+**The grip is 44x5 px to look at and 60x27 to hit.** A 5px-tall bar is the right LOOK for a grab
+handle and the wrong target for a fingertip nearer 40px across -- and this one carries the drag plus,
+since the double-tap landed on it, the only way back from a hand-placed position. A `::before` with
+negative insets takes the hit area past the 24x24 minimum without changing a pixel of the appearance.
+It cannot swallow anything underneath: the grip is the panel's first child and the padding it grows
+into is the panel's own.
+
 **Moving the lights is as much a reason to re-place as selecting them.** `_smoothApplyPositions` is
 the funnel every position mutation goes through -- arrow-key nudge, undo, redo, Rearrange -- and it
 ended with the comment "Controls may rely on selection state; keep as-is." That was true when the
@@ -470,7 +498,10 @@ null while idle and that reselecting after the box grew re-centres to within 2px
 dashboard card still tracks; `positionMove()` asserts the panel follows a selected light that moves
 under it. `travel()` asserts the panel has real horizontal range on a tablet-sized card (run the pane
 at 768x1024); `touchReset()` asserts two POINTER taps clear a pinned position and resume tracking with
-no `dblclick` dispatched anywhere, and `slowTaps()` asserts two taps 600ms apart do not.
+no `dblclick` dispatched anywhere, and `slowTaps()` asserts two taps 600ms apart do not. `abortMidDrag()` asserts an interrupted drag leaves
+no latch, commits like a normal drop and is still clearable by double-tap; `dragThenTap()` asserts a
+trailing tap does not discard the drag before it; `gripHitArea()` asserts the hit box clears 24x24
+while the visible bar stays 44x5.
 
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use

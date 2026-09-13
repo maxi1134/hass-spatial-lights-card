@@ -328,6 +328,93 @@ window.touchReset=async function(){
     classes:[...panelEl().classList].filter(c=>c==='dragged'||c==='auto-placed')};
 };
 
+// ---------------------------------------------------------------------------
+// A drag that never gets a pointerup. On a tablet: start dragging the panel,
+// then switch apps or let the screen lock -- visibilitychange routes through
+// _cancelActiveInteractions. '.dragging' makes BOTH placement functions bail,
+// and nothing is stored, so the double-tap reset cannot help either.
+// ---------------------------------------------------------------------------
+window.abortMidDrag=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const el=panelEl(), g=gripEl();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const b=g.getBoundingClientRect(), x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,90);
+  gpev(g,'pointermove',x+30,y+20,90);
+  card._cancelActiveInteractions();
+  await tick(200);
+  const latched=el.classList.contains('dragging');
+  const a=window.probe().panel;
+  await window.select(['light.garage']); const z=window.probe().panel;
+  const stored=storedCount();
+  // The abort COMMITS the drop, matching _cancelActiveInteractions' own
+  // convention (it commits a pending slider value so an interrupted gesture
+  // survives a DOM rebuild -- and _renderAll calls it). So the panel is pinned,
+  // exactly as if the finger had lifted. What matters is that it is an ORDINARY
+  // pinned panel and not a frozen one: the latch is gone and the double-tap can
+  // still get tracking back. Before the fix it was neither -- latched, with
+  // nothing stored, so there was no position for the reset to clear.
+  const g2=gripEl();
+  try{g2.setPointerCapture=()=>{};g2.releasePointerCapture=()=>{};}catch(_){}
+  const b2=g2.getBoundingClientRect(), x2=b2.left+b2.width/2, y2=b2.top+b2.height/2;
+  gpev(g2,'pointerdown',x2,y2,94); gpev(g2,'pointerup',x2,y2,94);
+  await tick(90);
+  gpev(g2,'pointerdown',x2,y2,94); gpev(g2,'pointerup',x2,y2,94);
+  await tick(350);
+  await window.select(['light.kitchen']); const r1=window.probe().panel;
+  await window.select(['light.office']);  const r2=window.probe().panel;
+  return {latched, duringFreeze:[a,z], stored,
+    classLeft:[...el.classList].filter(c=>['dragging','dragged','auto-placed'].includes(c)),
+    notLatched: !latched,
+    committedLikeADrop: stored===1,
+    clearable: r1.join()!==r2.join(),
+    pass: !latched && stored===1 && r1.join()!==r2.join()};
+};
+
+// tap -> drag -> tap, all inside the double-tap window. The trailing tap must
+// not read as the second of a pair and throw away the drop.
+window.dragThenTap=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const g=gripEl();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const b=g.getBoundingClientRect(), x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,91); gpev(g,'pointerup',x,y,91);      // tap
+  await tick(60);
+  gpev(g,'pointerdown',x,y,92);                                   // drag
+  for(let i=1;i<=6;i++) gpev(g,'pointermove',x+i*12,y+i*8,92);
+  gpev(g,'pointerup',x+72,y+48,92);
+  await tick(60);
+  const dropped=window.probe().panel, storedAfterDrag=storedCount();
+  const g2=gripEl();
+  try{g2.setPointerCapture=()=>{};g2.releasePointerCapture=()=>{};}catch(_){}
+  const b2=g2.getBoundingClientRect();
+  gpev(g2,'pointerdown',b2.left+b2.width/2,b2.top+b2.height/2,93); // trailing tap
+  gpev(g2,'pointerup',b2.left+b2.width/2,b2.top+b2.height/2,93);
+  await tick(300);
+  return {dropped, storedAfterDrag, storedAfterTap:storedCount(),
+    panelAfterTap:window.probe().panel,
+    dropSurvived: storedCount()===1};
+};
+
+// The grip carries the drag AND the only way back from a hand-placed position,
+// so it needs a target a fingertip can actually hit.
+window.gripHitArea=function(){
+  const g=gripEl(), b=g.getBoundingClientRect();
+  const cx=Math.round(b.left+b.width/2), cy=Math.round(b.top+b.height/2);
+  const root=card.shadowRoot;
+  const hits=(dx,dy)=>{const e=root.elementFromPoint(cx+dx,cy+dy);return !!e && (e===g || g.contains(e));};
+  let up=0,down=0,left=0,right=0;
+  while(up<40 && hits(0,-(up+1))) up++;
+  while(down<40 && hits(0,down+1)) down++;
+  while(left<60 && hits(-(left+1),0)) left++;
+  while(right<60 && hits(right+1,0)) right++;
+  return {visual:[Math.round(b.width),Math.round(b.height)],
+    hitHeight:up+down+1, hitWidth:left+right+1,
+    meets24: (up+down+1)>=24 && (left+right+1)>=24};
+};
+
 // Two SLOW taps must not reset -- that is just two separate taps.
 window.slowTaps=async function(){
   await window.mount();
