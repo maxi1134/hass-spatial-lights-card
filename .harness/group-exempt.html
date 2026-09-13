@@ -1,0 +1,218 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Not affected by group selection</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:720px}#ed{width:520px}</style>
+</head><body><div id="host"></div><div id="ed"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+// Two ceiling lights and two UV projectors, the reported shape.
+const ids=['light.ceiling_a','light.ceiling_b','light.uv_a','light.uv_b'];
+const POS={'light.ceiling_a':{x:20,y:30},'light.ceiling_b':{x:45,y:30},
+           'light.uv_a':{x:70,y:30},'light.uv_b':{x:85,y:30}};
+const calls=[];
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+let card, hass;
+
+window.mount=async function(over){
+  try{localStorage.clear();}catch(_){}
+  calls.length=0;
+  const states={};
+  ids.forEach(i=>{states[i]={entity_id:i,state:'on',attributes:{friendly_name:i.split('.')[1],
+    brightness:200,rgb_color:[255,170,80],color_mode:'rgb',
+    supported_color_modes:['rgb','color_temp'],min_color_temp_kelvin:2000,
+    max_color_temp_kelvin:6500,color_temp_kelvin:3000,effect_list:['Movie','Party']}};});
+  hass={states,entities:{},
+    callService:(d,srv,data)=>{calls.push({d,srv,data:JSON.parse(JSON.stringify(data||{}))});return Promise.resolve();},
+    callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+    positions:JSON.parse(JSON.stringify(POS)), aspect_ratio:'16:10',
+    background_image:{url:'floorplan.svg'}, controls_below:true, always_show_controls:true,
+    group_exempt_overrides:{'light.uv_a':true,'light.uv_b':true}},over||{}));
+  card.hass=hass; host.appendChild(card);
+  await tick(750); window.card=card; window.calls=calls;
+  return card.constructor.BUILD;
+};
+
+const sel=()=>[...card._selectedLights].sort();
+const lightEl=(id)=>card.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(id)}"]`);
+const centre=(el)=>{const b=el.getBoundingClientRect();return {x:b.left+b.width/2,y:b.top+b.height/2};};
+function pev(el,type,x,y,extra){
+  el.dispatchEvent(new PointerEvent(type,Object.assign({pointerId:11,pointerType:'touch',button:0,
+    buttons:type==='pointerup'?0:1,clientX:x,clientY:y,bubbles:true,cancelable:true,composed:true},extra||{})));
+}
+function cap(el){try{el.setPointerCapture=()=>{};el.releasePointerCapture=()=>{};}catch(_){}}
+
+// ---- the headline: a marquee across the whole plan ----------------------
+window.marqueeAll=async function(){
+  await window.mount();
+  const canvas=card.shadowRoot.getElementById('canvas');
+  cap(canvas);
+  const b=canvas.getBoundingClientRect();
+  // start on empty canvas, well away from any marker, and sweep everything
+  pev(canvas,'pointerdown',b.left+4,b.bottom-4,{pointerId:21,pointerType:'mouse'});
+  await tick(40);
+  for(let i=1;i<=8;i++){
+    pev(canvas,'pointermove',b.left+4+(b.width-8)*i/8, b.bottom-4-(b.height-8)*i/8,{pointerId:21,pointerType:'mouse'});
+    await tick(25);
+  }
+  pev(canvas,'pointerup',b.right-4,b.top+4,{pointerId:21,pointerType:'mouse'});
+  await tick(200);
+  return {selection:sel(),
+    caughtCeilings: sel().includes('light.ceiling_a') && sel().includes('light.ceiling_b'),
+    skippedUV: !sel().includes('light.uv_a') && !sel().includes('light.uv_b')};
+};
+
+// ---- long-press must still add a UV projector ---------------------------
+window.longPressAdds=async function(){
+  await window.mount();
+  // select a ceiling light by tapping it
+  const a=lightEl('light.ceiling_a'); cap(a); const ca=centre(a);
+  pev(a,'pointerdown',ca.x,ca.y); await tick(80); pev(a,'pointerup',ca.x,ca.y);
+  await tick(200);
+  const afterTap=sel();
+  // now long-press a UV projector
+  const u=lightEl('light.uv_a'); cap(u); const cu=centre(u);
+  pev(u,'pointerdown',cu.x,cu.y); await tick(900); pev(u,'pointerup',cu.x,cu.y);
+  await tick(250);
+  return {afterTap, afterHold:sel(), joined:sel().includes('light.uv_a')};
+};
+
+// ---- a plain tap on a UV projector still selects it ---------------------
+window.tapSelects=async function(){
+  await window.mount();
+  const u=lightEl('light.uv_b'); cap(u); const c=centre(u);
+  pev(u,'pointerdown',c.x,c.y); await tick(80); pev(u,'pointerup',c.x,c.y);
+  await tick(250);
+  return {selection:sel(), selectedAlone:sel().join()==='light.uv_b'};
+};
+
+// ---- a long-pressed UV light survives a later additive marquee ----------
+window.additiveKeepsIt=async function(){
+  await window.mount();
+  card._selectedLights=new Set(['light.uv_a']); card.updateLights(); await tick(120);
+  const before=sel();
+  const canvas=card.shadowRoot.getElementById('canvas'); cap(canvas);
+  const b=canvas.getBoundingClientRect();
+  // shift-drag = additive
+  pev(canvas,'pointerdown',b.left+4,b.bottom-4,{pointerId:22,shiftKey:true,pointerType:'mouse'});
+  await tick(40);
+  for(let i=1;i<=6;i++){
+    pev(canvas,'pointermove',b.left+4+(b.width-8)*i/6,b.bottom-4-(b.height-8)*i/6,{pointerId:22,shiftKey:true,pointerType:'mouse'});
+    await tick(25);
+  }
+  pev(canvas,'pointerup',b.right-4,b.top+4,{pointerId:22,shiftKey:true,pointerType:'mouse'});
+  await tick(200);
+  return {before, after:sel(), keptUV:sel().includes('light.uv_a'),
+    gainedCeilings:sel().includes('light.ceiling_a')};
+};
+
+// ---- select-all ---------------------------------------------------------
+window.selectAll=async function(){
+  await window.mount();
+  // cardEngaged = focus inside the card, OR a live selection, OR edit mode.
+  // Seed a selection so the card claims the key instead of leaving it to the page.
+  card._selectedLights=new Set(['light.ceiling_a']); card.updateLights(); await tick(120);
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true,composed:true}));
+  await tick(200);
+  return {selection:sel(),
+    caughtCeilings: sel().includes('light.ceiling_a') && sel().includes('light.ceiling_b'),
+    skippedUV:!sel().includes('light.uv_a') && !sel().includes('light.uv_b')};
+};
+
+// ---- bulk service calls with NOTHING selected ---------------------------
+window.bulkEffect=async function(){
+  await window.mount();
+  card._selectedLights.clear(); card.updateLights(); await tick(120);
+  calls.length=0;
+  card._applyEffectPreset('Movie');
+  await tick(250);
+  const targets=calls.filter(c=>c.srv==='turn_on').flatMap(c=>{
+    const e=c.data.entity_id; return Array.isArray(e)?e:[e];});
+  return {targets:targets.sort(), skippedUV:!targets.includes('light.uv_a') && !targets.includes('light.uv_b'),
+    hitCeilings:targets.includes('light.ceiling_a')};
+};
+
+window.bulkScript=async function(){
+  await window.mount({script_buttons:[{name:'Scene',script:'script.movie_time',icon:'mdi:movie'}]});
+  card._selectedLights.clear(); card.updateLights(); await tick(120);
+  calls.length=0;
+  card._applyScriptButton(0);   // takes an INDEX, not the button object
+  await tick(250);
+  const t=calls.flatMap(c=>{const e=c.data.entity_id; return Array.isArray(e)?e:(e?[e]:[]);});
+  return {calls:calls.map(c=>[c.d,c.srv]), targets:t.sort(),
+    skippedUV:!t.includes('light.uv_a') && !t.includes('light.uv_b')};
+};
+
+// ---- an EXPLICIT selection containing a UV light is still honoured ------
+window.explicitStillWorks=async function(){
+  await window.mount();
+  card._selectedLights=new Set(['light.ceiling_a','light.uv_a']); card.updateLights(); await tick(150);
+  calls.length=0;
+  card._applyEffectPreset('Movie');
+  await tick(250);
+  const t=calls.filter(c=>c.srv==='turn_on').flatMap(c=>{const e=c.data.entity_id;return Array.isArray(e)?e:[e];});
+  return {targets:t.sort(), uvIncluded:t.includes('light.uv_a')};
+};
+
+// ---- default_entity is explicit and must not be filtered ---------------
+window.defaultEntity=async function(){
+  await window.mount({default_entity:'light.uv_a',
+    script_buttons:[{name:'Scene',script:'script.movie_time'}]});
+  card._selectedLights.clear(); card.updateLights(); await tick(120);
+  calls.length=0;
+  card._applyScriptButton(0);   // takes an INDEX, not the button object
+  await tick(250);
+  const t=calls.flatMap(c=>{const e=c.data.entity_id; return Array.isArray(e)?e:(e?[e]:[]);});
+  return {targets:t, honoured:t.includes('light.uv_a')};
+};
+
+// ---- with NO exemptions configured nothing changes ----------------------
+window.noExemptions=async function(){
+  await window.mount({group_exempt_overrides:{}});
+  const canvas=card.shadowRoot.getElementById('canvas'); cap(canvas);
+  const b=canvas.getBoundingClientRect();
+  pev(canvas,'pointerdown',b.left+4,b.bottom-4,{pointerId:23,pointerType:'mouse'});
+  await tick(40);
+  for(let i=1;i<=8;i++){ pev(canvas,'pointermove',b.left+4+(b.width-8)*i/8,b.bottom-4-(b.height-8)*i/8,{pointerId:23,pointerType:'mouse'}); await tick(25); }
+  pev(canvas,'pointerup',b.right-4,b.top+4,{pointerId:23,pointerType:'mouse'});
+  await tick(200);
+  return {selection:sel(), caughtAll:sel().length===4};
+};
+
+// ---- the editor switch round-trips -------------------------------------
+window.editor=async function(){
+  const col=document.getElementById('ed'); col.innerHTML='';
+  const ed=document.createElement('spatial-light-color-card-editor');
+  ed.hass=hass||{states:{},entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  ed.setConfig({type:'custom:spatial-light-color-card',entities:ids,
+    positions:JSON.parse(JSON.stringify(POS)),
+    group_exempt_overrides:{'light.uv_a':true}});
+  col.appendChild(ed);
+  await tick(450);
+  const sws=[...ed.shadowRoot.querySelectorAll('.entity-overrides ha-switch[data-key="groupExempt"]')];
+  const state=sws.map(sw=>[sw.dataset.entity, !!sw.checked]);
+  // flip one on and read the config it fires
+  let fired=null;
+  ed.addEventListener('config-changed', (e)=>{fired=e.detail.config;});
+  const target=sws.find(sw=>sw.dataset.entity==='light.ceiling_b');
+  if(target){ target.checked=true; target.dispatchEvent(new Event('change',{bubbles:true})); }
+  await tick(250);
+  // and the sublabel must be styled as a caption, not body text
+  const sub=ed.shadowRoot.querySelector('.entity-overrides .override-sublabel');
+  const subSize=sub?getComputedStyle(sub).fontSize:null;
+  return {switchCount:sws.length, restored:state,
+    restoredCorrectly: state.length===4
+      && state.find(r=>r[0]==='light.uv_a')[1]===true
+      && state.find(r=>r[0]==='light.ceiling_a')[1]===false,
+    firedConfig: fired && fired.group_exempt_overrides,
+    wroteNewEntity: !!(fired && fired.group_exempt_overrides && fired.group_exempt_overrides['light.ceiling_b']),
+    sublabelFontSize: subSize};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>

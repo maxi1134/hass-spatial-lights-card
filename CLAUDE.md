@@ -139,6 +139,42 @@ shipped file and drives the race, the toggle-out, the `binary_sensor` fallback a
 - Rubber-band: a pointerdown on empty canvas arms `_selectionStart`/`_selectionPointerId`; the `.selection-box` materializes only after 5 px of movement, hit-testing is rAF-coalesced and diffed, and a completed tap (not pointerdown) is what deselects. Touch ownership is decided in JS, not by touch-action: the canvas is `touch-action: auto` (class `touch-scroll`) and `_handleCanvasTouchMove` (non-passive) rules on the first cancelable touchmove — movement within ~22° of vertical is declined to the browser (native scroll → pointercancel, selection kept, box never created thanks to a touch gate on box creation), anything else claims `_selectionTouchClaim = 'select'` and preventDefaults every subsequent touchmove so the marquee can then travel in any direction. A ~300 ms still hold (`_selectionHoldTimer`) claims 'select' outright for deliberately vertical box drags; `_handleCanvasContextMenu` swallows Android's ~500 ms long-press contextmenu while claimed.
 - Preset hold-to-preview sets `_suppressPresetClick` so the synthesized click on release never applies the preset.
 
+**Not affected by group selection.** `group_exempt_overrides` is a per-entity map (`{entity: true}`,
+the same shape as `icon_only_overrides`) marking lights that must never be caught by a selection they
+were not individually asked to join. It exists for fixtures that share a plan with ordinary lights but
+should not share their commands -- the reported case was UV projectors, two or three per room.
+
+**The line is DIRECT versus IMPLICIT, not gesture versus gesture.** `_isGroupExempt` is consulted by
+exactly five sites, and all five are places a light gets caught for merely being present: the
+rubber-band (`_selectLightsInBox`), Ctrl/Cmd+A, and the three "nothing selected, so act on the whole
+plan" fallbacks in `_getAdaptiveTargets`, `_applyScriptButton` and `_applyEffectPreset`. Everything
+aimed at one marker still works untouched -- tap, long-press, Shift/Ctrl/Meta-click, Enter on a focused
+light. A tap in particular REPLACES the selection with that one light, so it can never sweep a
+projector in with the ceiling lights; that is why it needed no exemption and why the option's name says
+GROUP selection.
+
+**Explicitly naming the light wins, everywhere.** `default_entity` and an effect preset's own
+`restricted` list are the user pointing at it by hand, which carries the same authority a long press
+does, so neither is filtered. Only the implicit `[...this._config.entities]` fallback is. Verified: a
+script button with `default_entity: light.uv_a` and nothing selected still targets the projector, while
+the same button without one targets the ceilings alone.
+
+**The marquee filters on the way IN, not on the way out.** `inside` is built without exempt lights
+rather than stripping them from the committed target, because the additive marquee unions `inside` with
+`_selectionBase` -- and the base may hold an exempt light a long press deliberately put there. Filtering
+the result would have deleted it the moment the band swept back over it. Verified: a long-pressed
+projector survives a subsequent Shift-drag that adds two ceiling lights.
+
+**Deliberately NOT folded into `_isSelectableEntity`.** That predicate answers a different question --
+whether the entity can ever be selected at all (a `binary_sensor` cannot) -- and it gates the long-press
+branch in `_applyHoldGesture`. Merging the two would have made a long press on an exempt light open
+more-info instead of adding it, which is the one thing the feature exists to allow.
+
+The plan shows no affordance for an exempt light, deliberately: these are the user's own fixtures on
+their own floor plan, and a badge on two or three markers per room is clutter in exchange for
+information the editor already states per entity. `.harness/group-exempt.html` pins all of it,
+including that a card with no exemptions configured behaves exactly as before.
+
 **Cancellation:** `_cancelActiveInteractions()` is the single sink for "abort everything." It releases capture, clears `_dragState`, all timers, magnifier state, color-wheel gesture, and commits any pending slider value. It's called from `_onPointerCancel`, `disconnectedCallback`-equivalent (via `_cancelActiveInteractions`), `visibilitychange` (when `document.hidden`), `window.blur`, and at the top of `_renderAll`.
 
 ---

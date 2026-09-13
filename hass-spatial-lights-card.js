@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.38.3 (fork-maxi1134)';
+  static BUILD = 'v1.39.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -348,6 +348,19 @@ class SpatialLightColorCard extends HTMLElement {
       });
     }
 
+    // Normalize group_exempt_overrides (per-entity "not affected by group
+    // selection"). A MAP keyed by entity like every other per-entity setting
+    // here, rather than the flatter list this could have been: the editor's
+    // per-entity panel already has the read/write/delete-on-removal plumbing
+    // for exactly this shape, and one odd convention costs more than a few
+    // extra characters of YAML.
+    const groupExemptOverrides = {};
+    if (config.group_exempt_overrides && typeof config.group_exempt_overrides === 'object') {
+      Object.entries(config.group_exempt_overrides).forEach(([entity, val]) => {
+        if (val) groupExemptOverrides[entity] = true;
+      });
+    }
+
     this._config = {
       entities: config.entities,
       positions: normalizedPositions,
@@ -411,6 +424,7 @@ class SpatialLightColorCard extends HTMLElement {
       // Automatically enabled when minimal_ui is true
       icon_only_mode: config.minimal_ui || config.icon_only_mode || false,
       icon_only_overrides: iconOnlyOverrides,
+      group_exempt_overrides: groupExemptOverrides,
 
       // Icon rotation (degrees, 0-360) and mirroring (horizontal/vertical/both/none)
       icon_rotation: Number.isFinite(Number(config.icon_rotation)) ? Number(config.icon_rotation) : 0,
@@ -2841,6 +2855,33 @@ class SpatialLightColorCard extends HTMLElement {
   _isSelectableEntity(entity) {
     const [domain] = entity.split('.');
     return domain !== 'binary_sensor';
+  }
+
+  /**
+   * "Not affected by group selection": this light never joins a selection, or
+   * a bulk service call, that it was not individually asked to join.
+   *
+   * The distinction is DIRECT versus IMPLICIT, not gesture versus gesture. A
+   * tap, a long-press, a Shift-click and Enter on a focused marker are all
+   * aimed at one light and all still work -- a tap even REPLACES the selection
+   * with just that light, so it cannot sweep a UV projector in with the ceiling
+   * lights. What this excludes is everything that catches a light for being
+   * merely present: the rubber band passing over it, select-all, and the three
+   * "nothing selected, so act on the whole plan" fallbacks.
+   *
+   * Explicitly naming the light still wins, everywhere. `default_entity` and an
+   * effect preset's own restricted list are the user pointing at it by hand,
+   * which is the same authority a long-press carries.
+   *
+   * Deliberately separate from `_isSelectableEntity`, which answers a
+   * different question -- whether the entity can EVER be selected (a
+   * binary_sensor cannot). Folding the two together would have made a long
+   * press on an exempt light open more-info instead of adding it, which is the
+   * one thing the feature exists to allow.
+   */
+  _isGroupExempt(entity) {
+    const map = this._config && this._config.group_exempt_overrides;
+    return !!(map && map[entity]);
   }
 
   // Toggle a group of entities to a single target on/off state, batched per
@@ -7100,7 +7141,9 @@ class SpatialLightColorCard extends HTMLElement {
       if (!cardEngaged) return;
       e.preventDefault();
       this._selectedLights.clear();
-      this._config.entities.forEach(ent => this._selectedLights.add(ent));
+      this._config.entities.forEach(ent => {
+        if (!this._isGroupExempt(ent)) this._selectedLights.add(ent);
+      });
       this.updateLights();
     }
 
@@ -7955,7 +7998,12 @@ class SpatialLightColorCard extends HTMLElement {
       const cx = r.left - rect.left + r.width / 2;
       const cy = r.top - rect.top + r.height / 2;
       if (cx >= left && cx <= left + width && cy >= top && cy <= top + height) {
-        if (this._isSelectableEntity(light.dataset.entity)) {
+        // Exempt lights are skipped HERE, on the way into `inside`, not from
+        // the committed target below -- so the additive base (which may hold an
+        // exempt light a long press deliberately put there) survives the band
+        // passing back over it.
+        if (this._isSelectableEntity(light.dataset.entity)
+          && !this._isGroupExempt(light.dataset.entity)) {
           inside.add(light.dataset.entity);
         }
       }
@@ -8579,9 +8627,11 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** Lights the adaptive preset would act on right now (selection or all). */
   _getAdaptiveTargets() {
+    // Only the implicit branch is filtered: an explicit selection is the user
+    // naming these lights, and a long press is how an exempt one gets in.
     const pool = this._selectedLights.size > 0
       ? [...this._selectedLights]
-      : [...(this._config.entities || [])];
+      : (this._config.entities || []).filter(id => !this._isGroupExempt(id));
     return pool.filter(id => id.startsWith('light.') && this._isEntityAvailable(id));
   }
 
@@ -8739,9 +8789,11 @@ class SpatialLightColorCard extends HTMLElement {
     const service = b.script.slice(dot + 1);
     const data = { ...(b.data || {}) };
     if (b.pass_entities !== false) {
+      // default_entity is an explicit name and is left alone; only the
+      // whole-plan fallback skips exempt lights.
       let targets = this._selectedLights.size > 0 ? [...this._selectedLights]
         : (this._config.default_entity ? [this._config.default_entity]
-          : [...(this._config.entities || [])]);
+          : (this._config.entities || []).filter((id) => !this._isGroupExempt(id)));
       targets = targets.filter((id) => this._isEntityAvailable(id));
       if (targets.length === 0) return;
       data[b.target_key] = targets;
@@ -9537,8 +9589,10 @@ class SpatialLightColorCard extends HTMLElement {
       // Nothing selected but preset is restricted — apply to all restricted lights
       targets = [...restrictedLights];
     } else {
-      // Nothing selected, no restriction — apply to all canvas entities
-      targets = [...(this._config.entities || [])];
+      // Nothing selected, no restriction — apply to all canvas entities, minus
+      // the ones marked as not affected by group selection. A preset that names
+      // its own lights (the branch above) is explicit and keeps them.
+      targets = (this._config.entities || []).filter(id => !this._isGroupExempt(id));
     }
     if (targets.length === 0) return;
 
@@ -12117,6 +12171,14 @@ class SpatialLightColorCard extends HTMLElement {
       });
     }
 
+    // Per-entity "not affected by group selection"
+    if (this._config.group_exempt_overrides && Object.keys(this._config.group_exempt_overrides).length) {
+      yamlLines.push('group_exempt_overrides:');
+      Object.keys(this._config.group_exempt_overrides).forEach((entity) => {
+        yamlLines.push(`${indent}${entity}: true`);
+      });
+    }
+
     // Per-entity icon-only overrides
     if (this._config.icon_only_overrides && Object.keys(this._config.icon_only_overrides).length) {
       yamlLines.push('icon_only_overrides:');
@@ -12340,6 +12402,7 @@ class SpatialLightColorCard extends HTMLElement {
       always_show_controls: false, controls_below: true,
       default_entity: null, show_entity_icons: true, icon_style: 'mdi',
       light_size: 56, icon_only_mode: false, size_overrides: {}, icon_only_overrides: {},
+      group_exempt_overrides: {},
       icon_rotation: 0, icon_rotation_overrides: {}, icon_mirror: 'none', icon_mirror_overrides: {},
       // Aligned with `setConfig` defaults so removing the field from YAML doesn't
       // visually change the card's appearance.
@@ -13326,6 +13389,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
         display: flex; align-items: center; justify-content: space-between; gap: 8px;
       }
       .entity-overrides .override-switch label { min-width: unset; flex: 1; }
+      /* Matches .option-row .sublabel, the editor's existing explanatory note
+         style. Without a rule of its own it renders at full body size and
+         reads as a paragraph rather than a caption. */
+      .entity-overrides .override-sublabel {
+        font-size: 12px; color: var(--secondary-text-color, #727272);
+        margin: -4px 0 2px; line-height: 1.4;
+      }
       .color-preview {
         width: 24px; height: 24px; border-radius: 4px; flex-shrink: 0;
         border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
@@ -13682,6 +13752,8 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const iconOnlyOverride = this._config.icon_only_overrides && this._config.icon_only_overrides[entity];
     const iconOnlyChecked = iconOnlyOverride !== undefined ? iconOnlyOverride : false;
     const hasIconOnlyOverride = iconOnlyOverride !== undefined;
+    const groupExempt = !!(this._config.group_exempt_overrides
+      && this._config.group_exempt_overrides[entity]);
     const rotationOverride = (this._config.icon_rotation_overrides && this._config.icon_rotation_overrides[entity] !== undefined) ? this._config.icon_rotation_overrides[entity] : '';
     const mirrorOverride = (this._config.icon_mirror_overrides && this._config.icon_mirror_overrides[entity]) || '';
     const glowOverride = (this._config.glow_overrides && this._config.glow_overrides[entity]) || {};
@@ -13744,6 +13816,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <label>Icon-only override</label>
             <ha-switch data-entity="${entity}" data-key="iconOnly" ${hasIconOnlyOverride && iconOnlyChecked ? 'checked' : ''}></ha-switch>
           </div>
+          <div class="override-switch">
+            <label>Not affected by group selection</label>
+            <ha-switch data-entity="${entity}" data-key="groupExempt" ${groupExempt ? 'checked' : ''}></ha-switch>
+          </div>
+          <div class="override-sublabel">Drag-select and select-all skip this light, and it is left out
+            of effects or script buttons fired with nothing selected. Tap it, long-press it or
+            Shift-click it to control it as usual.</div>
           <div class="override-subsection">Glow Override</div>
           <div class="override-switch">
             <label>Enable glow</label>
@@ -15144,6 +15223,9 @@ class SpatialLightColorCardEditor extends HTMLElement {
         const override = c.icon_only_overrides && c.icon_only_overrides[entity];
         sw.checked = override !== undefined ? override : false;
       });
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="groupExempt"]').forEach(sw => {
+        sw.checked = !!(c.group_exempt_overrides && c.group_exempt_overrides[sw.dataset.entity]);
+      });
       // Per-entity glow enabled switches
       root.querySelectorAll('.entity-overrides ha-switch[data-key="glowEnabled"]').forEach(sw => {
         const entity = sw.dataset.entity;
@@ -15288,6 +15370,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._config.entities.splice(idx, 1);
         if (this._config.positions) delete this._config.positions[entity];
         if (this._config.size_overrides) delete this._config.size_overrides[entity];
+        if (this._config.group_exempt_overrides) delete this._config.group_exempt_overrides[entity];
         if (this._config.icon_only_overrides) delete this._config.icon_only_overrides[entity];
         if (this._config.label_overrides) delete this._config.label_overrides[entity];
         if (this._config.color_overrides) delete this._config.color_overrides[entity];
@@ -15367,6 +15450,18 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     // Per-entity icon-only switch
     requestAnimationFrame(() => {
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="groupExempt"]').forEach(sw => {
+        sw.addEventListener('change', () => {
+          const entity = sw.dataset.entity;
+          if (!this._config.group_exempt_overrides) this._config.group_exempt_overrides = {};
+          // Absent rather than false: the normalizer drops falsey values, so
+          // storing false would round-trip to an empty key the YAML then omits
+          // anyway -- and a stray key per entity is how these maps bloat.
+          if (sw.checked) { this._config.group_exempt_overrides[entity] = true; }
+          else { delete this._config.group_exempt_overrides[entity]; }
+          this._fireConfigChanged();
+        });
+      });
       root.querySelectorAll('.entity-overrides ha-switch[data-key="iconOnly"]').forEach(sw => {
         sw.addEventListener('change', () => {
           const entity = sw.dataset.entity;

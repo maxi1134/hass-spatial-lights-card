@@ -165,6 +165,34 @@ The more-info panel is the standard Home Assistant entity dialog where you can s
 > long-press — or right-click, which opens more-info on a desktop whatever is selected. Entities that
 > cannot be selected at all (binary sensors) keep long-press-for-more-info in both states.
 
+### Not affected by group selection
+
+Some fixtures share a floor plan with ordinary lights but should not share their
+commands — UV projectors, grow lights, anything you do not want swept up when you
+drag a box around a room.
+
+Open a light in the card editor's entity list and turn on **Not affected by
+group selection**. From then on that light:
+
+- is **skipped by drag-select** and by select-all;
+- is **left out of effect presets and script buttons** fired with nothing
+  selected (which otherwise target every light on the plan).
+
+It stays completely controllable, by anything aimed at it directly:
+
+- **tap it** — selects just that light, replacing the selection;
+- **long-press it** — adds it to the group you already have selected;
+- **Shift/Ctrl/Cmd-click** or **Enter** on it — toggles its membership.
+
+Naming it explicitly always wins too: set it as `default_entity`, or list it in
+an effect preset's own lights, and it is targeted normally.
+
+```yaml
+group_exempt_overrides:
+  light.uv_living: true
+  light.uv_bedroom: true
+```
+
 ### Colour bars
 
 The controls are four bars in an L: brightness stands upright on the left, as
@@ -374,6 +402,7 @@ Position history stores up to 50 steps.
 | `icon_rotation_overrides` | map | `{}` | Per-entity icon rotation overrides (e.g., `light.lamp: 90`). |
 | `icon_mirror` | string | `"none"` | Global icon mirroring: `none`, `horizontal`, `vertical`, or `both`. |
 | `icon_mirror_overrides` | map | `{}` | Per-entity icon mirror overrides (e.g., `light.lamp: "horizontal"`). |
+| `group_exempt_overrides` | map | `{}` | Per-entity `true` to mark a light **not affected by group selection** — drag-select and select-all skip it, and it is left out of effects or script buttons fired with nothing selected. Tap, long-press, Shift-click and Enter still work on it. See [Not affected by group selection](#not-affected-by-group-selection). |
 | `size_overrides` | map | `{}` | Per-entity size overrides (e.g., `light.lamp: 40`). |
 | `icon_only_overrides` | map | `{}` | Per-entity icon-only mode overrides (e.g., `light.lamp: true`). |
 | `background_image` | string/map | `null` | URL string, or object `{url, fit, size, position, repeat, blend_mode, opacity, rendering, auto_aspect}`. `opacity` accepts 0–1; `repeat` takes any CSS `background-repeat`. See [Background Image](#background-image) for `fit`, `rendering` and `auto_aspect`. |
