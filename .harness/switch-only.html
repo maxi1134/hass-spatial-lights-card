@@ -156,12 +156,41 @@ window.destinations=async function(){
       && onRes.sent[0].entity_id.length===3};
 };
 
-// show_power_button: false opts out of power UI entirely.
+// show_power_button governs the round toggle in the presets row and NOTHING
+// else. A selection that can only be switched must still get the segment --
+// reading this setting at the renderer left such a card with no control at all
+// (measured: floating panel 420x85, segment absent, presets only).
 window.powerButtonOff=async function(){
   await window.mount({'light.a':{kind:'onoff'},'light.b':{kind:'onoff'}},
     {show_power_button:false});
   await window.select(['light.a','light.b']);
-  return window.probe();
+  const p=window.probe();
+  // and with a CAPABLE light the round toggle stays hidden, as configured
+  await window.select(['light.a']);
+  const r=card.shadowRoot.getElementById('powerToggle');
+  return Object.assign(p, {segmentStillShown:p.switchVisible, barsStillGone:!p.barsVisible,
+    roundToggleAbsent: !r});
+};
+
+// The exact shape of the report: floating panel, switch-only selection,
+// show_power_button false, script buttons present.
+window.reportedShape=async function(){
+  const out={};
+  for (const spb of [true,false]){
+    await window.mount({'light.uv_a':{kind:'onoff'},'light.uv_b':{kind:'onoff'}},
+      {controls_below:false, show_power_button:spb,
+       script_buttons:[{name:'Paint',script:'script.p',icon:'mdi:brush'},
+                       {name:'Shuffle',script:'script.s',icon:'mdi:shuffle'}]});
+    await window.select(['light.uv_a']);
+    const r=card.shadowRoot, fp=r.querySelector('.controls-floating');
+    const so=r.getElementById('switchOnly');
+    out['spb_'+spb]={
+      panel:[Math.round(fp.getBoundingClientRect().width),Math.round(fp.getBoundingClientRect().height)],
+      segment:!!so && getComputedStyle(so).display!=='none',
+      barsHidden:getComputedStyle(r.getElementById('colorBars')).display==='none'};
+  }
+  out.bothShowSegment = out.spb_true.segment && out.spb_false.segment;
+  return out;
 };
 
 // Mixed domains: lights + switches + a scene in one selection.

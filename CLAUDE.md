@@ -356,11 +356,16 @@ disagreement, which would undo it. Measured: panel 131px at all-on, all-off and 
 600x54, buttons 293x44 (44px because a wall-mounted tablet is the target and a fingertip is nearer
 40px across than the 24px minimum).
 
-**`show_power_button: false` hides the segment but still hides the bars.** The predicate answers "are
-the bars useless here", a question about the LIGHTS; whether the card may offer a power control is a
-separate question about the user's config and lives in `_renderSwitchOnly`, which returns '' exactly
-as `_renderPowerToggle` does. Conflating the two handed that user back the four dead bars this exists
-to remove. The panel is then its presets row alone -- measured 41px.
+**`show_power_button` governs the small round toggle in the presets row and NOTHING else.** It was
+briefly read by `_renderSwitchOnly` too, on the reasoning that a user who hid the round button did not
+want a bigger one. That shipped in v1.40.0 and was reported as "doesn't seem to work": a
+`show_power_button: false` card with a switch-only selection showed no control at all -- the bars
+correctly gone, the segment never rendered, just a grip and the presets row. Reproduced by measuring
+the panel against the reporter's screenshot: 420x85 with the setting false, 420x175 with it true,
+and theirs was the former. A selection that can ONLY be switched has to offer the switch; hiding an
+optional convenience button is not a request to be left with nothing. The setting now reaches only
+`_renderPowerToggle`, and `.harness/switch-only.html`'s `reportedShape()` asserts both values of it
+produce the same panel.
 
 **Every colour in this control is derived from `--text-primary`, not from a surface token**, and that
 was found by measurement rather than by looking. In `theme_mode: auto` -- the DEFAULT --

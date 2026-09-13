@@ -212,9 +212,10 @@ Capabilities are a union across the selection, so one dimmable or colour light i
 enough to make brightness, colour and temperature available to everything selected
 alongside it.
 
-Scripts, scenes and effect buttons stay put throughout. With
-`show_power_button: false` the dead bars still go, but no power control replaces
-them.
+Scripts, scenes and effect buttons stay put throughout. `show_power_button`
+controls only the small round toggle in the presets row — a switch-only
+selection always gets the Off | On control, since otherwise it would have no
+control at all.
 
 ### Colour bars
 

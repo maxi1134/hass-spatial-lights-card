@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.40.1 (fork-maxi1134)';
+  static BUILD = 'v1.40.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -8655,11 +8655,16 @@ class SpatialLightColorCard extends HTMLElement {
    * Gated on there being something to switch (`state !== 'none'`) so an empty
    * or scene-only selection does not get a power control it cannot use.
    *
-   * It deliberately does NOT consult `show_power_button`. This answers "are the
-   * bars useless here", which is a question about the LIGHTS; whether we may
-   * offer a power control is a separate question about the user's config, and
-   * lives at the renderer. Conflating them handed a `show_power_button: false`
-   * card back the four dead bars this exists to remove.
+   * It deliberately does NOT consult `show_power_button`, and NEITHER DOES THE
+   * RENDERER any more. That setting governs one thing: the small round toggle
+   * in the presets row. It was briefly read here too, on the reasoning that a
+   * user who hid the round button did not want a bigger one -- which left a
+   * `show_power_button: false` card with a switch-only selection showing no
+   * control at all, just its presets. Reported as "doesn't seem to work", and
+   * reproduced by measurement: panel 420x85 with the segment absent, against
+   * 420x175 with it. A selection that can ONLY be switched has to offer the
+   * switch; hiding an optional convenience button is not a request to be left
+   * with nothing.
    */
   _isSwitchOnlySelection(caps, power) {
     if (!power || power.state === 'none') return false;
@@ -8681,7 +8686,6 @@ class SpatialLightColorCard extends HTMLElement {
    * and a line that appears only when the lights disagree would undo it.
    */
   _renderSwitchOnly() {
-    if (!this._config.show_power_button) return '';
     return `
         <div class="switch-only" id="switchOnly">
           <div class="so-seg" role="group" aria-label="Power">
