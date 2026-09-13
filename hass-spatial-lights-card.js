@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.39.1 (fork-maxi1134)';
+  static BUILD = 'v1.39.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -6167,7 +6167,21 @@ class SpatialLightColorCard extends HTMLElement {
             this._els.tintSlider.value = state.startTint;
             this._updateSliderVisual(this._els.tintSlider);
           }
+          const colorBar = el.id === 'hueSlider' || el.id === 'tintSlider';
+          // Reverting the BAR was never enough. The abort skips
+          // `endInteraction`'s commit entirely, so the queued trailing live
+          // apply -- seeded by the tap and by this very revert -- was the last
+          // thing to reach the lights, landing AFTER the finger was gone. Drop
+          // it the way the commit path does, and let `updateVisuals(true)`
+          // below open a fresh leading edge: the one call that goes out is the
+          // pre-gesture colour, sent while the finger is still down, which is
+          // exactly the restore the tap made necessary.
+          if (colorBar) this._cancelLiveWheelThrottle();
           updateVisuals(true);
+          // Cleared last, because the restore above sets it. Gated on the
+          // colour bars so an abort on brightness cannot disarm the dedupe of
+          // a hue gesture running under the other finger.
+          if (colorBar) this._lastLiveWheelRgb = null;
           if (this._activeSliderGesture === gestureKind) this._activeSliderGesture = null;
           try { el.releasePointerCapture(e.pointerId); } catch (_) { /* may not have capture */ }
           return;

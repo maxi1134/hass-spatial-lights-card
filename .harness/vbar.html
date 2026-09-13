@@ -161,6 +161,28 @@ window.crossAxis=async function(id){
     sentNothing: calls.filter(c=>c.srv==='turn_on').length===0};
 };
 
+// Every bar's abort must leave NOTHING queued for the lights.
+//
+// `reverted` alone passed for a year while the colour bars still leaked: the
+// bar snapped back, and ~150ms later the live throttle's trailing call handed
+// the lights a colour from a gesture the user had already abandoned. So the
+// interesting field is `sentNothing`, and it is measured from the moment of
+// release -- `crossAxis` clears `calls` just before pointerup. The restore the
+// abort itself sends (the pre-gesture colour, undoing the tap) happens with
+// the finger still down and is deliberately NOT counted; what must never
+// happen is a call arriving after the hand is gone.
+window.abortSendsNothing=async function(){
+  const out={};
+  for(const id of ['hueSlider','tintSlider','brightnessSlider','temperatureSlider']){
+    await window.mount(); window.select();
+    const r=await window.crossAxis(id);
+    out[id]={reverted:r.reverted, sentNothing:r.sentNothing};
+  }
+  out.ok=Object.keys(out).filter(k=>k!=='ok')
+    .every(k=>out[k].reverted && out[k].sentNothing);
+  return out;
+};
+
 // ALONG the bar must NOT abort.
 window.alongAxis=async function(id){
   const el=$(id); cap(el); const b=el.getBoundingClientRect();

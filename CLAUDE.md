@@ -646,6 +646,23 @@ bars rendered blank. And the release commit must not repeat what the trailing li
 `_lastLiveWheelRgb` records what actually went out and the commit skips an exact repeat, cleared at
 pointerdown so it can never suppress a fresh gesture that merely lands on the same colour.
 
+**And the ABORT has to do both of those things too, which it did not.** A cross-axis swipe sets
+`isScrolling`, so `endInteraction` skips the commit block entirely -- including the
+`_cancelLiveWheelThrottle()` that makes the commit authoritative. The queued trailing apply therefore
+survived the abort and reached the lights ~150ms after the finger was gone: `crossAxis('hueSlider')`
+reported `{reverted: true, sentNothing: false}`, a bar that snapped back over lights that had not.
+Reverting `el.value` and `startTint` was only ever half of an abort; the other half is the call already
+in flight. The branch now cancels the throttle BEFORE `updateVisuals(true)` and nulls
+`_lastLiveWheelRgb` after it (the restore sets it), both gated on the colour bars so an abort on
+brightness cannot disarm a hue gesture running under the other finger.
+
+The abort still sends exactly one call, and should: `updateVisuals(true)` re-opens the throttle's
+leading edge with the pre-gesture colour, undoing the tap-to-set that `pointerdown` had already pushed
+to the lights. That restore goes out with the finger still down. `window.abortSendsNothing()` in
+`.harness/vbar.html` measures from the release, which is the only moment at which a call is evidence of
+a bug, and covers all four bars -- brightness and temperature pass by construction, and are in the list
+so that a future live-apply on either cannot regress silently.
+
 `_applyColorWheelSelection` / `_applyColorWheelSelectionLive` / `_cancelLiveWheelThrottle` survive
 unchanged: they are the shared service-call seam, used by the presets and keyboard paths too, and the
 leading+trailing throttle is what keeps a drag to ~7 calls/sec.
