@@ -203,10 +203,14 @@ sets one looks exactly as it did before. There is no upper limit; floodlights ar
 fine.
 
 A brighter fixture gets **both** a stronger pool and a slightly wider one, and a
-dimmer fixture the reverse. The two are balanced so the plan receives as much
-light as the bulb actually emits: doubling the lumens roughly doubles the light
-on the plan, rather than quadrupling it. In practice, over a 16× range of bulbs
-the pool's radius moves about 2.5×.
+dimmer fixture the reverse. The two are balanced so the plan receives about as
+much light as the bulb emits: doubling the lumens roughly doubles the light on
+the plan, rather than quadrupling it. Over a 16× range of bulbs the pool's
+radius moves about 2.5×.
+
+That balance holds up to roughly **1600 lm** at the default glow intensity,
+which is where the pool reaches full opacity. Brighter fixtures than that keep
+widening but stop getting brighter — there is no more headroom to give them.
 
 It combines with the light's current brightness rather than replacing it — a
 dimmed 3000 lm bulb still outshines a dimmed 800 lm one — and it applies even

@@ -88,6 +88,47 @@ window.energyTracksLumens=async function(over){
     defaultIsNeutral: rows[2].energyRatio===1};
 };
 
+// WHERE the invariant stops. Alpha clamps to 1 before the exposure multiply,
+// so at the default intensity 0.7 the flux term tops out at a ratio of ~2.04,
+// i.e. ~1633 lm. Below that energy tracks the ratio; above it only the area
+// moves, so energy goes as its square root. Pinned because the docs now make a
+// specific claim about where the boundary is.
+window.saturation=async function(){
+  const base=(await window.atLumens(800)).energy;
+  const rows=[];
+  for (const lm of [800,1200,1600,2000,3200,6400]){
+    const m=await window.atLumens(lm);
+    rows.push({lm, ratio:lm/800, energyRatio:Math.round(m.energy/base*100)/100, peak:m.peak});
+  }
+  const at = (lm)=>rows.find(r=>r.lm===lm);
+  const near=(a,b,tol)=>Math.abs(a-b)<=tol;
+  return {rows,
+    // linear below the knee
+    linearBelow: near(at(1200).energyRatio, 1.5, 0.2) && near(at(1600).energyRatio, 2, 0.25),
+    // and clearly NOT linear above it
+    sublinearAbove: at(3200).energyRatio < 3.4 && at(6400).energyRatio < 5,
+    // the last doubling buys about sqrt(2)
+    lastDoublingIsRoot2: near(at(6400).energyRatio / at(3200).energyRatio, 1.414, 0.15),
+    peakPegged: at(3200).peak === at(6400).peak};
+};
+
+// The pre-existing BRIGHTNESS axis is quadratic for shapes whose height is
+// `length`, and linear for `round`. Not something this feature changed -- pinned
+// so the asymmetry documented in section 8j cannot drift unnoticed.
+window.brightnessAxis=async function(){
+  const out={};
+  for (const shape of ['round','beam']){
+    const cfg={glow:{enabled:true, shape, width:'40%', length:'40%', intensity:0.6,
+      scale_with_brightness:true}, light_field:{enabled:true}};
+    const e=[];
+    for (const b of [255,128]){ await window.mount(cfg,{brightness:b}); e.push(window.energy().energy); }
+    out[shape]=Math.round(e[1]/e[0]*1000)/1000;
+  }
+  return {ratios:out,
+    roundIsLinear: Math.abs(out.round-0.5)<0.12,
+    beamIsQuadratic: Math.abs(out.beam-0.25)<0.09};
+};
+
 // 800 (and an absent entry) must render byte-identically to no feature at all.
 window.defaultIsInvisible=async function(){
   const none=await window.atLumens(null);

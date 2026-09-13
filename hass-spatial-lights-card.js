@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.41.0 (fork-maxi1134)';
+  static BUILD = 'v1.41.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -99,6 +99,32 @@ class SpatialLightColorCard extends HTMLElement {
    * But the request was explicitly that RANGE respond too, and a pool that
    * never changes size does not read as a brighter lamp. 0.5 / 0.25 gives both
    * axes something visible while keeping the total honest.
+   *
+   * TWO HONEST LIMITS ON THAT CLAIM, both measured, neither worth changing.
+   *
+   * The invariant holds only while the alpha has headroom. It is clamped to 1
+   * before the exposure multiply, so with the default intensity 0.7 the flux
+   * term tops out at 1/0.7, i.e. a ratio of about 2.04, i.e. roughly 1633 lm.
+   * Measured: energy tracks the ratio through 1200 (1.56x) and 1600 (2.12x),
+   * then the peak pegs and it goes as the SQUARE ROOT -- 3200 lm gives 2.95x
+   * and 6400 gives 4.19x, the last doubling buying 1.42x. Above saturation a
+   * fixture keeps widening and stops brightening. That is the right shape for
+   * running out of headroom, and it is also where the pair the constraint
+   * rejects (1 / 0.5) would have been the better one, since with alpha pinned
+   * only area moves and area-linear is energy-linear. Household bulbs live
+   * from ~400 to ~1600 lm, which is exactly the band where this pair is right
+   * and that one is not, so the trade is deliberate rather than accidental.
+   *
+   * And the constraint is a house rule on THIS axis, not a law the card obeys
+   * everywhere: the pre-existing current-brightness path multiplies alpha by
+   * the ratio AND the length by the ratio, so for every shape whose height is
+   * `length` -- oval, semicone, beam, spotlight, bar -- painted energy already
+   * goes as the ratio SQUARED. Measured on a beam: half brightness paints
+   * 0.225 of the light, against 0.5 for linear and 0.25 for quadratic. Only
+   * `round` is linear there, because its size comes from `width`, which
+   * brightness does not touch. Retrofitting the constraint to that axis would
+   * change how every existing card looks, so it stays as it is and this
+   * comment stops pretending otherwise.
    */
   static LUMENS_ALPHA_EXP = 0.5;
   static LUMENS_SIZE_EXP = 0.25;

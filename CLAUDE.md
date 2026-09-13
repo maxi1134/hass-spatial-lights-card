@@ -868,8 +868,28 @@ the request was explicitly that RANGE respond too, and a pool that never changes
 a brighter lamp. 0.5 / 0.25 gives both axes something visible while keeping the total honest.
 Measured against a 1:1 plan: 200 lm -> 0.24x energy, 400 -> 0.50x, 1600 -> 2.12x, 3200 -> 2.95x
 against lumen ratios of 0.25, 0.5, 2 and 4, with the radius moving 0.61x to 1.50x across that 16x
-range. The 3200 figure falls short of 4x because the alpha saturates at 1 -- a very bright fixture
-stops getting brighter and only keeps getting wider, which is the right way for it to fail.
+range.
+
+**The invariant holds only while the alpha has headroom, and that is worth stating rather than
+burying.** Alpha is clamped to 1 before the exposure multiply, so at the default intensity 0.7 the
+flux term tops out at 1/0.7 -- a ratio of about 2.04, roughly 1633 lm. Measured: linear through 1200
+(1.56x) and 1600 (2.12x), then the peak pegs at 229 and energy goes as the SQUARE ROOT -- 2000 gives
+2.36x, 3200 gives 2.95x, 6400 gives 4.19x, so the last doubling buys 1.42x. Above saturation a
+fixture keeps widening and stops brightening.
+
+That is also precisely where the rejected pair (1 / 0.5) would have been the better one: with alpha
+pinned, only area moves, and area-linear is energy-linear. The choice is a trade between the two
+regimes rather than a strict win, and it is made deliberately for the band household bulbs actually
+occupy -- roughly 400 to 1600 lm -- where this pair is right and that one would put four times the
+light on the plan for a doubled bulb.
+
+**And the constraint is a house rule on THIS axis, not a law the card obeys everywhere.** The
+pre-existing current-brightness path multiplies alpha by the ratio AND the length by the ratio, so
+for every shape whose height is `length` -- oval, semicone, beam, spotlight, bar -- painted energy
+already goes as the ratio SQUARED. Measured on a beam: half brightness paints 0.225 of the light,
+against 0.5 for linear and 0.25 for quadratic; `round` is the exception at 0.45, because its size
+comes from `width`, which brightness does not touch. Retrofitting the constraint there would change
+how every existing card looks, so it stays, and the asymmetry is recorded rather than hidden.
 
 **`_lumenScale` returns the two multipliers already separated** because they land in different places:
 `flux` multiplies the emitter's alpha, `size` multiplies its width AND its length. Both are exactly 1
