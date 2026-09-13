@@ -396,10 +396,54 @@ so; it used to say "double-click to reset", which described returning to the bot
 stopped being true when tracking landed. The authority is deliberate -- a hand-placed box stays
 put -- but the way back has to be discoverable or the feature reads as broken.
 
+**And a drag has to BE a drag.** The grip's `pointermove` had no movement threshold, so the first
+pointermove of any size wrote a hand-placed position -- one pixel was enough. On touch that is not a
+rare accident: a finger press almost always emits a pointermove, so brushing the grip pinned the panel
+for good, in localStorage, across reloads, with no visible cause and nothing on screen to undo.
+Measured: a 1px twitch moved the box 171 -> 172, wrote `{"fx":0.269,"fy":0.025}`, added `dragged`, and
+the panel never tracked again. `SLOP` is 5px, matching the marquee's own "materialize after 5px" --
+the same idea, that a gesture becomes real only once the hand has committed. Once crossed it stays
+crossed, so a drag that wanders back within 5px keeps following the finger. A press with NO
+pointermove at all never stored anything, before or after.
+
+**The memos must not outlive the selection they describe.** `_clearAutoPlacement` reset only `_cfAt`,
+and the idle early-return in `_placeFloatingControls` happens BEFORE the `_cfKey` comparison, so a
+deselect left `_cfSide`/`_cfKey`/`_cfFreeY` intact. That matters because `_cfFreeY` is deliberately
+HELD for the life of a selection while the panel's height is not a stable input -- a lamp turning on
+anywhere adds a preset swatch and grows the box. So: select a light, deselect, let the box grow,
+reselect the SAME light, and the held offset placed the panel half the height change off centre --
+measured 31px on a 1400x700 plan -- permanently, because `_cfKey` was unchanged and never invalidated
+it. Reselecting could not fix it; only selecting a different light could. All four memos are now
+cleared on both reset paths and on the idle path, which is what `_renderAll` had always done.
+
+**The editor preview used to write into the dashboard card's slot.** `_floatingPosKey` hashes the
+entity list and title, and the preview is built from the SAME config, so both hashed to one key.
+Nudging the panel aside in the preview -- while the config sidebar covers half the plan, which is
+exactly when you want to -- pinned the real card on its next load. Verified: a freshly created card
+with `_isInsideEditorPreview()` false came up carrying `dragged` and never tracked. The preview now
+scopes its key with a `preview|` prefix rather than being refused storage, so a position dropped there
+still survives HA rebuilding the preview on the next keystroke. `_loadFloatingPos` memoizes per KEY
+rather than once for the life of the card, because the key depends on a DOM-ancestor question that has
+no answer until the card is connected and `_renderAll` legitimately runs detached -- caching the first
+answer would let a preview card keep a dashboard position it read while it was still homeless.
+
+**Moving the lights is as much a reason to re-place as selecting them.** `_smoothApplyPositions` is
+the funnel every position mutation goes through -- arrow-key nudge, undo, redo, Rearrange -- and it
+ended with the comment "Controls may rely on selection state; keep as-is." That was true when the
+panel parked at a fixed end of the plan and only cared about WHICH lights were selected; once it
+started tracking their geometry, a position change became exactly as relevant as a selection change.
+The markers animated to their new places over 200ms and the panel stayed behind until some unrelated
+state change happened to run `updateLights`.
+
 `.harness/controls-place.html` drives the rest: `sweep()` walks a selection round every corner and edge and
 reports overlap, gap and whether the box stayed inside the canvas; `stability()` asserts it does not move
 across five ticks and an unrelated state change; `handPlaced()` asserts a dropped position survives a
-reselection.
+reselection. `tapVsDrag()` asserts a 2px twitch on the grip moves nothing, stores nothing and keeps
+tracking while a 72x48px drag moves, stores and pins; `memoAcrossDeselect()` asserts the memos are
+null while idle and that reselecting after the box grew re-centres to within 2px;
+`previewLeak()` asserts a preview drag and a dashboard card resolve to different keys and that the
+dashboard card still tracks; `positionMove()` asserts the panel follows a selected light that moves
+under it.
 
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use

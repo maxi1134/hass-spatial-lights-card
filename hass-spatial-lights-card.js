@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.38.0 (fork-maxi1134)';
+  static BUILD = 'v1.38.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -3048,7 +3048,13 @@ class SpatialLightColorCard extends HTMLElement {
         }, 250);
       }
     });
-    // Controls may rely on selection state; keep as-is.
+    // The panel tracks the selection's GEOMETRY, so moving a selected light is
+    // exactly as much a reason to re-place it as selecting a different one.
+    // This is the funnel every position mutation goes through -- the arrow-key
+    // nudge, undo, redo, Rearrange -- and none of them reached placement, so
+    // the markers slid to their new places and the panel stayed behind until
+    // some unrelated state change happened to run updateLights.
+    this._placeFloatingControls();
   }
 
   /** ---------- History ---------- */
@@ -8766,7 +8772,19 @@ class SpatialLightColorCard extends HTMLElement {
    * than an id, because the card has no stable identity of its own.
    */
   _floatingPosKey() {
-    const sig = (this._config.entities || []).join(',') + '|' + (this._config.title || '');
+    // The editor's live preview is built from the SAME config as the real
+    // card, so it hashed to the same key and its drags were written into the
+    // dashboard card's slot. Nudging the panel aside in the preview -- while
+    // the config sidebar covers half the plan, which is exactly when you want
+    // to -- therefore pinned the card the user had never touched, on its next
+    // load. Verified: a freshly created card, `_isInsideEditorPreview()`
+    // false, came up carrying `dragged` and never tracked again.
+    //
+    // The preview gets its own slot rather than being refused storage, so a
+    // position dropped there still survives HA rebuilding the preview on the
+    // next keystroke.
+    const scope = this._isInsideEditorPreview() ? 'preview|' : '';
+    const sig = scope + (this._config.entities || []).join(',') + '|' + (this._config.title || '');
     let h = 0x811c9dc5;
     for (let i = 0; i < sig.length; i++) {
       h ^= sig.charCodeAt(i);
@@ -8781,10 +8799,18 @@ class SpatialLightColorCard extends HTMLElement {
    * the box drifting off the plan.
    */
   _loadFloatingPos() {
-    if (this._floatingPos !== undefined) return this._floatingPos;
+    // Memoized per KEY, not once for the life of the card. The key depends on
+    // whether the card is inside the editor preview, and that is a DOM-ancestor
+    // question with no answer until the card is connected -- `_renderAll`
+    // legitimately runs detached, HA setting config and hass before appending.
+    // Caching the first answer would let a preview card keep the dashboard's
+    // stored position it read while it was still homeless.
+    const key = this._floatingPosKey();
+    if (this._floatingPosFor === key) return this._floatingPos;
+    this._floatingPosFor = key;
     this._floatingPos = null;
     try {
-      const raw = window.localStorage.getItem(this._floatingPosKey());
+      const raw = window.localStorage.getItem(key);
       if (raw) {
         const v = JSON.parse(raw);
         if (Number.isFinite(v.fx) && Number.isFinite(v.fy)) this._floatingPos = { fx: v.fx, fy: v.fy };
@@ -8795,6 +8821,7 @@ class SpatialLightColorCard extends HTMLElement {
 
   _saveFloatingPos(pos) {
     this._floatingPos = pos;
+    this._floatingPosFor = this._floatingPosKey();
     try {
       if (pos) window.localStorage.setItem(this._floatingPosKey(), JSON.stringify(pos));
       else window.localStorage.removeItem(this._floatingPosKey());
@@ -8886,6 +8913,23 @@ class SpatialLightColorCard extends HTMLElement {
     grip.addEventListener('pointermove', (e) => {
       if (!st || e.pointerId !== st.pointerId) return;
       e.preventDefault();
+      // A drag has to BE a drag. Without this the handler fired on the first
+      // pointermove of any size, so a press that twitched a single pixel wrote
+      // a hand-placed position -- and a hand-placed position permanently
+      // short-circuits the automatic tracking, in localStorage, across
+      // reloads. On touch that is not a rare accident: a finger press almost
+      // always emits a pointermove, so brushing the grip was enough to pin the
+      // panel for good, with no visible cause and nothing on screen to undo.
+      //
+      // SLOP matches the marquee's own "materialize after 5px", the closest
+      // analogue in the card: a gesture that only becomes real once the hand
+      // has clearly committed to it. Once crossed it stays crossed, so a drag
+      // that wanders back within 5px of its origin keeps following the finger.
+      if (!st.moved) {
+        const SLOP = 5;
+        if (Math.abs(e.clientX - st.grabX) < SLOP && Math.abs(e.clientY - st.grabY) < SLOP) return;
+        st.moved = true;
+      }
       const maxX = st.hb.width - st.ew;
       const maxY = st.hb.height - st.eh;
       const x = Math.max(Math.min(0, maxX), Math.min(Math.max(0, maxX), st.originX + (e.clientX - st.grabX)));
@@ -8998,8 +9042,21 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /** Hand the panel back to its CSS anchor (bottom centre). */
+  /**
+   * Back to no automatic placement at all, and to no MEMORY of one.
+   *
+   * All four memos go, not just `_cfAt`. They are a decision about a
+   * particular selection -- which side it was placed on, and the free-axis
+   * offset held for it -- so keeping them past the end of that selection is
+   * keeping an answer to a question nobody asked any more. `_renderAll` has
+   * always reset all four for exactly this reason; the two reset paths and the
+   * idle path had not.
+   */
   _clearAutoPlacement(el) {
     this._cfAt = null;
+    this._cfSide = null;
+    this._cfKey = null;
+    this._cfFreeY = null;
     el.classList.remove('auto-placed');
     el.style.removeProperty('--cf-x');
     el.style.removeProperty('--cf-y');
@@ -9057,6 +9114,17 @@ class SpatialLightColorCard extends HTMLElement {
     // selection reads most naturally. This is the idle path, and it returns
     // before reading a single rect.
     if (!marks.length) {
+      // The memos are cleared even when there is no class to remove, because
+      // they are what makes a RESELECTION stale. `_cfFreeY` is held for the
+      // life of a selection and the panel's height is not a stable input --
+      // a lamp turning on anywhere adds a preset swatch and grows the box --
+      // so deselect, let the box grow, reselect the SAME light, and the held
+      // offset put the panel half the height change off centre, permanently,
+      // because `_cfKey` was unchanged and never invalidated it. Measured at
+      // 31px off on a 1400x700 plan.
+      this._cfSide = null;
+      this._cfKey = null;
+      this._cfFreeY = null;
       if (el.classList.contains('auto-placed')) this._clearAutoPlacement(el);
       return;
     }

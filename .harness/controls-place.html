@@ -149,6 +149,132 @@ window.stability=async function(){
     stable: a.join()===b.join() && b.join()===c.join()};
 };
 
+// ---------------------------------------------------------------------------
+// The grip must tell a DRAG from a TAP. Without a threshold, one pixel of
+// twitch wrote a hand-placed position -- which permanently short-circuits
+// tracking, in localStorage, across reloads. On touch a press almost always
+// emits a pointermove, so brushing the grip pinned the panel for good.
+// ---------------------------------------------------------------------------
+const gripEl=()=>card.shadowRoot.getElementById('cfGrip');
+function gpev(el,type,x,y,id){
+  el.dispatchEvent(new PointerEvent(type,{pointerId:id||55,pointerType:'touch',button:0,
+    buttons:type==='pointerup'?0:1,clientX:x,clientY:y,bubbles:true,cancelable:true,composed:true}));
+}
+const storedCount=()=>{try{return Object.keys(localStorage).filter(k=>k.indexOf('slc-ctrlpos')===0).length;}catch(_){return -1;}};
+
+window.gripGesture=async function(dx,dy){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const before=window.probe().panel;
+  const g=gripEl(); const b=g.getBoundingClientRect();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y);
+  const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/12));
+  for(let i=1;i<=steps;i++) gpev(g,'pointermove',x+dx*i/steps,y+dy*i/steps);
+  gpev(g,'pointerup',x+dx,y+dy);
+  await tick(260);
+  const after=window.probe().panel;
+  await window.select(['light.garage']);
+  const reselected=window.probe().panel;
+  return {before, after, reselected, stored:storedCount(),
+    moved: before.join()!==after.join(),
+    stillTracks: after.join()!==reselected.join()};
+};
+
+// A twitch must change nothing; a real drag must pin and persist.
+window.tapVsDrag=async function(){
+  const twitch=await window.gripGesture(2,1);
+  const drag=await window.gripGesture(72,48);
+  return {twitch, drag,
+    pass: !twitch.moved && twitch.stored===0 && twitch.stillTracks
+       && drag.moved && drag.stored===1 && !drag.stillTracks};
+};
+
+// ---------------------------------------------------------------------------
+// The placement memos must not outlive the selection they describe. _cfFreeY is
+// HELD for the life of a selection and the panel's height is not a stable input
+// (a lamp turning on grows the presets row), so a deselect that kept the memo
+// left a reselection of the SAME light off-centre by half the height change.
+// ---------------------------------------------------------------------------
+window.memoAcrossDeselect=async function(){
+  await window.mount({aspect_ratio:'2:1'}, 1400);
+  await window.select(['light.bed_left']);
+  const first={side:card._cfSide, freeY:card._cfFreeY, panel:window.probe().panel};
+  await window.select([]);
+  const idle={side:card._cfSide, key:card._cfKey, freeY:card._cfFreeY};
+  // grow the panel while nothing is selected, the way a new preset row would
+  const spacer=document.createElement('div'); spacer.style.height='48px';
+  card.shadowRoot.querySelector('.controls-floating').appendChild(spacer);
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  await window.select(['light.bed_left']);
+  const again={side:card._cfSide, freeY:card._cfFreeY, panel:window.probe().panel};
+  const sel=window.probe().selection;
+  const selCy=sel[1]+sel[3]/2, panCy=again.panel[1]+again.panel[3]/2;
+  return {first, idle, again, selCentreY:selCy, panelCentreY:panCy,
+    offBy:Math.round(panCy-selCy),
+    memosCleared: idle.side===null && idle.key===null && idle.freeY===null,
+    // only meaningful for a sideways placement, where the free axis is held
+    sideways: again.side==='right' || again.side==='left',
+    recentred: Math.abs(panCy-selCy)<=2};
+};
+
+// ---------------------------------------------------------------------------
+// A drag inside the editor's live preview must not pin the real card. Both are
+// built from the same config, so they used to hash to one localStorage key.
+// ---------------------------------------------------------------------------
+window.previewLeak=async function(){
+  try{localStorage.clear();}catch(_){}
+  document.querySelectorAll('#hp,#hd').forEach(n=>n.remove());
+  document.body.insertAdjacentHTML('beforeend',
+    '<hui-card-preview id="hp" style="display:block;width:900px"></hui-card-preview><div id="hd" style="width:900px"></div>');
+  const cfg=Object.assign(CFG(), {aspect_ratio:'2:1', controls_below:false, always_show_controls:true});
+  const build=(host)=>{const c=document.createElement('spatial-light-color-card');
+    c.setConfig(JSON.parse(JSON.stringify(cfg))); c.hass=hass; host.appendChild(c); return c;};
+  const prev=build(document.getElementById('hp'));
+  await tick(700);
+  const g=prev.shadowRoot.getElementById('cfGrip'), b=g.getBoundingClientRect();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,61);
+  for(let i=1;i<=5;i++) gpev(g,'pointermove',x+i*14,y+i*9,61);
+  gpev(g,'pointerup',x+70,y+45,61);
+  await tick(300);
+  // a dashboard card created AFTER that drag -- the leak only bites on a fresh
+  // read, since _loadFloatingPos memoizes per key
+  const dash=build(document.getElementById('hd'));
+  await tick(700);
+  const P=(c)=>{const r=c.shadowRoot.querySelector('.controls-floating').getBoundingClientRect();
+    const cb=c.shadowRoot.getElementById('canvas').getBoundingClientRect();
+    return [Math.round(r.left-cb.left),Math.round(r.top-cb.top)];};
+  dash._selectedLights=new Set(['light.kitchen']); dash.updateLights(); await tick(450);
+  const a=P(dash);
+  dash._selectedLights=new Set(['light.garage']); dash.updateLights(); await tick(450);
+  const z=P(dash);
+  const out={previewKey:prev._floatingPosKey(), dashKey:dash._floatingPosKey(),
+    previewInside:prev._isInsideEditorPreview(), dashInside:dash._isInsideEditorPreview(),
+    dashKitchen:a, dashGarage:z,
+    keysDiffer:prev._floatingPosKey()!==dash._floatingPosKey(),
+    dashStillTracks:a.join()!==z.join(),
+    previewKeptItsDrop:prev.shadowRoot.querySelector('.controls-floating').classList.contains('dragged')};
+  out.pass = out.keysDiffer && out.dashStillTracks && out.previewKeptItsDrop;
+  document.querySelectorAll('#hp,#hd').forEach(n=>n.remove());
+  return out;
+};
+
+// Moving a SELECTED light must move the panel, not leave it behind until some
+// unrelated state change happens to run updateLights.
+window.positionMove=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const before=window.probe().panel;
+  card._config.positions['light.kitchen']={x:85,y:88};
+  card._smoothApplyPositions();
+  await tick(320);
+  const after=window.probe().panel;
+  return {before, after, panelFollowed: before.join()!==after.join()};
+};
+
 // A hand-placed panel must win over any automatic placement.
 window.handPlaced=async function(){
   await window.mount();
