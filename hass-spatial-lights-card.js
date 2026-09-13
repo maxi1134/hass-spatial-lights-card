@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.40.2 (fork-maxi1134)';
+  static BUILD = 'v1.40.3 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4797,16 +4797,32 @@ class SpatialLightColorCard extends HTMLElement {
          out at contrast 1.00 against the panel, i.e. the control had no
          visible extent at all. A percentage of --text-primary over transparent
          always differs from whatever is behind it, on any theme, because it is
-         derived from the one colour guaranteed to contrast with the surface. */
+         derived from the one colour guaranteed to contrast with the surface.
+
+         theme_mode: dark is affected identically and is NOT a special case --
+         its fixed palette puts --surface-tertiary #1a1a1a on a panel that
+         composites to about rgb(19.5), which is 1.06:1. An earlier version of
+         this comment blamed auto mode alone and understated the blast radius;
+         all three palettes collapse the same way, for the same reason. */
       .so-seg {
         display: flex; width: 100%; gap: 4px; padding: 4px;
         border-radius: 10px;
+        /* Plain greys FIRST, color-mix second. An engine that does not know
+           color-mix drops that declaration as invalid and keeps this one, so
+           the track degrades to a visible wash rather than to nothing. It
+           matters here specifically: the fixed dark and light palettes contain
+           no color-mix at all, so this rule is the first such dependency on
+           those paths, and theme_mode: dark is the one place the fix could
+           otherwise fail silently. A mid grey with alpha composites lighter on
+           a dark ground and darker on a light one, so one value serves both. */
+        background: rgba(128, 128, 128, 0.22);
         background: color-mix(in srgb, var(--text-primary) 10%, transparent);
         /* The BORDER carries the boundary, not the fill: a wash dark enough to
            reach 3:1 on its own would read as a filled button rather than a
            track. --border-medium is a theme token and can be as little as 12%
            of anything, so this is derived from --text-primary too. */
-        border: 1px solid color-mix(in srgb, var(--text-primary) 42%, transparent);
+        border: 1px solid rgba(128, 128, 128, 0.62);
+        border: 1px solid color-mix(in srgb, var(--text-primary) 50%, transparent);
       }
       /* 44px because this is the one control a wall-mounted tablet has left,
          and a fingertip is nearer 40px across than the 24px minimum. */

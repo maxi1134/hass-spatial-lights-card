@@ -370,12 +370,22 @@ produce the same panel.
 **Every colour in this control is derived from `--text-primary`, not from a surface token**, and that
 was found by measurement rather than by looking. In `theme_mode: auto` -- the DEFAULT --
 `--surface-tertiary` is `color-mix(--surface-primary 90%, --text-primary)` while the panel it sits on
-is `--surface-elevated` at 87/13: the same two colours three percent apart. Against a realistic HA
-dark theme the track measured **contrast 1.00 against the panel** -- the control had no visible extent
+is `--surface-elevated` at 87/13: the same two colours three percent apart. The fixed `dark` and `light`
+palettes collapse identically and are not a special case: `dark` puts
+`--surface-tertiary` `#1a1a1a` on a panel compositing to about rgb(19.5), which is 1.06:1. Against a
+realistic HA dark theme the track measured **contrast 1.00 against the panel** -- the control had no visible extent
 at all, and a hairline `--border-subtle` at 6% alpha did not rescue it. A percentage of
 `--text-primary` over `transparent` always differs from whatever is behind it, on any theme, because
-it is derived from the one colour guaranteed to contrast with the surface. Measured after: track 1.30,
-border 2.98, the latter clearing the 3:1 that WCAG 1.4.11 asks of a component boundary. The BORDER
+it is derived from the one colour guaranteed to contrast with the surface. Measured after, on the reporter's own shape (floating panel,
+`show_power_button: false`, two script buttons): border 5.34 in `dark`, 3.26 in `light`, 4.79 in
+`auto`, all clearing the 3:1 that WCAG 1.4.11 asks of a component boundary.
+
+**The `color-mix()` declarations carry a plain-grey fallback ABOVE them**, because the fixed `dark`
+and `light` palettes contain no `color-mix` anywhere else -- this rule is the first such dependency on
+those paths, so `theme_mode: dark` was precisely where the fix could have failed silently on an older
+WebView. An engine that does not know the function drops that declaration and keeps the grey; a mid
+grey with alpha composites lighter on a dark ground and darker on a light one, so one value serves
+both. The BORDER
 carries that, not the fill: a wash dark enough to reach 3:1 alone reads as a filled button rather than
 a track.
 
