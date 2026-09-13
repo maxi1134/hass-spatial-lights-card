@@ -16,27 +16,25 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.37.1 (fork-maxi1134)';
+  static BUILD = 'v1.37.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
   /**
-   * The brightness bar's floor, in HA's own 0-255 units: 1% of 255.
+   * The brightness bar's floor, in HA's own 0-255 units: the lowest value that
+   * still means ON.
    *
-   * The bar must never be able to turn a light off -- that is the power
-   * toggle's job -- but it must still reach a genuine 1%, because a bedside
-   * lamp at 1% is a real setting people want.
-   *
-   * 3, not 1 or 2: 1% of 255 is 2.55, and HA's own `brightness_pct: 1`
-   * resolves to `round(255 / 100)` = 3, so 3 IS one percent in the units the
-   * service speaks. 2 would display as 1% while actually being 0.78%.
+   * 1, the bottom of the scale HA accepts for a lit light -- so the bar can go
+   * as dim as the hardware will go, and stops exactly one step short of the
+   * zero that would switch it off. Turning a light off is the power toggle's
+   * job, never this bar's.
    *
    * Legibility of the track is a SEPARATE floor -- see PREVIEW_MIN_RATIO. The
    * two were briefly the same number, which forced a choice between a readable
    * swatch and a usable dimming range; they are independent because they
    * answer different questions.
    */
-  static BRIGHTNESS_MIN = 3;
+  static BRIGHTNESS_MIN = 1;
 
   /**
    * How dark the brightness bar's TRACK is allowed to get, as a fraction of
@@ -51,9 +49,14 @@ class SpatialLightColorCard extends HTMLElement {
    */
   static PREVIEW_MIN_RATIO = 0.25;
 
-  /** The floor as a percentage, for the readouts that must not under-report it. */
+  /**
+   * The floor as a percentage, for the readouts that must not under-report it.
+   *
+   * Never below 1: 1/255 rounds to 0, and a bar that cannot switch a light off
+   * must not announce "0%" at the one position it can reach.
+   */
   static get BRIGHTNESS_MIN_PCT() {
-    return Math.round((SpatialLightColorCard.BRIGHTNESS_MIN / 255) * 100);
+    return Math.max(1, Math.round((SpatialLightColorCard.BRIGHTNESS_MIN / 255) * 100));
   }
 
   /**

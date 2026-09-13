@@ -367,12 +367,12 @@ snap on that path.
 
 **There are TWO floors, and conflating them was a mistake worth recording.**
 
-`BRIGHTNESS_MIN = 3` is the BAR's floor: 1% of 255 is 2.55 and HA's own `brightness_pct: 1` resolves
-to `round(255/100)` = 3, so 3 IS one percent in the units the service speaks. It exists so the bar can
-dim but never switch a light off -- that is the power toggle's job. The fill is measured against
-`MIN..255` rather than `0..255`, or it disagrees with where the native thumb lands, and every
-percentage readout floors at `BRIGHTNESS_MIN_PCT` so the bar cannot announce a value its thumb cannot
-reach.
+`BRIGHTNESS_MIN = 1` is the BAR's floor: the bottom of the scale HA accepts for a light that is on,
+so the bar reaches as dim as the hardware will go and stops exactly one step short of the zero that
+would switch it off -- which is the power toggle's job. The fill is measured against `MIN..255` rather
+than `0..255`, or it disagrees with where the native thumb lands. `BRIGHTNESS_MIN_PCT` is
+`max(1, round(MIN/255*100))` and every percentage readout floors at it: 1/255 rounds to 0, and a bar
+that cannot switch a light off must not announce "0%" at the one position it can reach.
 
 `PREVIEW_MIN_RATIO = 0.25` is the SWATCH's floor, and it constrains nothing else. The track doubles as
 the colour preview and dims linearly, so a genuinely dim light rendered it unreadable: at 1% a warm
