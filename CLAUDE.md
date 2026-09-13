@@ -375,8 +375,8 @@ than `0..255`, or it disagrees with where the native thumb lands. `BRIGHTNESS_MI
 that cannot switch a light off must not announce "0%" at the one position it can reach.
 
 `PREVIEW_MIN_RATIO = 0.25` is the SWATCH's floor, and it constrains nothing else. The track doubles as
-the colour preview and dims linearly, so a genuinely dim light rendered it unreadable: at 1% a warm
-white is rgb(3,2,2), the right hue in principle and indistinguishable from off. `dimPreviewRGB` clamps
+the colour preview and dims linearly, so a genuinely dim light rendered it unreadable: at the bar's
+floor a warm white computes to rgb(1,1,1), the right hue in principle and indistinguishable from off. `dimPreviewRGB` clamps
 the ratio it paints with, so every real brightness from 1% to 25% shows the same 25% swatch
 (rgb(62,51,40), luminance 53 against 2) and above that the swatch tracks the value exactly.
 
@@ -384,15 +384,16 @@ The two were briefly the same number -- the bar's floor was raised to 64 to fix 
 forced a choice between a readable swatch and a usable dimming range. They are independent because
 they answer different questions: how dim may the LIGHT go, and how dark may the SWATCH go. Neither
 touches the value, the fill or the service call: at the bar's minimum the card still sends
-`brightness: 3` and still reports "1%".
+`brightness: 1` and still reports "1%".
 Clamped at three sites, but `_handleBrightnessChange` is the one that matters: it is the only seam
 that emits a `brightness:` value, and `_pendingBrightness` can have been captured before a re-render.
 `_brightnessRatio` is untouched -- a light REPORTING 0 still renders dark; only the bar lost the
 ability to command one.
 
 **The brightness track is the colour AT that brightness.** `dimPreviewRGB` multiplies per channel,
-linearly, because the request is literally "1% of colour": at the floor a warm white lands on
-rgb(3,2,2). A gamma curve would put 1% at roughly 13% grey, which is not almost-black.
+linearly, because the request is literally "1% of colour": at the floor a warm white computes to
+rgb(1,1,1), which is what the swatch floor then clamps. A gamma curve would put 1% at roughly 13%
+grey, which is not almost-black.
 
 Two things make it correct rather than merely dim. `--bar-preview` holds the ALREADY-DIMMED value, so
 a brightness-only repaint must not read it back and dim again -- that compounds and the track walks to
