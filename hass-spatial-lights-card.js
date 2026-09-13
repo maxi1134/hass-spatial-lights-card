@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.40.0 (fork-maxi1134)';
+  static BUILD = 'v1.40.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4789,26 +4789,51 @@ class SpatialLightColorCard extends HTMLElement {
       .controls-below.switch-only-mode .power-toggle,
       .controls-floating.switch-only-mode .power-separator,
       .controls-below.switch-only-mode .power-separator { display: none; }
+      /* The track is a WASH OF THE TEXT COLOUR, not a surface token. In
+         theme_mode auto -- the default -- --surface-tertiary is
+         color-mix(--surface-primary 90%, --text-primary) while the panel it
+         sits on is --surface-elevated at 87/13: the same two colours three
+         percent apart. Measured against a real HA dark theme, the track came
+         out at contrast 1.00 against the panel, i.e. the control had no
+         visible extent at all. A percentage of --text-primary over transparent
+         always differs from whatever is behind it, on any theme, because it is
+         derived from the one colour guaranteed to contrast with the surface. */
       .so-seg {
         display: flex; width: 100%; gap: 4px; padding: 4px;
-        border-radius: 10px; background: var(--surface-tertiary);
-        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+        /* The BORDER carries the boundary, not the fill: a wash dark enough to
+           reach 3:1 on its own would read as a filled button rather than a
+           track. --border-medium is a theme token and can be as little as 12%
+           of anything, so this is derived from --text-primary too. */
+        border: 1px solid color-mix(in srgb, var(--text-primary) 42%, transparent);
       }
       /* 44px because this is the one control a wall-mounted tablet has left,
          and a fingertip is nearer 40px across than the 24px minimum. */
       .so-btn {
         flex: 1 1 0; min-width: 0; height: 44px; border: 0; border-radius: 7px;
         background: transparent; color: var(--text-secondary);
-        font: 500 14px/1 inherit; cursor: pointer;
+        /* NOT the 'font' shorthand: 'inherit' is a CSS-wide keyword and cannot
+           appear inside one, so 'font: 500 14px/1 inherit' is invalid and the
+           whole declaration is dropped -- measured, the buttons fell back to
+           the UA default of Arial 13.33px/400 while the rest of the panel used
+           the HA font. A button does not inherit font-family on its own. */
+        font-family: inherit; font-size: 14px; font-weight: 500; line-height: 1;
+        cursor: pointer;
         display: inline-flex; align-items: center; justify-content: center; gap: 7px;
         transition: background var(--transition-fast), color var(--transition-fast);
       }
       .so-btn ha-icon { --mdc-icon-size: 18px; display: flex; }
       .so-btn:hover { color: var(--text-primary); }
+      /* --text-primary-color is Home Assistant's own name for "text that sits
+         ON the primary colour", which is the only value guaranteed to be
+         readable there. Hardcoding #fff assumes a dark primary: against HA's
+         default #03a9f4 it measures 2.63:1, below the 4.5:1 floor. */
       .so-btn[aria-pressed="true"] {
-        background: var(--accent-primary); color: #fff;
+        background: var(--accent-primary);
+        color: var(--text-primary-color, #fff);
       }
-      .so-btn[aria-pressed="true"]:hover { color: #fff; filter: brightness(1.08); }
+      .so-btn[aria-pressed="true"]:hover { filter: brightness(1.08); }
       .so-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
       .so-note {
         font-size: 12px; color: var(--text-tertiary); text-align: center;

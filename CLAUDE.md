@@ -362,6 +362,29 @@ separate question about the user's config and lives in `_renderSwitchOnly`, whic
 as `_renderPowerToggle` does. Conflating the two handed that user back the four dead bars this exists
 to remove. The panel is then its presets row alone -- measured 41px.
 
+**Every colour in this control is derived from `--text-primary`, not from a surface token**, and that
+was found by measurement rather than by looking. In `theme_mode: auto` -- the DEFAULT --
+`--surface-tertiary` is `color-mix(--surface-primary 90%, --text-primary)` while the panel it sits on
+is `--surface-elevated` at 87/13: the same two colours three percent apart. Against a realistic HA
+dark theme the track measured **contrast 1.00 against the panel** -- the control had no visible extent
+at all, and a hairline `--border-subtle` at 6% alpha did not rescue it. A percentage of
+`--text-primary` over `transparent` always differs from whatever is behind it, on any theme, because
+it is derived from the one colour guaranteed to contrast with the surface. Measured after: track 1.30,
+border 2.98, the latter clearing the 3:1 that WCAG 1.4.11 asks of a component boundary. The BORDER
+carries that, not the fill: a wash dark enough to reach 3:1 alone reads as a filled button rather than
+a track.
+
+**`font: 500 14px/1 inherit` is invalid CSS and was silently dropped.** `inherit` is a CSS-wide
+keyword and cannot appear inside a shorthand, so the whole declaration went, and since a `<button>`
+does not inherit `font-family` on its own the labels rendered in UA Arial 13.33px/400 while the rest
+of the panel used the HA font. Measured before and after. The card uses separate `font-size` /
+`font-weight` properties everywhere else; this rule was the only one of its kind.
+
+The filled half takes `var(--text-primary-color, #fff)` -- Home Assistant's own name for "text that
+sits ON the primary colour" -- rather than a hardcoded white, which assumes a dark primary. Against
+HA's default `#03a9f4` white measures 2.63:1; the token at least lets a theme say otherwise. (The
+power toggle's `.on` state hardcodes `#fff` the same way and has the same weakness.)
+
 Scripts, scenes and effect buttons stay in the panel throughout: they work on switch-only lights and
 are often why the lights were selected. `.harness/switch-only.html` pins the height invariant, the
 union rule across five capability shapes, the destinations, the mixed-domain batching (a scene in the
