@@ -1,0 +1,178 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Switch-only controls</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:640px}</style>
+</head><body><div id="host"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const calls=[];
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+let card, hass;
+
+// Capability shapes. 'onoff' is the reported case; 'dimmable' and 'full' are
+// the lights that must keep the bars for the whole group.
+const MODES={
+  onoff:   {supported_color_modes:['onoff'], color_mode:'onoff'},
+  dimmable:{supported_color_modes:['brightness'], color_mode:'brightness', brightness:180},
+  full:    {supported_color_modes:['rgb','color_temp'], color_mode:'rgb', brightness:200,
+            rgb_color:[255,170,80], min_color_temp_kelvin:2000, max_color_temp_kelvin:6500,
+            color_temp_kelvin:3000},
+  legacy:  {},   // no supported_color_modes at all -> assume full capability
+};
+
+// spec: {id: 'onoff'|'dimmable'|'full'|'legacy', state:'on'|'off'}
+window.mount=async function(spec, over){
+  try{localStorage.clear();}catch(_){}
+  calls.length=0;
+  const ids=Object.keys(spec);
+  const states={}, positions={};
+  ids.forEach((id,i)=>{
+    const s=spec[id];
+    states[id]={entity_id:id, state:s.state||'on',
+      attributes:Object.assign({friendly_name:id.split('.')[1]}, MODES[s.kind]||{})};
+    positions[id]={x:15+i*20, y:40};
+  });
+  hass={states,entities:{},
+    callService:(d,srv,data)=>{calls.push({d,srv,data:JSON.parse(JSON.stringify(data||{}))});return Promise.resolve();},
+    callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+    positions, aspect_ratio:'16:10', background_image:{url:'floorplan.svg'},
+    controls_below:true, always_show_controls:true}, over||{}));
+  card.hass=hass; host.appendChild(card);
+  await tick(700);
+  window.card=card; window.calls=calls; window.hassObj=hass;
+  return card.constructor.BUILD;
+};
+
+window.select=async function(list){
+  card._selectedLights=new Set(list);
+  card.updateLights();
+  await tick(200);
+};
+
+const $=(id)=>card.shadowRoot.getElementById(id);
+const panel=()=>card.shadowRoot.querySelector('.controls-below');
+const vis=(el)=>{ if(!el) return false; const b=el.getBoundingClientRect();
+  return b.width>0 && b.height>0 && getComputedStyle(el).display!=='none'; };
+
+window.probe=function(){
+  const p=panel();
+  const bars=$('colorBars'), so=$('switchOnly'), pwr=$('powerToggle');
+  const off=$('switchOnlyOff'), on=$('switchOnlyOn'), note=$('switchOnlyNote');
+  const R=(el)=>{const b=el.getBoundingClientRect();return [Math.round(b.width),Math.round(b.height)];};
+  return {
+    mode: p.classList.contains('switch-only-mode'),
+    barsVisible: vis(bars), switchVisible: vis(so),
+    powerToggleVisible: vis(pwr),
+    separatorVisible: vis(card.shadowRoot.querySelector('.power-separator')),
+    offPressed: off?off.getAttribute('aria-pressed'):null,
+    onPressed: on?on.getAttribute('aria-pressed'):null,
+    note: note?note.textContent:null,
+    panelHeight: Math.round(p.getBoundingClientRect().height),
+    segBox: so&&vis(so)?R(card.shadowRoot.querySelector('.so-seg')):null,
+    btnBox: off&&vis(off)?R(off):null,
+  };
+};
+
+// Press one of the two buttons and report what went out.
+window.press=async function(which){
+  calls.length=0;
+  const el=$(which==='on'?'switchOnlyOn':'switchOnlyOff');
+  if(!el) return {noButton:true};
+  el.dispatchEvent(new MouseEvent('click',{bubbles:true,composed:true}));
+  await tick(220);
+  return {sent:calls.map(c=>({svc:c.d+'.'+c.srv,
+    entity_id:Array.isArray(c.data.entity_id)?c.data.entity_id.slice().sort():c.data.entity_id}))};
+};
+
+// Push new states in, the way HA would after the service call lands.
+window.setStates=async function(map){
+  const states={};
+  Object.keys(hassObj.states).forEach(k=>{
+    const st=hassObj.states[k];
+    states[k]=Object.assign({},st,{state: (k in map)?map[k]:st.state});
+  });
+  hassObj=Object.assign({},hassObj,{states});
+  window.hassObj=hassObj;
+  card.hass=hassObj;
+  await tick(200);
+};
+
+// THE HEADLINE: the panel is exactly one height in all three states.
+window.heightAcrossStates=async function(){
+  await window.mount({'light.a':{kind:'onoff'},'light.b':{kind:'onoff'},'light.c':{kind:'onoff'}});
+  await window.select(['light.a','light.b','light.c']);
+  const out={};
+  await window.setStates({'light.a':'on','light.b':'on','light.c':'on'});
+  out.allOn=window.probe();
+  await window.setStates({'light.a':'off','light.b':'off','light.c':'off'});
+  out.allOff=window.probe();
+  await window.setStates({'light.a':'on','light.b':'on','light.c':'off'});
+  out.mixed=window.probe();
+  const hs=[out.allOn.panelHeight,out.allOff.panelHeight,out.mixed.panelHeight];
+  out.sameHeight = hs.every(h=>h===hs[0]);
+  out.heights=hs;
+  return out;
+};
+
+// The union rule: one capable light restores the bars for the whole group.
+window.unionRule=async function(){
+  await window.mount({'light.uv1':{kind:'onoff'},'light.uv2':{kind:'onoff'},
+                      'light.dim':{kind:'dimmable'},'light.rgb':{kind:'full'},
+                      'light.old':{kind:'legacy'},'switch.fan':{kind:'onoff'}});
+  const out={};
+  await window.select(['light.uv1','light.uv2']);          out.onlyOnOff=window.probe();
+  await window.select(['light.uv1','light.dim']);          out.withDimmable=window.probe();
+  await window.select(['light.uv1','light.rgb']);          out.withRGB=window.probe();
+  await window.select(['light.uv1','light.old']);          out.withLegacy=window.probe();
+  await window.select(['switch.fan']);                     out.switchAlone=window.probe();
+  await window.select(['light.uv1']);                      out.oneOnOff=window.probe();
+  await window.select([]);                                 out.nothing=window.probe();
+  out.pass = out.onlyOnOff.mode && !out.withDimmable.mode && !out.withRGB.mode
+          && !out.withLegacy.mode && out.switchAlone.mode && out.oneOnOff.mode
+          && !out.nothing.mode;
+  return out;
+};
+
+// Each button names a destination, including from a mismatched group.
+window.destinations=async function(){
+  await window.mount({'light.a':{kind:'onoff'},'light.b':{kind:'onoff'},'light.c':{kind:'onoff'}});
+  await window.select(['light.a','light.b','light.c']);
+  await window.setStates({'light.a':'on','light.b':'on','light.c':'off'});
+  const before=window.probe();
+  const offRes=await window.press('off');
+  await window.setStates({'light.a':'on','light.b':'on','light.c':'off'});
+  const onRes=await window.press('on');
+  return {mixedState:{off:before.offPressed,on:before.onPressed,note:before.note},
+    pressOff:offRes, pressOn:onRes,
+    offTurnsAllOff: offRes.sent.length===1 && offRes.sent[0].svc==='light.turn_off'
+      && offRes.sent[0].entity_id.length===3,
+    onTurnsAllOn: onRes.sent.length===1 && onRes.sent[0].svc==='light.turn_on'
+      && onRes.sent[0].entity_id.length===3};
+};
+
+// show_power_button: false opts out of power UI entirely.
+window.powerButtonOff=async function(){
+  await window.mount({'light.a':{kind:'onoff'},'light.b':{kind:'onoff'}},
+    {show_power_button:false});
+  await window.select(['light.a','light.b']);
+  return window.probe();
+};
+
+// Mixed domains: lights + switches + a scene in one selection.
+window.mixedDomains=async function(){
+  await window.mount({'light.a':{kind:'onoff'},'switch.fan':{kind:'onoff'},
+                      'scene.movie':{kind:'onoff'}});
+  await window.select(['light.a','switch.fan','scene.movie']);
+  const p=window.probe();
+  const r=await window.press('on');
+  return {probe:p, sent:r.sent};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>

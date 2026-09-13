@@ -193,6 +193,29 @@ group_exempt_overrides:
   light.uv_bedroom: true
 ```
 
+### Switch-only lights
+
+Select a light that can only be switched on and off — no brightness, no colour, no
+temperature — and the colour bars are replaced by a single **Off | On** control
+instead of four greyed-out ones.
+
+- All selected lights **on** or all **off** → that half is filled in.
+- Selected lights **disagree** → neither half is filled, and a line underneath
+  reads `2 on, 1 off`. Each button is a destination, so one press settles the
+  whole group either way.
+
+The panel is exactly the same height in all three, so nothing moves under your
+thumb while the lights catch up.
+
+**Group it with a capable light and the bars come back** — for the whole group.
+Capabilities are a union across the selection, so one dimmable or colour light is
+enough to make brightness, colour and temperature available to everything selected
+alongside it.
+
+Scripts, scenes and effect buttons stay put throughout. With
+`show_power_button: false` the dead bars still go, but no power control replaces
+them.
+
 ### Colour bars
 
 The controls are four bars in an L: brightness stands upright on the left, as

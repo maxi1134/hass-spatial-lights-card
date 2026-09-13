@@ -318,6 +318,56 @@ The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements a
 them is already element-guarded, so they are inert rather than broken and would light up again if the
 labels ever came back.
 
+## 7a. Switch-only selections
+
+When every controlled entity can only be switched on and off, the four bars are replaced by one
+segmented **Off | On** control. `_isSwitchOnlySelection(caps, power)` is the whole test, and it is
+true exactly when the capability union is empty and there is something toggleable.
+
+**The union IS the "unless grouped with capable lights" rule**, and it was already there.
+`_getControlCapabilities` ORs `supported_color_modes` across the selection, so one dimmable light
+answers `brightness: true` for the group and everyone keeps the bars. Nothing had to be written for
+that half of the request. A light with NO `supported_color_modes` counts as fully capable -- that
+fallback is deliberate and predates this, so a legacy integration keeps its controls rather than
+losing them to a missing attribute. Verified: on/off + dimmable, on/off + rgb and on/off + legacy all
+render bars; on/off alone, a bare `switch.*` and a single on/off light all render the segment.
+
+**Both surfaces are always in the markup, swapped by a class.** `updateLights` is deliberately
+non-destructive -- only `_renderAll` writes markup -- so re-rendering the panel to exchange two
+surfaces on every selection change would throw away in-flight gestures and every bound listener for
+the sake of a `display` property. `switch-only-mode` on the controls container hides the bars, the
+power toggle and its separator; the segment and its note are hidden without it. Every consumer of the
+bar ids is already element-guarded, and the ids stay in the DOM regardless, so nothing downstream
+needed to learn about the mode.
+
+**The power toggle goes with the bars**, because the segment IS the power control and two of them in
+one panel is one too many.
+
+**The two buttons name a DESTINATION, they do not toggle.** `_toggleSelection` gained an optional
+`forceOn`; left undefined it keeps the any-off -> all-on rule the power button and the Space key
+want. That matters precisely in the mismatched case, where "toggle" has no honest meaning -- the same
+reasoning that makes a long press ADD rather than toggle (section 4). Each press is one batched call
+per domain: `light.turn_off {entity_id: [a, b, c]}`.
+
+**One height in all three states, which is the whole reason this shape was chosen** over a button
+that grows into two when the group disagrees. The note line is therefore always present and always
+factual -- `2 on, 1 off` when mismatched, `3 selected` otherwise -- rather than appearing only on
+disagreement, which would undo it. Measured: panel 131px at all-on, all-off and mismatched, segment
+600x54, buttons 293x44 (44px because a wall-mounted tablet is the target and a fingertip is nearer
+40px across than the 24px minimum).
+
+**`show_power_button: false` hides the segment but still hides the bars.** The predicate answers "are
+the bars useless here", a question about the LIGHTS; whether the card may offer a power control is a
+separate question about the user's config and lives in `_renderSwitchOnly`, which returns '' exactly
+as `_renderPowerToggle` does. Conflating the two handed that user back the four dead bars this exists
+to remove. The panel is then its presets row alone -- measured 41px.
+
+Scripts, scenes and effect buttons stay in the panel throughout: they work on switch-only lights and
+are often why the lights were selected. `.harness/switch-only.html` pins the height invariant, the
+union rule across five capability shapes, the destinations, the mixed-domain batching (a scene in the
+selection still fires `scene.turn_on`), the floating panel, `show_power_button: false`, and that the
+bars come back working after leaving the mode.
+
 **Script buttons** (`script_buttons`) run a script against whatever the controls are pointed at. They
 render as `.effect-preset.script-preset` in the presets row, so they inherit the icon-circle look, the
 click binding and the Enter/Space path the other presets already have — the only new code is the

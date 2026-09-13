@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.39.2 (fork-maxi1134)';
+  static BUILD = 'v1.40.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -203,6 +203,10 @@ class SpatialLightColorCard extends HTMLElement {
       controlsFloating: null,
       controlsBelow: null,
       powerToggle: null,
+      switchOnly: null,
+      switchOnlyOff: null,
+      switchOnlyOn: null,
+      switchOnlyNote: null,
       brightnessSlider: null,
       brightnessValue: null,
       temperatureSlider: null,
@@ -2888,7 +2892,16 @@ class SpatialLightColorCard extends HTMLElement {
   // domain. If any entity in the group is currently off, the target is "on";
   // if all are on, the target is "off". Scenes are always activated since
   // they have no off-state. Unavailable entities are skipped.
-  _toggleSelection(entities) {
+  /**
+   * Toggle, or drive to an explicit state.
+   *
+   * `forceOn` is the switch-only panel's whole reason for existing: with a
+   * mismatched group there is no honest answer to "toggle", so its two buttons
+   * name a DESTINATION instead and pass it here. Left undefined, the original
+   * any-off -> all-on rule applies, which is what the power button and the
+   * Space key still want.
+   */
+  _toggleSelection(entities, forceOn) {
     if (!this._hass || !Array.isArray(entities) || entities.length === 0) return;
     const candidates = entities.filter(id => {
       const [d] = id.split('.');
@@ -2904,7 +2917,9 @@ class SpatialLightColorCard extends HTMLElement {
       return d === 'light' || d === 'switch' || d === 'input_boolean';
     });
     const anyOff = stateContributors.some(id => this._hass.states?.[id]?.state !== 'on');
-    const targetOn = stateContributors.length === 0 ? true : anyOff;
+    const targetOn = typeof forceOn === 'boolean'
+      ? forceOn
+      : (stateContributors.length === 0 ? true : anyOff);
     const service = targetOn ? 'turn_on' : 'turn_off';
 
     // Batch by domain — `light.turn_on { entity_id: [...] }` lets the platform
@@ -3618,6 +3633,10 @@ class SpatialLightColorCard extends HTMLElement {
     this._cfFreeY = null;
     this._els.controlsBelow = this.shadowRoot.getElementById('controlsBelow');
     this._els.powerToggle = this.shadowRoot.getElementById('powerToggle');
+    this._els.switchOnly = this.shadowRoot.getElementById('switchOnly');
+    this._els.switchOnlyOff = this.shadowRoot.getElementById('switchOnlyOff');
+    this._els.switchOnlyOn = this.shadowRoot.getElementById('switchOnlyOn');
+    this._els.switchOnlyNote = this.shadowRoot.getElementById('switchOnlyNote');
     this._els.brightnessSlider = this.shadowRoot.getElementById('brightnessSlider');
     this._els.brightnessValue = this.shadowRoot.getElementById('brightnessValue');
     this._els.temperatureSlider = this.shadowRoot.getElementById('temperatureSlider');
@@ -4748,6 +4767,54 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .controls-below.visible { display: flex; }
 
+      /* ---- Switch-only selection -------------------------------------------
+         Shown INSTEAD of the colour bars when every controlled entity can only
+         be switched on and off. One segmented control, the same shape in all
+         three states: the current state is filled, and when the group
+         disagrees neither half is and the note underneath says so. Nothing
+         reflows between states, which is the whole reason this shape was
+         chosen over a button that grows into two.
+
+         The power button and its separator go with the bars -- this control IS
+         the power button, and two of them in one panel is one too many. */
+      .switch-only {
+        display: none; flex-direction: column; gap: 8px;
+        width: 100%; min-width: 0; flex: 0 0 auto;
+      }
+      .controls-floating.switch-only-mode .switch-only,
+      .controls-below.switch-only-mode .switch-only { display: flex; }
+      .controls-floating.switch-only-mode .color-bars,
+      .controls-below.switch-only-mode .color-bars,
+      .controls-floating.switch-only-mode .power-toggle,
+      .controls-below.switch-only-mode .power-toggle,
+      .controls-floating.switch-only-mode .power-separator,
+      .controls-below.switch-only-mode .power-separator { display: none; }
+      .so-seg {
+        display: flex; width: 100%; gap: 4px; padding: 4px;
+        border-radius: 10px; background: var(--surface-tertiary);
+        border: 1px solid var(--border-subtle);
+      }
+      /* 44px because this is the one control a wall-mounted tablet has left,
+         and a fingertip is nearer 40px across than the 24px minimum. */
+      .so-btn {
+        flex: 1 1 0; min-width: 0; height: 44px; border: 0; border-radius: 7px;
+        background: transparent; color: var(--text-secondary);
+        font: 500 14px/1 inherit; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+        transition: background var(--transition-fast), color var(--transition-fast);
+      }
+      .so-btn ha-icon { --mdc-icon-size: 18px; display: flex; }
+      .so-btn:hover { color: var(--text-primary); }
+      .so-btn[aria-pressed="true"] {
+        background: var(--accent-primary); color: #fff;
+      }
+      .so-btn[aria-pressed="true"]:hover { color: #fff; filter: brightness(1.08); }
+      .so-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+      .so-note {
+        font-size: 12px; color: var(--text-tertiary); text-align: center;
+        min-height: 16px; line-height: 16px;
+      }
+
       /* The colour picker: a vertical brightness bar beside a column of three
          full-width ones. Full width is the point for those three -- a bar you
          can hit anywhere along is easier to aim than a 128px wheel, which is
@@ -5428,6 +5495,7 @@ class SpatialLightColorCard extends HTMLElement {
              aria-label="Move controls (double-tap to follow the selection)"
              title="Drag to move — double-tap to follow the selection"></div>
         ${this._colorBarsHTML(avgState, tempRange)}
+        ${this._renderSwitchOnly()}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
           <div class="preset-separator power-separator" aria-hidden="true"></div>
@@ -5449,6 +5517,7 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <div class="controls-below ${(this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) ? 'visible' : ''}" id="controlsBelow" role="region" aria-label="Light controls">
         ${this._colorBarsHTML(avgState, tempRange)}
+        ${this._renderSwitchOnly()}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
           <div class="preset-separator power-separator" aria-hidden="true"></div>
@@ -6043,6 +6112,7 @@ class SpatialLightColorCard extends HTMLElement {
       c.classList.toggle('no-brightness-support', !caps.brightness);
     });
     this._updatePowerToggle(context.controlled || []);
+    this._updateSwitchOnly(context, caps);
   }
 
   _updateSliderVisual(el) {
@@ -6864,6 +6934,15 @@ class SpatialLightColorCard extends HTMLElement {
         this._toggleSelection(this._getControlledEntities());
       });
     }
+    // Each button names a DESTINATION rather than toggling, which is the only
+    // honest thing either can do while the group disagrees with itself.
+    [[this._els.switchOnlyOff, false], [this._els.switchOnlyOn, true]].forEach(([el, on]) => {
+      if (!el) return;
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._toggleSelection(this._getControlledEntities(), on);
+      });
+    });
   }
 
   /**
@@ -8539,6 +8618,92 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /** Accessible name doubling as tooltip: says what a press will do. */
+  /**
+   * Is every controlled entity a plain on/off thing?
+   *
+   * True only when the capability union is empty -- `_getControlCapabilities`
+   * already unions across the selection, so ONE dimmable light in the group
+   * answers false and the whole group keeps the bars. That union is the entire
+   * implementation of "unless they are within a group with lights having the
+   * temperature/rgb/brightness attributes"; nothing else was needed.
+   *
+   * Gated on there being something to switch (`state !== 'none'`) so an empty
+   * or scene-only selection does not get a power control it cannot use.
+   *
+   * It deliberately does NOT consult `show_power_button`. This answers "are the
+   * bars useless here", which is a question about the LIGHTS; whether we may
+   * offer a power control is a separate question about the user's config, and
+   * lives at the renderer. Conflating them handed a `show_power_button: false`
+   * card back the four dead bars this exists to remove.
+   */
+  _isSwitchOnlySelection(caps, power) {
+    if (!power || power.state === 'none') return false;
+    return !caps.rgb && !caps.color_temp && !caps.brightness;
+  }
+
+  /**
+   * The switch-only control: one segmented Off | On, always the same shape.
+   *
+   * It is rendered ALONGSIDE the colour bars and swapped by a class rather than
+   * re-rendered into place, because `updateLights` is deliberately
+   * non-destructive -- it syncs values and never rebuilds the panel -- and
+   * only `_renderAll` writes markup. Rebuilding the panel on every selection
+   * change to swap two surfaces would throw away in-flight gestures and every
+   * bound listener for the sake of a `display` property.
+   *
+   * The note line is always present, never conditionally absent: keeping the
+   * panel exactly one height in all three states is the point of this shape,
+   * and a line that appears only when the lights disagree would undo it.
+   */
+  _renderSwitchOnly() {
+    if (!this._config.show_power_button) return '';
+    return `
+        <div class="switch-only" id="switchOnly">
+          <div class="so-seg" role="group" aria-label="Power">
+            <button type="button" class="so-btn" id="switchOnlyOff" aria-pressed="false">
+              <ha-icon icon="mdi:power-off" data-icon="mdi:power-off"></ha-icon><span>Off</span>
+            </button>
+            <button type="button" class="so-btn" id="switchOnlyOn" aria-pressed="false">
+              <ha-icon icon="mdi:power" data-icon="mdi:power"></ha-icon><span>On</span>
+            </button>
+          </div>
+          <div class="so-note" id="switchOnlyNote" aria-live="polite"></div>
+        </div>`;
+  }
+
+  /**
+   * Sync the switch-only surface, and decide which surface the panel shows.
+   * Called from `_updateControlValues`, so it runs on every state change the
+   * card already watches.
+   */
+  _updateSwitchOnly(context, caps) {
+    const controlled = (context && context.controlled) || [];
+    const power = this._getPowerState(controlled);
+    const active = this._isSwitchOnlySelection(caps, power);
+    const containers = [this._els.controlsFloating, this._els.controlsBelow].filter(Boolean);
+    containers.forEach(c => c.classList.toggle('switch-only-mode', active));
+    if (!active) return;
+    const total = power.toggleable.length;
+    const onCount = power.toggleable
+      .filter(id => this._hass?.states?.[id]?.state === 'on').length;
+    if (this._els.switchOnlyOff) {
+      this._els.switchOnlyOff.setAttribute('aria-pressed', String(power.state === 'off'));
+    }
+    if (this._els.switchOnlyOn) {
+      this._els.switchOnlyOn.setAttribute('aria-pressed', String(power.state === 'on'));
+    }
+    if (this._els.switchOnlyNote) {
+      // Factual in every state, because the line's height is load-bearing and
+      // an invisible placeholder would waste it.
+      const text = power.state === 'mixed'
+        ? `${onCount} on, ${total - onCount} off`
+        : `${total} selected`;
+      if (this._els.switchOnlyNote.textContent !== text) {
+        this._els.switchOnlyNote.textContent = text;
+      }
+    }
+  }
+
   _powerToggleLabel(power) {
     if (power.state === 'none') return 'Nothing to turn on or off';
     // Mirrors _toggleSelection: any off → everything on; all on → all off.
