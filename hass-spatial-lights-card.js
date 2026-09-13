@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.38.1 (fork-maxi1134)';
+  static BUILD = 'v1.38.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4627,14 +4627,23 @@ class SpatialLightColorCard extends HTMLElement {
       .modal-hint { margin-top: 8px; font-size:12px; color: var(--text-tertiary); text-align:center; }
 
       @media (max-width: 768px) {
-        .controls-floating {
-          display: flex; flex-direction: column; align-items: stretch;
-          gap: 12px;
-          /* Sized by WIDTH, not by pinning both edges: a dragged box has to
-             release the right edge, and with width:auto that collapses it to
-             shrink-to-fit. */
-          width: calc(100% - 24px);
-        }
+        /* .controls-floating deliberately has NO width override here any more.
+           It used to be forced to calc(100% - 24px), which asked the wrong
+           question: whether the VIEWPORT is small, when what matters is whether
+           the CARD has room. On a tablet those disagree -- a 768px viewport
+           matches this query while the card is still 740px wide -- so the panel
+           was blown up to 716px on a 740px canvas, leaving maxX = 24 and, after
+           the EDGE clamp, exactly 4px of horizontal travel. Selecting a group on
+           one side of the plan and then the other moved the panel 4 pixels: it
+           read as "the controls don't relocate any more", with nothing on the
+           card to explain it and no gesture that could fix it.
+
+           The base rule already says the right thing at every width --
+           width: min(420px, calc(100% - 20px)) is full-width-minus-a-margin on a
+           narrow card and 420px wherever there is room -- so the override was
+           worth only 4px on the phones it was written for. The four properties
+           that sat beside it (display, flex-direction, align-items, gap) were
+           byte-for-byte the base rule's and are gone with it. */
         .controls-below.visible {
           display: flex; flex-direction: column; align-items: stretch;
           gap: 12px;
@@ -5362,8 +5371,8 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
         <div class="cf-grip" id="cfGrip" role="button" tabindex="0"
-             aria-label="Move controls (double-click to follow the selection)"
-             title="Drag to move — double-click to follow the selection"></div>
+             aria-label="Move controls (double-tap to follow the selection)"
+             title="Drag to move — double-tap to follow the selection"></div>
         ${this._colorBarsHTML(avgState, tempRange)}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
           ${this._renderPowerToggle(controlContext)}
@@ -8951,6 +8960,29 @@ class SpatialLightColorCard extends HTMLElement {
       el.classList.remove('dragging');
       if (st.last) {
         this._saveFloatingPos({ fx: st.last.x / st.hb.width, fy: st.last.y / st.hb.height });
+      } else if (e.type === 'pointerup') {
+        // A TAP on the grip, not a drag -- and two of them in quick succession
+        // are the reset gesture, counted here in pointer events rather than
+        // left to the 'dblclick' listener above.
+        //
+        // That listener is unreachable on a touchscreen. This handler's own
+        // pointerdown calls preventDefault() for every pointer type, which for
+        // a touch pointer suppresses the compatibility mouse events the browser
+        // would otherwise synthesise -- click, and with it dblclick. The only
+        // other way back, Escape on the focused grip, needs a keyboard. So on a
+        // tablet a panel that had been pinned could not be unpinned at all: the
+        // one documented escape hatch and its keyboard alternative were both
+        // shut, which is a bad place for the single recovery path to be.
+        //
+        // 350ms is the card's own double-tap window, the same one
+        // `_lastTap` uses for double-tap-to-toggle on a light.
+        const now = Date.now();
+        if (this._gripTapAt && (now - this._gripTapAt) < 350) {
+          this._gripTapAt = 0;
+          resumeTracking();
+        } else {
+          this._gripTapAt = now;
+        }
       }
       st = null;
     };
@@ -8961,12 +8993,17 @@ class SpatialLightColorCard extends HTMLElement {
     // says that. A dropped position is stored per card in localStorage and
     // outlives a reload, so without a way back a single drag silently pins the
     // panel for good and it reads as "it stopped following my selection".
-    grip.addEventListener('dblclick', () => {
+    const resumeTracking = () => {
       this._saveFloatingPos(null);
       el.classList.remove('dragged');
       this._clearAutoPlacement(el);
       this._placeFloatingControls();
-    });
+    };
+    // Idempotent, so the mouse firing both the tap pair below and a real
+    // dblclick costs nothing: clearing an absent position and removing an
+    // absent class are both no-ops.
+    grip.addEventListener('dblclick', resumeTracking);
+    this._gripResume = resumeTracking;
     // The grip is focusable and announces itself as a button, so it has to be
     // operable from the keyboard or that role is a lie: arrows nudge, Escape
     // returns to automatic placement.

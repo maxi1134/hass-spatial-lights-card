@@ -317,7 +317,8 @@ Position history stores up to 50 steps.
 
 ### Desktop vs Mobile Differences
 
-- **Layout:** the controls have the same shape at every width — the brightness bar beside a column of three, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows.
+- **Layout:** the controls have the same shape at every width — the brightness bar beside a column of three, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows. Overlaid controls are 420px wide wherever the card has room and shrink to fit when it does not; that follows the card's width, not the browser window's, so a tablet gets the same behaviour as a desktop.
+- **Resetting the overlaid controls:** drag them by the grip to place them by hand; **double-tap (or double-click) the grip** to hand them back to automatic placement beside the selection.
 - **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
 - **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
 - **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.

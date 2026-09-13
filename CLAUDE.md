@@ -427,6 +427,31 @@ rather than once for the life of the card, because the key depends on a DOM-ance
 no answer until the card is connected and `_renderAll` legitimately runs detached -- caching the first
 answer would let a preview card keep a dashboard position it read while it was still homeless.
 
+**The panel's width is a question about the CARD, never about the viewport.** `.controls-floating`
+was forced to `calc(100% - 24px)` inside `@media (max-width: 768px)`, and on a tablet those two
+disagree: a 768px viewport matches the query while the card is still 740px wide. The panel came out
+716px on a 740px canvas, so `maxX` was 24 and, after the `EDGE` clamp, there were exactly **4px** of
+horizontal travel. Selecting a group on one side of the plan and then the other moved the panel four
+pixels -- it read as "the controls stopped relocating", with nothing on the card to explain it. The
+base rule already says the right thing at every width (`min(420px, calc(100% - 20px))` is
+full-width-minus-a-margin on a narrow card and 420px wherever there is room), so the override was
+worth 4px on the phones it was written for; the four properties beside it were byte-for-byte the base
+rule's. Measured on the same 740x463 tablet canvas: horizontal range 10..310 instead of 10..14, four
+sides used, gap 47px, never covering the selection. The panel's width no longer depends on the
+viewport at all, which is a stronger guarantee than any single measurement.
+
+**The way back has to exist on the device you are holding.** The grip's own `pointerdown` calls
+`preventDefault()` for every pointer type, and for a TOUCH pointer that suppresses the compatibility
+mouse events the browser would otherwise synthesise -- `click`, and with it `dblclick`. So the
+double-click reset never fired on a touchscreen, and the only alternative, Escape on the focused grip,
+needs a keyboard a tablet does not have. A panel pinned on a tablet could not be unpinned at all: the
+single documented recovery path and its fallback were both shut. The reset is now also counted in
+POINTER events -- two taps on the grip inside 350ms, the card's own double-tap window -- so it works
+the same whether or not the browser synthesises anything. A tap is a pointerup with no `st.last`,
+i.e. one the drag threshold never promoted, and `pointercancel` is excluded so an interrupted gesture
+cannot count as half a double-tap. The handler is idempotent, so a mouse firing both the tap pair and
+a real `dblclick` costs nothing.
+
 **Moving the lights is as much a reason to re-place as selecting them.** `_smoothApplyPositions` is
 the funnel every position mutation goes through -- arrow-key nudge, undo, redo, Rearrange -- and it
 ended with the comment "Controls may rely on selection state; keep as-is." That was true when the
@@ -443,7 +468,9 @@ tracking while a 72x48px drag moves, stores and pins; `memoAcrossDeselect()` ass
 null while idle and that reselecting after the box grew re-centres to within 2px;
 `previewLeak()` asserts a preview drag and a dashboard card resolve to different keys and that the
 dashboard card still tracks; `positionMove()` asserts the panel follows a selected light that moves
-under it.
+under it. `travel()` asserts the panel has real horizontal range on a tablet-sized card (run the pane
+at 768x1024); `touchReset()` asserts two POINTER taps clear a pinned position and resume tracking with
+no `dblclick` dispatched anywhere, and `slowTaps()` asserts two taps 600ms apart do not.
 
 **The model is HSV with V pinned to 100.** HSL cannot express the tint axis -- dropping HSL saturation
 goes to grey, not white -- so `hsvToRgb`/`rgbToHsv` are the maths, even though the CSS gradients use

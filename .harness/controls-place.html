@@ -262,6 +262,89 @@ window.previewLeak=async function(){
   return out;
 };
 
+// ---------------------------------------------------------------------------
+// TABLET TRAVEL. The panel used to be forced to calc(100% - 24px) by a VIEWPORT
+// media query, so on a tablet -- 768px viewport, 740px card -- it was 716px wide
+// on a 740px canvas and had 4px of horizontal travel after the edge clamp.
+// Selecting a group on one side of the plan and then the other moved it 4px.
+// Run this with the pane emulating 768x1024.
+// ---------------------------------------------------------------------------
+window.travel=async function(hostWidth){
+  await window.mount({}, hostWidth||740);
+  const cv=canvasEl().getBoundingClientRect();
+  const pn=panelEl().getBoundingClientRect();
+  const xs=[];
+  for (const s of [['light.kitchen'],['light.hall'],['light.office'],['light.garage']]){
+    await window.select(s); xs.push(window.probe().panel[0]);
+  }
+  // and as GROUPS, which is what the report was about
+  await window.select(['light.kitchen','light.bed_left']); const gl=window.probe();
+  await window.select(['light.hall','light.bed_right']);   const gr=window.probe();
+  return {canvas:[Math.round(cv.width),Math.round(cv.height)],
+    panel:[Math.round(pn.width),Math.round(pn.height)],
+    maxX:Math.round(cv.width-pn.width),
+    xs, xRange:Math.max(...xs)-Math.min(...xs), distinctX:new Set(xs).size,
+    groupLeft:gl.panel, groupRight:gr.panel, groupMoved:gl.panel.join()!==gr.panel.join(),
+    // the panel must have room to actually go beside things
+    hasRealTravel: (Math.max(...xs)-Math.min(...xs)) > 100};
+};
+
+// ---------------------------------------------------------------------------
+// THE TOUCH RESET. The grip's pointerdown preventDefaults for every pointer
+// type, which on a touch pointer suppresses the compatibility mouse events --
+// so the 'dblclick' listener never fires, and Escape needs a keyboard a tablet
+// does not have. Two taps counted in POINTER events are the way back.
+// ---------------------------------------------------------------------------
+window.touchReset=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const g=gripEl(); const b=g.getBoundingClientRect();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const x=b.left+b.width/2, y=b.top+b.height/2;
+  // pin it with a genuine drag
+  gpev(g,'pointerdown',x,y,77);
+  for(let i=1;i<=6;i++) gpev(g,'pointermove',x+i*12,y+i*8,77);
+  gpev(g,'pointerup',x+72,y+48,77);
+  await tick(250);
+  const pinned=window.probe().panel;
+  await window.select(['light.garage']);
+  const stayed=window.probe().panel;
+  const storedBefore=storedCount();
+  // two taps inside the 350ms window -- NO dblclick event is dispatched
+  const g2=gripEl(); const b2=g2.getBoundingClientRect();
+  try{g2.setPointerCapture=()=>{};g2.releasePointerCapture=()=>{};}catch(_){}
+  const x2=b2.left+b2.width/2, y2=b2.top+b2.height/2;
+  gpev(g2,'pointerdown',x2,y2,78); gpev(g2,'pointerup',x2,y2,78);
+  await tick(90);
+  gpev(g2,'pointerdown',x2,y2,78); gpev(g2,'pointerup',x2,y2,78);
+  await tick(350);
+  const storedAfter=storedCount();
+  await window.select(['light.kitchen']); const a=window.probe().panel;
+  await window.select(['light.garage']);  const z=window.probe().panel;
+  return {pinned, stayed, storedBefore, storedAfter,
+    pinHeld: pinned.join()===stayed.join(),
+    cleared: storedBefore===1 && storedAfter===0,
+    trackingResumed: a.join()!==z.join(),
+    classes:[...panelEl().classList].filter(c=>c==='dragged'||c==='auto-placed')};
+};
+
+// Two SLOW taps must not reset -- that is just two separate taps.
+window.slowTaps=async function(){
+  await window.mount();
+  await window.select(['light.kitchen']);
+  const g=gripEl(); const b=g.getBoundingClientRect();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,79); for(let i=1;i<=6;i++) gpev(g,'pointermove',x+i*12,y+i*8,79); gpev(g,'pointerup',x+72,y+48,79);
+  await tick(250);
+  const before=storedCount();
+  gpev(g,'pointerdown',x,y,80); gpev(g,'pointerup',x,y,80);
+  await tick(600);
+  gpev(g,'pointerdown',x,y,80); gpev(g,'pointerup',x,y,80);
+  await tick(300);
+  return {before, after:storedCount(), stillPinned:storedCount()===1};
+};
+
 // Moving a SELECTED light must move the panel, not leave it behind until some
 // unrelated state change happens to run updateLights.
 window.positionMove=async function(){
