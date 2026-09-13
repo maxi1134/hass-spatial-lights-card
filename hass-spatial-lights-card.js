@@ -16,24 +16,40 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.37.0 (fork-maxi1134)';
+  static BUILD = 'v1.37.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
   /**
-   * The brightness bar's floor, in HA's own 0-255 units: 25% of 255.
+   * The brightness bar's floor, in HA's own 0-255 units: 1% of 255.
    *
-   * Two jobs. The bar must never be able to turn a light off -- that is what
-   * the power toggle is for -- and its track doubles as the colour preview,
-   * which a near-black value makes unreadable. At a 1% floor the preview was
-   * rgb(3,2,2): technically the right colour, and indistinguishable from off.
-   * 25% keeps enough of the hue on screen to tell red from orange.
+   * The bar must never be able to turn a light off -- that is the power
+   * toggle's job -- but it must still reach a genuine 1%, because a bedside
+   * lamp at 1% is a real setting people want.
    *
-   * 64, because 25% of 255 is 63.75 and HA's own `brightness_pct: 25` resolves
-   * to `round(255 * 25 / 100)` = 64 -- so this IS twenty-five percent in the
-   * units the service speaks.
+   * 3, not 1 or 2: 1% of 255 is 2.55, and HA's own `brightness_pct: 1`
+   * resolves to `round(255 / 100)` = 3, so 3 IS one percent in the units the
+   * service speaks. 2 would display as 1% while actually being 0.78%.
+   *
+   * Legibility of the track is a SEPARATE floor -- see PREVIEW_MIN_RATIO. The
+   * two were briefly the same number, which forced a choice between a readable
+   * swatch and a usable dimming range; they are independent because they
+   * answer different questions.
    */
-  static BRIGHTNESS_MIN = 64;
+  static BRIGHTNESS_MIN = 3;
+
+  /**
+   * How dark the brightness bar's TRACK is allowed to get, as a fraction of
+   * the colour. Only the preview -- never the value, never the service call.
+   *
+   * The track doubles as the colour swatch, and dimming it linearly means a
+   * genuinely low brightness renders it unreadable: at 1% a warm white is
+   * rgb(3,2,2), the right hue in principle and indistinguishable from off. So
+   * the swatch stops dimming at a quarter while the bar underneath carries on
+   * down to 1. Real brightness from 1% to 25% all shows the 25% swatch; above
+   * that the swatch tracks the value exactly.
+   */
+  static PREVIEW_MIN_RATIO = 0.25;
 
   /** The floor as a percentage, for the readouts that must not under-report it. */
   static get BRIGHTNESS_MIN_PCT() {
@@ -1625,9 +1641,10 @@ class SpatialLightColorCard extends HTMLElement {
    * brightness, so the bar reads almost black at 1% and full colour at 100%.
    *
    * Linear per channel, so the track reads as the colour at the level the
-   * light is actually at. The bar's own floor (`BRIGHTNESS_MIN`) is what stops
-   * this bottoming out into an unreadable near-black -- at 25% a warm white
-   * still lands on a clearly coloured rgb(62,50,40).
+   * light is actually at -- but never darker than `PREVIEW_MIN_RATIO`, or a
+   * genuinely dim light leaves the swatch unreadable and you cannot see which
+   * colour is set. The value, the fill and the service call are untouched by
+   * that clamp: it is the swatch alone that stops going darker.
    *
    * PREVIEW ONLY. `_colorBarsRGB()` keeps V pinned at 100 and is what
    * `rgb_color` is built from -- brightness is its own axis on the light, and
@@ -1637,9 +1654,11 @@ class SpatialLightColorCard extends HTMLElement {
    * for the same reason.
    */
   static dimPreviewRGB(rgb, brightness) {
-    const ratio = Number.isFinite(brightness)
+    const real = Number.isFinite(brightness)
       ? Math.max(0, Math.min(1, brightness / 255))
       : 1;
+    // The swatch floors; the bar it sits on does not.
+    const ratio = Math.max(SpatialLightColorCard.PREVIEW_MIN_RATIO, real);
     return [0, 1, 2].map((i) => Math.round((Number(rgb && rgb[i]) || 0) * ratio));
   }
 

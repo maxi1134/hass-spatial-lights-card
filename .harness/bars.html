@@ -132,7 +132,9 @@ const lum=(css)=>{const m=/rgba?\(([^)]+)\)/.exec(css); if(!m) return null;
 window.dimPreview=async function(){
   const b=card.shadowRoot.getElementById('brightnessSlider');
   const rows=[];
-  for (const v of [+b.min, 64, 128, 255]) {
+  // Straddle the preview floor: 3 (1%) and 32 (12.5%) are BELOW it and must
+  // render identically to 64 (25%); above it the swatch tracks the value.
+  for (const v of [+b.min, 32, 64, 128, 255]) {
     b.value=String(v); b.dispatchEvent(new Event('input',{bubbles:true}));
     await sleep(160);
     rows.push({value:v, pct:Math.round(v/255*100), preview:previewOf(), lum:lum(previewOf())});
@@ -140,13 +142,18 @@ window.dimPreview=async function(){
   const L=rows.map(r=>r.lum);
   const chan=(css)=>{const m=/rgba?\(([^)]+)\)/.exec(css); return m?m[1].split(',').map(Number):[0,0,0];};
   const spread=(css)=>{const p=chan(css); return Math.max(...p)-Math.min(...p);};
+  const at=(v)=>rows.find(r=>r.value===v);
   return {rows,
     monotonic: L.every((x,i)=>i===0||x>=L[i-1]),
-    // The floor exists so the track never bottoms out into an unreadable
-    // near-black: at 25% it must still be clearly DARKER than full, and must
-    // still carry enough channel spread to tell which colour it is.
-    minIsDarkerThanFull: L[0] < L[L.length-1]*0.6,
+    // The SWATCH floors at 25% while the BAR keeps going to 1%: every real
+    // brightness at or below the floor paints the same 25% colour...
+    belowFloorAllShow25: at(+card.shadowRoot.getElementById('brightnessSlider').min).preview===at(64).preview
+                      && at(32).preview===at(64).preview,
+    // ...and above it the swatch tracks the value again.
+    tracksAboveFloor: at(128).lum > at(64).lum && at(255).lum > at(128).lum,
+    // It must still be readable at the bottom, which is the whole point.
     minStillShowsColour: spread(rows[0].preview) > 8,
+    minIsDarkerThanFull: L[0] < L[L.length-1]*0.6,
     fullIsFullColour: L[L.length-1]>0};
 };
 

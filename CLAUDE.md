@@ -365,19 +365,26 @@ without `startTint` the swipe would still have destroyed the saturation on its w
 changed nothing the user can see yet snapped the bar below. `updateVisuals(revert)` suppresses the
 snap on that path.
 
-**The brightness bar floors at 25%, and cannot turn a light off.** `BRIGHTNESS_MIN = 64`, because 25%
-of 255 is 63.75 and HA's own `brightness_pct: 25` resolves to `round(255 * 25/100)` = 64 -- so it IS
-twenty-five percent in the units the service speaks. The fill is measured against `MIN..255` rather
-than `0..255`, or it disagrees with where the native thumb lands, and every percentage readout floors
-at `BRIGHTNESS_MIN_PCT` so the bar never announces a value its thumb cannot reach.
+**There are TWO floors, and conflating them was a mistake worth recording.**
 
-The floor does two jobs, and the second is why it is 25% rather than 1%. Turning a light off is the
-power toggle's job, not the bar's -- that part only needs a floor above zero. But the track doubles as
-the COLOUR PREVIEW, and dimming it linearly means a low floor bottoms out into something unreadable:
-at 1% a warm white rendered rgb(3,2,2), technically the right hue and indistinguishable from off. At
-25% the same colour is rgb(62,51,40) -- luminance 53 against 2, with enough channel spread to tell
-warm from cool. The preview is why the floor is where it is; do not lower it without also decoupling
-the preview's dim from the bar's value.
+`BRIGHTNESS_MIN = 3` is the BAR's floor: 1% of 255 is 2.55 and HA's own `brightness_pct: 1` resolves
+to `round(255/100)` = 3, so 3 IS one percent in the units the service speaks. It exists so the bar can
+dim but never switch a light off -- that is the power toggle's job. The fill is measured against
+`MIN..255` rather than `0..255`, or it disagrees with where the native thumb lands, and every
+percentage readout floors at `BRIGHTNESS_MIN_PCT` so the bar cannot announce a value its thumb cannot
+reach.
+
+`PREVIEW_MIN_RATIO = 0.25` is the SWATCH's floor, and it constrains nothing else. The track doubles as
+the colour preview and dims linearly, so a genuinely dim light rendered it unreadable: at 1% a warm
+white is rgb(3,2,2), the right hue in principle and indistinguishable from off. `dimPreviewRGB` clamps
+the ratio it paints with, so every real brightness from 1% to 25% shows the same 25% swatch
+(rgb(62,51,40), luminance 53 against 2) and above that the swatch tracks the value exactly.
+
+The two were briefly the same number -- the bar's floor was raised to 64 to fix the swatch -- and that
+forced a choice between a readable swatch and a usable dimming range. They are independent because
+they answer different questions: how dim may the LIGHT go, and how dark may the SWATCH go. Neither
+touches the value, the fill or the service call: at the bar's minimum the card still sends
+`brightness: 3` and still reports "1%".
 Clamped at three sites, but `_handleBrightnessChange` is the one that matters: it is the only seam
 that emits a `brightness:` value, and `_pendingBrightness` can have been captured before a re-render.
 `_brightnessRatio` is untouched -- a light REPORTING 0 still renders dark; only the bar lost the
