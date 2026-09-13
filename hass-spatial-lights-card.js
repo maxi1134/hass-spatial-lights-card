@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.37.2 (fork-maxi1134)';
+  static BUILD = 'v1.38.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -48,6 +48,24 @@ class SpatialLightColorCard extends HTMLElement {
    * that the swatch tracks the value exactly.
    */
   static PREVIEW_MIN_RATIO = 0.25;
+
+  /**
+   * The slider thumb's extent ALONG the track, in px -- the one number the
+   * pointer maths and the stylesheet must agree on.
+   *
+   * A range input's value does not run the full width of the box: the thumb's
+   * centre travels `length - thumb`, because half a thumb is parked at each
+   * end. Map a press without subtracting it and the finger and the painted
+   * thumb drift apart, worst at the ends.
+   *
+   * It is interpolated into the two thumb rules rather than written twice, so
+   * the number the JS subtracts is by construction the number the CSS draws.
+   * (The 1px thumb border is not counted: `box-sizing: border-box` comes from
+   * the `*` reset, which does not match vendor pseudo-elements, so the painted
+   * thumb is ~2px wider than this. One pixel at each end, below the threshold
+   * where anyone could see the difference, and both ends clamp regardless.)
+   */
+  static BAR_THUMB = 9;
 
   /**
    * The floor as a percentage, for the readouts that must not under-report it.
@@ -1593,8 +1611,18 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
-   * The picker, as three stacked bars: the colour as it stands, a tint bar
-   * from the pure hue to white, and the hue spectrum.
+   * The picker: a vertical brightness bar on the left, and a column of hue,
+   * saturation and temperature to its right.
+   *
+   * Brightness is the odd one out and the layout says so. The other three pick
+   * WHAT the light emits and read left to right along their own axis;
+   * brightness picks HOW MUCH, which every physical dimmer in the world puts
+   * on a vertical axis with more at the top. Standing it up also stops it
+   * being mistaken for a fourth colour axis -- the mistake its solid, ramp-less
+   * track was already guarding against while it lay flat among the others.
+   *
+   * It spans the full height of the column beside it, so the two halves read as
+   * one control rather than a bar and a list.
    *
    * `tint` is 0 at the vivid end and 100 at white, which is the direction the
    * gradient reads left to right -- so the plain slider plumbing needs no
@@ -1623,19 +1651,27 @@ class SpatialLightColorCard extends HTMLElement {
     const tempPct = (range.max > range.min)
       ? Math.min(100, Math.max(0, ((temp - range.min) / (range.max - range.min)) * 100))
       : 0;
-    const bar = (cls, id, min, max, value, pct, label, extra = '') => `
-          <div class="color-bar-slot">
-            <input type="range" class="color-bar-input ${cls}" id="${id}"
+    // `vertical` adds the marker class to BOTH the slot and the input. The slot
+    // needs it to become a size container; the input needs it to be turned. No
+    // id ever appears in a selector -- the ids are the JS contract, the classes
+    // are the CSS one, and keeping them apart is what lets either move.
+    const bar = (cls, id, min, max, value, pct, label, extra = '', vertical = false) => `
+          <div class="color-bar-slot${vertical ? ' vertical' : ''}">
+            <input type="range" class="color-bar-input ${cls}${vertical ? ' vertical' : ''}" id="${id}"
                    min="${min}" max="${max}" value="${value}" aria-label="${label}"
+                   ${vertical ? 'aria-orientation="vertical"' : ''}
                    style="--slider-percent:${pct}%;--slider-ratio:${pct / 100};${extra}">
           </div>`;
     return `
         <div class="color-bars" id="colorBars">
           ${bar('brightness', 'brightnessSlider', MIN_B, 255, bright, brightPct,
-                'Brightness', `--bar-preview:rgb(${previewRGB.join(',')});--bar-edge:${previewEdge};`)}
-          ${bar('hue', 'hueSlider', 0, 359, hue, huePct, 'Hue')}
-          ${bar('tint', 'tintSlider', 0, 100, tint, tint, 'Saturation', `--bar-hue:${hue};`)}
-          ${bar('temp', 'temperatureSlider', range.min, range.max, temp, tempPct, 'Color temperature')}
+                'Brightness', `--bar-preview:rgb(${previewRGB.join(',')});--bar-edge:${previewEdge};`,
+                true)}
+          <div class="color-bar-col">
+            ${bar('hue', 'hueSlider', 0, 359, hue, huePct, 'Hue')}
+            ${bar('tint', 'tintSlider', 0, 100, tint, tint, 'Saturation', `--bar-hue:${hue};`)}
+            ${bar('temp', 'temperatureSlider', range.min, range.max, temp, tempPct, 'Color temperature')}
+          </div>
         </div>`;
   }
 
@@ -4598,6 +4634,9 @@ class SpatialLightColorCard extends HTMLElement {
           gap: 12px;
         }
         .light { --light-size: ${Math.min(this._config.light_size, 50)}px; }
+        /* order/width only -- the row layout itself is not a desktop
+           affordance, so the brightness column stays beside the others on a
+           phone rather than folding back on top of them. */
         .color-bars { order: 1; width: 100%; }
         .presets-row {
           order: 2; flex: 0 1 auto; align-self: center;
@@ -4615,13 +4654,19 @@ class SpatialLightColorCard extends HTMLElement {
          row, which would otherwise force the box wider than the plan. */
       @container sle-card (max-width: 380px) {
         .controls-floating { padding: 10px; gap: 8px; border-radius: 10px; }
-        .controls-floating .color-bars { gap: 6px; }
-        .controls-floating .color-bar-slot { padding: 5px; border-radius: 10px; }
+        /* Padding moves through the token, never on .color-bar-slot directly:
+           the vertical slot's width is derived from it, so setting one without
+           the other would leave the brightness column the wrong thickness at
+           exactly the widths where every pixel is already contested. */
+        .controls-floating .color-bars { gap: 6px; --bar-slot-pad: 5px; }
+        .controls-floating .color-bar-col { gap: 6px; }
+        .controls-floating .color-bar-slot { border-radius: 10px; }
         .controls-floating .presets-row { flex-wrap: wrap; justify-content: center; row-gap: 6px; }
       }
       @container sle-card (max-width: 260px) {
         .controls-floating { padding: 7px; gap: 6px; }
-        .controls-floating .color-bar-slot { padding: 4px; border-radius: 8px; }
+        .controls-floating .color-bars { --bar-slot-pad: 4px; }
+        .controls-floating .color-bar-slot { border-radius: 8px; }
         .controls-floating .cf-grip { width: 32px; }
       }
 
@@ -4634,20 +4679,79 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .controls-below.visible { display: flex; }
 
-      /* The colour picker: three stacked full-width bars. Full width is the
-         point -- a bar you can hit anywhere along is easier to aim than a
-         128px wheel, which is why the wheel needed a long-press magnifier and
-         these do not. */
+      /* The colour picker: a vertical brightness bar beside a column of three
+         full-width ones. Full width is the point for those three -- a bar you
+         can hit anywhere along is easier to aim than a 128px wheel, which is
+         why the wheel needed a long-press magnifier and these do not.
+
+         'align-items: stretch' is the whole of "the same height as their
+         combined height": the brightness slot is a flex item in this row, so it
+         takes the column's height with no arithmetic anywhere. Do NOT compute
+         '3 * var(--color-bar-h) + 64' instead -- the @container rules below
+         re-pad the slots at narrow widths and a hard number would silently
+         desync exactly there. */
       .color-bars {
-        display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0;
+        display: flex; flex-direction: row; align-items: stretch;
+        gap: 8px; width: 100%; min-width: 0;
         /* Lets the scroll container above actually shrink it. */
         flex: 0 0 auto; min-height: 0;
+        /* One source for the slot padding, because the vertical slot's WIDTH is
+           derived from it and the two must move together. */
+        --bar-slot-pad: 7px;
+      }
+      .color-bar-col {
+        display: flex; flex-direction: column; gap: 8px;
+        flex: 1 1 auto; min-width: 0;
       }
       .color-bar-slot {
         background: var(--surface-secondary);
         border: 1px solid var(--border-subtle);
-        border-radius: 14px; padding: 7px;
+        border-radius: 14px; padding: var(--bar-slot-pad, 7px);
         display: flex; align-items: center;
+      }
+      /* The brightness column. Its width is the other bars' HEIGHT -- same
+         track thickness, same chrome -- so the picker reads as a square-ish
+         block rather than two unrelated widgets. border-box comes from the '*'
+         reset, so this width already includes the padding and border. */
+      .color-bar-slot.vertical {
+        flex: 0 0 auto;
+        width: calc(var(--color-bar-h, 34px) + 2 * var(--bar-slot-pad, 7px) + 2px);
+        position: relative;
+        /* Turns the slot into a size container so the input below can ask for
+           its HEIGHT in a width. cqh is the only way to say "the other axis" in
+           CSS without measuring in JS -- the same idiom .canvas.plan-quarter
+           already uses, and for the same reason. Size containment also means
+           the absolutely positioned input cannot feed back into the box. */
+        container-type: size;
+      }
+      /* Turned, not re-specified. A rotated input is still a horizontal input
+         in its own box, so every track and thumb rule below keeps meaning what
+         it says: 'height' is still the track's thickness and the thumb still
+         overhangs by 5px on each side. The alternative -- writing-mode:
+         vertical-lr -- would swap the physical axes and force a second copy of
+         all six vendor pseudo-element rules, and it needs Chrome 121 / Safari
+         17.4 / Firefox 132, which a wall-mounted iPad on an older iPadOS does
+         not have. Worse, it cannot be feature-detected: @supports reports the
+         property as supported because vertical TEXT has worked for years, so a
+         browser that ignores it on the control fails silently and horizontally.
+
+         'width: 100cqh' is the slot's CONTENT height, i.e. its border-box
+         height minus the padding and border. That lands the track's ends
+         exactly on the first and last horizontal tracks' outer edges -- the
+         same 8px inset they sit at -- so the four tracks form one aligned
+         block. The slot matches the column's height; the BAR matches the three
+         tracks' combined span. Two different numbers, both on purpose.
+
+         'direction: ltr' is pinned because rotate(-90deg) maps the input's own
+         inline start to the BOTTOM of the screen. Inherit 'rtl' from an
+         Arabic or Hebrew dashboard and the bar would run upside down, with max
+         at the bottom. Which SIDE the column sits on is a separate question and
+         is deliberately left to the document -- it mirrors with everything
+         else, the way a localized layout should. */
+      .color-bar-input.vertical {
+        position: absolute; top: 50%; left: 50%;
+        width: 100cqh; direction: ltr;
+        transform: translate(-50%, -50%) rotate(-90deg);
       }
       .color-bar, .color-bar-input {
         display: block; width: 100%; height: var(--color-bar-h, 34px);
@@ -4725,16 +4829,21 @@ class SpatialLightColorCard extends HTMLElement {
         background: linear-gradient(90deg, hsl(var(--bar-hue, 30), 100%, 50%) 0%, #fff 100%);
       }
       /* A thin upright bar, taller than the track so it reads as a position
-         marker rather than a blob sitting on the colour. */
+         marker rather than a blob sitting on the colour. The width is
+         BAR_THUMB, the same number _applyPointerValue subtracts from the
+         travel -- written once so the finger and the painted thumb cannot
+         drift apart. It needs no vertical variant: the turned bar's thumb is
+         this rule rotated with it, which lands it across the track exactly as
+         it lies across the horizontal ones. */
       .color-bar-input::-webkit-slider-thumb {
         -webkit-appearance: none; appearance: none;
-        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        width: ${SpatialLightColorCard.BAR_THUMB}px; height: calc(var(--color-bar-h, 34px) + 10px);
         margin-top: -5px; border-radius: 5px;
         background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         border: 1px solid rgba(0,0,0,0.15);
       }
       .color-bar-input::-moz-range-thumb {
-        width: 9px; height: calc(var(--color-bar-h, 34px) + 10px);
+        width: ${SpatialLightColorCard.BAR_THUMB}px; height: calc(var(--color-bar-h, 34px) + 10px);
         border-radius: 5px; border: 1px solid rgba(0,0,0,0.15);
         background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
       }
@@ -5928,6 +6037,11 @@ class SpatialLightColorCard extends HTMLElement {
       : null;
 
     el.addEventListener('pointerdown', (e) => {
+      // One finger owns the bar. `state` is a single closure, so a second
+      // pointerdown used to overwrite startValue/startTint and orphan the first
+      // gesture -- newly reachable now that brightness and hue sit side by side
+      // under one hand.
+      if (state.pointerId !== null) return;
       // Prevent default browser dragging to ensure we handle the gesture
       e.preventDefault();
       try { el.setPointerCapture(e.pointerId); } catch (_) { /* pointer may already be gone */ }
@@ -5948,7 +6062,7 @@ class SpatialLightColorCard extends HTMLElement {
       if (gestureKind === 'color') this._lastLiveWheelRgb = null;
 
       // Immediate update on tap start
-      this._applyPointerValue(el, e.clientX);
+      this._applyPointerValue(el, e.clientX, e.clientY);
       updateVisuals();
     });
 
@@ -5959,11 +6073,25 @@ class SpatialLightColorCard extends HTMLElement {
       const dx = Math.abs(e.clientX - state.startX);
       const dy = Math.abs(e.clientY - state.startY);
 
-      // Check for scroll intent if not yet locked
+      // Check for cross-axis intent if not yet locked.
+      //
+      // ACROSS the bar, whichever way the bar runs: measured, like
+      // _applyPointerValue, so the turned brightness bar aborts on a sideways
+      // swipe rather than on the downward one that is its whole gesture.
+      //
+      // It is not a scroll hand-off, whatever the old name said. The bars carry
+      // touch-action: none, so the browser has already declined to scroll this
+      // sequence before the first pointermove arrives and releasing capture
+      // cannot give it back. What this branch does -- all it has ever done --
+      // is put the value back when the hand was evidently going somewhere else.
       if (!state.locked && (dx > 6 || dy > 6)) {
         state.locked = true;
-        if (dy > dx) {
-          // Vertical scroll detected - Revert interaction
+        const r = el.getBoundingClientRect();
+        const vertical = r.height > r.width;
+        const across = vertical ? dx : dy;
+        const along = vertical ? dy : dx;
+        if (across > along) {
+          // Cross-axis swipe detected - Revert interaction
           state.isScrolling = true;
           el.value = state.startValue;
           if (state.startTint != null && this._els.tintSlider) {
@@ -5978,7 +6106,7 @@ class SpatialLightColorCard extends HTMLElement {
       }
 
       // If we aren't scrolling, follow the finger
-      this._applyPointerValue(el, e.clientX);
+      this._applyPointerValue(el, e.clientX, e.clientY);
       updateVisuals();
     });
 
@@ -6018,29 +6146,47 @@ class SpatialLightColorCard extends HTMLElement {
     el.addEventListener('pointercancel', endInteraction);
   }
 
-  _applyPointerValue(el, clientX) {
+  /**
+   * Map a press to a value, on whichever axis this bar actually runs.
+   *
+   * Orientation is MEASURED, never inferred from the id or the class. The box
+   * is the one thing that cannot disagree with what the browser drew: a
+   * geometry test is automatically right for the three horizontal bars, right
+   * for the turned one, and still right on an engine that declined to turn it,
+   * where an id test would read clientY against a 34px height and pin every
+   * press to an end of the range. The stylesheet and this function never have
+   * to be kept in step, because only one of them decides.
+   *
+   * `rect` is the TRANSFORMED box -- getBoundingClientRect returns the
+   * axis-aligned box of the rotated element -- so for the vertical bar
+   * rect.height is the travel and rect.width the thickness, with no
+   * un-rotation anywhere.
+   *
+   * Up means more, always, which is why the vertical branch measures DOWN from
+   * rect.bottom. RTL is asked about only on the horizontal axis: the turned
+   * input pins its own direction (see the stylesheet), so consulting the
+   * computed direction here would flip a bar that is already the right way up.
+   */
+  _applyPointerValue(el, clientX, clientY) {
     const rect = el.getBoundingClientRect();
     const min = parseFloat(el.min);
     const max = parseFloat(el.max);
+    const vertical = rect.height > rect.width;
 
-    // The thumb size matches CSS --slider-thumb-size: 26px
-    const thumbSize = 26;
+    // Half a thumb is parked at each end, so the centre travels this far.
+    const travel = (vertical ? rect.height : rect.width) - SpatialLightColorCard.BAR_THUMB;
 
-    // Calculate the effective travel distance of the thumb's center
-    const availableWidth = rect.width - thumbSize;
+    // Offset relative to the start of the travel area.
+    let offset = (vertical ? rect.bottom - clientY : clientX - rect.left)
+      - (SpatialLightColorCard.BAR_THUMB / 2);
 
-    // Offset relative to the start of the travel area
-    let offset = clientX - rect.left - (thumbSize / 2);
-
-    // In RTL layouts, the slider direction is reversed
-    const isRTL = getComputedStyle(el).direction === 'rtl';
-    if (isRTL) {
-      offset = availableWidth - offset;
+    if (!vertical && getComputedStyle(el).direction === 'rtl') {
+      offset = travel - offset;
     }
 
     let pct = 0;
-    if (availableWidth > 0) {
-      pct = offset / availableWidth;
+    if (travel > 0) {
+      pct = offset / travel;
     }
 
     pct = Math.max(0, Math.min(1, pct));

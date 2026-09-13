@@ -166,19 +166,89 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 
 ## 7. Color Picker (bars)
 
-Four stacked full-width bars are the whole control surface, in this order: **brightness** (the track
-carries the light's colour AT its brightness), **hue** (the spectrum), **tint** (saturation, directly
-UNDER the colour it modifies), and **temperature** (the warm-to-cool ramp). Saturation sits below hue
-because it modifies what the bar above it picked; nothing in the code keys off bar order --
-`.color-bars` is a flex column with no nth-child rules and every consumer fetches by id -- so the
-swap is two lines, but it does change tab order to match reading order. They replaced both the colour wheel AND the
-separate brightness/temperature sliders, so `.slider` and its rules are gone from the card's
-stylesheet — the editor has its own copies and is unaffected.
+Four bars are the whole control surface, in an L: **brightness** standing upright on the left, and a
+column of **hue** (the spectrum), **tint** (saturation, directly UNDER the colour it modifies) and
+**temperature** (the warm-to-cool ramp) to its right. Saturation sits below hue because it modifies
+what the bar above it picked. Nothing in the code keys off bar order -- there are no nth-child rules
+and every consumer fetches by id -- so the order is a markup decision, but it does set tab order, and
+the DOM order (brightness, then the column) matches the left-to-right reading order. They replaced
+both the colour wheel AND the separate brightness/temperature sliders, so `.slider` and its rules are
+gone from the card's stylesheet - the editor has its own copies and is unaffected.
+
+**Brightness stands up because it is not a colour axis.** The other three pick WHAT the light emits
+and read along their own axis; brightness picks HOW MUCH, which every physical dimmer puts on a
+vertical axis with more at the top. Lying flat among the others it read as a fourth colour choice --
+the same misreading its solid, ramp-less track already existed to prevent.
+
+The layout is one flex row with `align-items: stretch`, and that IS the "same height as the other
+three": the brightness slot is a flex item, so it takes the column's height with no arithmetic. Do not
+compute `3 * var(--color-bar-h) + 64` instead -- the `@container` rules re-pad the slots at narrow
+widths and a hard number would desync exactly there. For the same reason the slot's WIDTH comes from
+`--bar-slot-pad`, a token those breakpoints set instead of setting `padding` directly; the column is
+then exactly as wide as the other bars are tall (34 + 7 + 7 + 2 = 50 at the default).
+
+**Two heights, both deliberate.** The SLOT matches the column's border box (166px at the default); the
+BAR inside it is `100cqh`, which container query units resolve against the CONTENT box, so 150px. That
+is not a discrepancy to fix -- 150 is exactly the span from the top of the hue track to the bottom of
+the temperature track, so all four tracks line up as one block. Measured at bar heights 12, 34, 60 and
+120: thickness always matches, ends always align.
+
+**It is `transform: rotate(-90deg)` with `width: 100cqh`, not `writing-mode: vertical-lr`.** A rotated
+input is still a horizontal input in its own box, so every track and thumb rule keeps meaning what it
+says -- `height` is still the track's thickness -- and the brightness bar is the one bar with nothing
+to re-orient anyway, its track being a flat colour rather than a `90deg` gradient. writing-mode would
+swap the physical axes and, because vendor pseudo-elements cannot share a selector list (see the two
+traps below), that is six rules becoming twelve. It also needs Chrome 121 / Safari 17.4 / Firefox 132,
+which a wall-mounted iPad on an older iPadOS does not have, and **it cannot be feature-detected**:
+`@supports (writing-mode: vertical-lr)` is true in every engine that does vertical TEXT, so an engine
+that ignores it on the control fails silently and horizontally. `container-type: size` + `cqh` is not
+a new floor -- `.canvas.plan-quarter` already depends on it, for the same "say the other axis" reason
+(section 8d). Verified detached: HA sets config and hass before appending, and the bar is 34x150 in
+the same task as the append, never the viewport-length box a container-less `cqh` would fall back to.
+
+`direction: ltr` is pinned on the input because `rotate(-90deg)` maps its inline start to the BOTTOM
+of the screen; inherit `rtl` from an Arabic or Hebrew dashboard and the bar runs upside down. Which
+SIDE the column sits on is a different question and is deliberately left to the document, so the row
+mirrors with everything else.
 
 The brightness bar doubles as the preview: its track is painted with the ACTUAL averaged colour, not
 the two colour bars' reconstruction, because a dim or warm-white light has a value they cannot express
-with V pinned to 100. It deliberately carries no ramp — a dark-to-colour gradient would read as a
+with V pinned to 100. It deliberately carries no ramp - a dark-to-colour gradient would read as a
 second colour control rather than a brightness axis.
+
+**Orientation is MEASURED, never inferred.** `_applyPointerValue` and the gesture's cross-axis abort
+both ask `rect.height > rect.width`. The box is the one thing that cannot disagree with what the
+browser actually drew, so the test is automatically right for the three horizontal bars, right for the
+turned one, and still right on an engine that declined to turn it -- where keying on the id would read
+`clientY` against a 34px height and pin every press to an end of the range. The stylesheet and the
+pointer maths never have to be kept in step because only one of them decides. `getBoundingClientRect`
+returns the TRANSFORMED box, so the vertical branch reads `rect.height` as travel with no un-rotation
+anywhere, and it measures DOWN from `rect.bottom` because up means more.
+
+**`BAR_THUMB` is why the bar reaches its own ends.** A range's value does not run the full width of
+the box: half a thumb parks at each end, so the centre travels `length - thumb`. That subtraction used
+to be a hardcoded 26, with a comment pointing at a `--slider-thumb-size` that does not exist anywhere
+in the file -- a leftover from the deleted `.slider` era, while the bars' thumb is 9px. On a 464px
+horizontal bar the error is 5.6% of the travel; on the 150px vertical one it is 15.7%, and at
+`color_bar_height: 12` it would be 31%, most of it dead space at the two ends you most want to reach.
+The constant is now interpolated into both thumb rules, so the number the JS subtracts is by
+construction the number the CSS draws. Measured after: a press 2px from either end yields exactly 1
+and exactly 255, and the midpoint yields 128.
+
+**The cross-axis abort is not a scroll hand-off**, whatever its old name suggested. The bars carry
+`touch-action: none`, so the browser has already declined to scroll the sequence before the first
+`pointermove` arrives and releasing capture cannot give it back. All that branch does is put the value
+back when the hand was evidently going somewhere else -- so it is mirrored onto whichever axis the bar
+runs across, not flipped in place. Verified: a sideways swipe on the vertical bar reverts and sends
+nothing; a swipe along it follows the finger.
+
+A second pointer on a live bar is now ignored rather than overwriting the single closure `state` --
+newly reachable, because brightness and hue sit side by side under one hand.
+
+`.harness/vbar.html` pins the shape and the gestures: that the brightness input's box is taller than
+it is wide, that it sits left of all three, that its slot equals the column's height and its track
+spans hue-top to temp-bottom, that a sweep runs 1..255 monotonically from the bottom up, and that a
+cross-axis swipe reverts while an along-axis one follows.
 
 `brightnessSlider` and `temperatureSlider` KEPT their ids when they moved into the bars, so every
 existing consumer (`_updateControlValues`'s sync, `_bindSliderGesture`'s commit, `_scheduleSliderCommit`,

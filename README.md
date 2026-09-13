@@ -32,7 +32,7 @@ plan, walls that stop it, and controls that stay out of the way.
 | **[Uncropped plans](#background-image)** | The canvas adopts your plan's own aspect ratio, so nothing is cropped, stretched or letterboxed at any card width. |
 | **[Rotating the plan](#-rotating-the-plan)** | Turn the whole layout 90/180/270°: lights, zones, walls, image and emission directions together. Non-destructive — nothing you placed is rewritten. |
 | **[The full-size editor](#-the-full-size-editor)** | Draw walls and place lights on a near-fullscreen plan instead of a 250px preview pane. |
-| **[Colour bars](#colour-bars)** | The colour wheel is replaced by four full-width bars: brightness, colour, saturation, temperature. Easier to aim than a 128px circle. |
+| **[Colour bars](#colour-bars)** | The colour wheel is replaced by four bars: a vertical brightness bar beside colour, saturation and temperature. Easier to aim than a 128px circle. |
 | **[Draggable controls](#overlaid-controls)** | Overlaid controls can be dragged anywhere on the plan, remember where you put them, and compress on narrow cards. |
 | **[Script buttons](#script-buttons)** | Run any script, scene or service against the lights you have selected, from a button in the controls. |
 
@@ -77,7 +77,7 @@ over projected light.
 - Drawable walls, and doors that stop blocking light when an entity says they are open.
 - Plan rotation in quarter turns, applied as a view transform so your coordinates are never rewritten.
 - A full-size editor for drawing walls and placing lights.
-- Four full-width control bars (brightness, colour, saturation, temperature) at a configurable height.
+- Four control bars at a configurable thickness: brightness upright on the left, colour, saturation and temperature stacked beside it.
 - Overlaid controls you can drag, that remember their position and compress on narrow cards.
 - Script buttons that run a script, scene or service against the current selection.
 - Canvas elements: place sensor readouts, navigation links, and text labels alongside your lights.
@@ -167,21 +167,27 @@ The more-info panel is the standard Home Assistant entity dialog where you can s
 
 ### Colour bars
 
-The controls are four stacked full-width bars:
+The controls are four bars in an L: brightness stands upright on the left, as
+tall as the other three together, with colour, saturation and temperature
+stacked to its right.
 
-1. **Brightness** — the bar is filled with the colour the lights are showing
-   right now, *at* their current brightness: almost black at the bottom of the
-   range, full colour at the top. Sliding left to right sets the brightness. It
-   goes down to 1% but never to 0, so it dims a light without switching it off
-   (that is the power button's job). The *swatch* stops darkening at 25%, so
-   even a light dimmed right down still shows you which colour is set -- the
-   bar keeps reporting the real level.
+1. **Brightness** — the upright bar on the left. Drag **up for brighter**, down
+   for dimmer, the way every physical dimmer works. It is filled with the colour
+   the lights are showing right now, *at* their current brightness: almost black
+   at the bottom of the range, full colour at the top. It goes down to 1% but
+   never to 0, so it dims a light without switching it off (that is the power
+   button's job). The *swatch* stops darkening at 25%, so even a light dimmed
+   right down still shows you which colour is set -- the bar keeps reporting the
+   real level.
 2. **Colour** — the full spectrum. Picking a hue here sets it at **full
    saturation**; use the bar below to take it back toward white.
 3. **Saturation** — the pure hue on the left running to white on the right. It
    sits directly under the colour bar because it modifies what that bar picked,
    and it stays wherever you put it until you pick a new colour.
 4. **Temperature** — warm on the left, cool on the right.
+
+Brightness is upright because it is the one bar that is not a colour choice:
+the other three pick *what* the light emits, brightness picks *how much*.
 
 - **Tap/click** anywhere along a bar to jump straight to that value.
 - **Drag** to sweep; the lights follow live, throttled to about seven updates a
@@ -311,7 +317,7 @@ Position history stores up to 50 steps.
 
 ### Desktop vs Mobile Differences
 
-- **Layout:** the controls are a single stacked column at every width — four full-width bars, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows.
+- **Layout:** the controls have the same shape at every width — the brightness bar beside a column of three, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows.
 - **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
 - **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
 - **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.
@@ -352,7 +358,7 @@ Position history stores up to 50 steps.
 | `switch_off_color` | string | `"#3a3a3a"` | Default color for inactive switches. |
 | `scene_color` | string | `"#6366f1"` | Default color for scenes. |
 | `always_show_controls` | boolean | `false` | Show the controls even when nothing is selected. (`default_entity` also keeps them up.) |
-| `color_bar_height` | number | `34` | Height of the four control bars, in px. Clamped to 12–120. |
+| `color_bar_height` | number | `34` | Thickness of the four control bars, in px — the height of the three horizontal ones and the width of the brightness bar. Clamped to 12–120. |
 | `script_buttons` | list | `[]` | Buttons in the controls that run a script, scene or service against the selection. See [Script buttons](#script-buttons). |
 | `show_power_button` | boolean | `true` | Round on/off button at the start of the presets row (under the sliders on desktop, beside the colour bars on mobile) that toggles the selected lights (or the default entity) as a group. Filled = all on (press turns off); outlined = some on (press turns the rest on). |
 | `minimal_ui` | boolean | `false` | Hides light circles; shows only icons. Automatically enables `icon_only_mode`. |

@@ -1,0 +1,198 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Vertical brightness bar</title>
+<!-- Without this the layout viewport is the 980px default even under mobile
+     emulation, so @media (max-width: 768px) never matches and a "mobile" run
+     silently measures the desktop rules. -->
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#141414;color:#ddd;font:12px system-ui;padding:12px}#host{width:520px}</style>
+</head><body><div id="host"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const ids=['light.a','light.b'];
+const calls=[];
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+let card;
+
+window.mount=async function(over, hostWidth){
+  try{localStorage.clear();}catch(_){}
+  calls.length=0;
+  const attrs=Object.assign({brightness:128,rgb_color:[247,202,160],color_mode:'rgb',
+    supported_color_modes:['rgb','color_temp'],min_color_temp_kelvin:2000,
+    max_color_temp_kelvin:6500,color_temp_kelvin:3000},(over&&over.attrs)||{});
+  const states={};
+  ids.forEach(i=>{states[i]={entity_id:i,state:(over&&over.state)||'on',
+    attributes:Object.assign({friendly_name:i},attrs)};});
+  const hass={states,entities:{},
+    callService:(d,srv,data)=>{calls.push({d,srv,data:JSON.parse(JSON.stringify(data||{}))});return Promise.resolve();},
+    callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host');
+  host.style.width=(hostWidth||520)+'px'; host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:30,y:40},'light.b':{x:70,y:60}},
+    background_image:{url:'floorplan.svg'},
+    always_show_controls:true, controls_below:true},(over&&over.cfg)||{}));
+  card.hass=hass; host.appendChild(card);
+  await tick(800); window.card=card; window.calls=calls;
+  // The card has a hass SETTER and no getter, so keep our own handle: a test
+  // that pushes new state has to hand the card a fresh object itself.
+  window.hassObj=hass;
+  return card.constructor.BUILD;
+};
+
+// Push a new brightness in from "the light", the way a state update would.
+window.pushBrightness=async function(b){
+  const states={};
+  Object.keys(window.hassObj.states).forEach(k=>{
+    const s=window.hassObj.states[k];
+    states[k]=Object.assign({},s,{attributes:Object.assign({},s.attributes,{brightness:b})});
+  });
+  window.hassObj=Object.assign({},window.hassObj,{states});
+  card.hass=window.hassObj;
+  await tick(150);
+};
+
+// Nothing is controlled until something is selected (_getControlledEntities
+// returns [] with no selection and no default_entity), so a commit test that
+// skips this measures an empty target list and sees no service call at all.
+window.select=function(list){
+  card._selectedLights=new Set(list||ids);
+  card.updateLights();
+  return [...card._selectedLights];
+};
+
+const $=(id)=>card.shadowRoot.getElementById(id);
+const R=(el)=>{const b=el.getBoundingClientRect();
+  return {l:Math.round(b.left),t:Math.round(b.top),r:Math.round(b.right),
+          b:Math.round(b.bottom),w:Math.round(b.width),h:Math.round(b.height)};};
+
+// ---- LAYOUT: the shape the request actually asked for -------------------
+window.layout=function(){
+  const bars=$('colorBars');
+  const col=card.shadowRoot.querySelector('.color-bar-col');
+  const br=$('brightnessSlider'), hue=$('hueSlider'), tint=$('tintSlider'), temp=$('temperatureSlider');
+  const slot=br.closest('.color-bar-slot');
+  const B=R(br), H=R(hue), T=R(tint), P=R(temp), S=R(slot), C=R(col);
+  // Either host: controls_below renders .controls-below, otherwise the bars
+  // live in the draggable .controls-floating panel over the plan.
+  const panel=R(card.shadowRoot.querySelector('.controls-below, .controls-floating'));
+  return {
+    barsBox:[R(bars).w,R(bars).h], col:[C.w,C.h], slot:[S.w,S.h], brightness:[B.w,B.h],
+    isVertical: B.h > B.w,
+    leftOfAll: B.r <= H.l && B.r <= T.l && B.r <= P.l,
+    stackOrder: [...col.querySelectorAll('.color-bar-input')].map(e=>e.id),
+    orderTopDown: H.t < T.t && T.t < P.t,
+    slotSpansColumn: S.h === C.h,
+    trackSpan:[B.t,B.b], hueTop:H.t, tempBottom:P.b,
+    tracksAligned: Math.abs(B.t-H.t) <= 1 && Math.abs(B.b-P.b) <= 1,
+    thicknessMatchesHeight: B.w === H.h,
+    insidePanel: B.l>=panel.l-1 && B.r<=panel.r+1 && B.t>=panel.t-1 && B.b<=panel.b+1,
+    panelHeight: panel.h,
+    ariaOrientation: br.getAttribute('aria-orientation'),
+    direction: getComputedStyle(br).direction,
+  };
+};
+
+// ---- GESTURE: synthesized pointer events, the repo's own idiom ----------
+function pev(el,type,x,y,extra){
+  const e=new PointerEvent(type,Object.assign({pointerId:7,pointerType:'touch',button:0,
+    buttons:type==='pointerup'?0:1,clientX:x,clientY:y,bubbles:true,cancelable:true,composed:true},extra||{}));
+  el.dispatchEvent(e); return e;
+}
+function cap(el){try{el.setPointerCapture=()=>{};el.releasePointerCapture=()=>{};}catch(_){}}
+
+// Sweep the bar end to end and report the mapping. frac 0 = the MIN end.
+window.sweep=async function(id,n){
+  const el=$(id); cap(el); const b=el.getBoundingClientRect();
+  const vertical=b.height>b.width; const out=[]; n=n||10;
+  for(let i=0;i<=n;i++){
+    const f=i/n;
+    const x=vertical?b.left+b.width/2:b.left+2+(b.width-4)*f;
+    const y=vertical?b.bottom-2-(b.height-4)*f:b.top+b.height/2;
+    pev(el,'pointerdown',x,y); const v=Number(el.value); pev(el,'pointerup',x,y);
+    out.push([Math.round(f*100),v]);
+    await tick(20);
+  }
+  const vals=out.map(r=>r[1]);
+  return {rows:out, monotonic: vals.every((v,i)=>i===0||v>=vals[i-1]),
+          startsAtMin: vals[0]===Number(el.min), endsAtMax: vals[vals.length-1]===Number(el.max),
+          midIsMid: Math.abs(vals[Math.floor(n/2)]-(Number(el.min)+Number(el.max))/2) <= 6};
+};
+
+// A real drag: down, move, up. Reports what actually got sent.
+window.drag=async function(id, fromFrac, toFrac){
+  const el=$(id); cap(el); const b=el.getBoundingClientRect();
+  const vertical=b.height>b.width;
+  const pt=(f)=>vertical?[b.left+b.width/2, b.bottom-2-(b.height-4)*f]
+                        :[b.left+2+(b.width-4)*f, b.top+b.height/2];
+  const a=pt(fromFrac), z=pt(toFrac);
+  calls.length=0;
+  pev(el,'pointerdown',a[0],a[1]); await tick(30);
+  const start=Number(el.value);
+  for(let i=1;i<=6;i++){ pev(el,'pointermove',a[0]+(z[0]-a[0])*i/6, a[1]+(z[1]-a[1])*i/6); await tick(20); }
+  const moved=Number(el.value);
+  pev(el,'pointerup',z[0],z[1]); await tick(220);
+  return {start, moved, rose: moved>start, fell: moved<start,
+    sent:calls.filter(c=>c.srv==='turn_on').map(c=>c.data.brightness).filter(v=>v!==undefined)};
+};
+
+// A swipe ACROSS the bar must put the value back.
+// The baseline is the value BEFORE the press: pointerdown does tap-to-set, so
+// the revert restores what was there before that, not what the tap produced.
+window.crossAxis=async function(id){
+  const el=$(id); cap(el); const b=el.getBoundingClientRect();
+  const vertical=b.height>b.width;
+  const before=Number(el.value);
+  const cy=vertical?b.bottom-20:b.top+b.height/2;
+  const sx=vertical?b.left+b.width/2:b.left+20;
+  pev(el,'pointerdown',sx,cy); await tick(30);
+  const afterTap=Number(el.value);
+  for(let i=1;i<=5;i++){ const d=i*9;
+    pev(el,'pointermove', vertical?sx+d:sx, vertical?cy:cy+d); await tick(20); }
+  const afterSwipe=Number(el.value);
+  calls.length=0;
+  pev(el,'pointerup', vertical?sx+45:sx, vertical?cy:cy+45); await tick(200);
+  return {before, afterTap, afterSwipe,
+    movedOnTap: afterTap!==before,
+    reverted: afterSwipe===before,
+    sentNothing: calls.filter(c=>c.srv==='turn_on').length===0};
+};
+
+// ALONG the bar must NOT abort.
+window.alongAxis=async function(id){
+  const el=$(id); cap(el); const b=el.getBoundingClientRect();
+  const vertical=b.height>b.width;
+  const cx=vertical?b.left+b.width/2:b.left+20, cy=vertical?b.bottom-20:b.top+b.height/2;
+  pev(el,'pointerdown',cx,cy); await tick(30);
+  const tap=Number(el.value);
+  for(let i=1;i<=5;i++){ const d=i*9;
+    pev(el,'pointermove', vertical?cx:cx+d, vertical?cy-d:cy); await tick(20); }
+  const after=Number(el.value);
+  pev(el,'pointerup', vertical?cx:cx+45, vertical?cy-45:cy); await tick(150);
+  return {tap, after, followedFinger: after!==tap};
+};
+
+// Two fingers on one bar: the second must not steal the gesture.
+window.twoFingers=async function(id){
+  const el=$(id); cap(el); const b=el.getBoundingClientRect();
+  const vertical=b.height>b.width;
+  const x=b.left+b.width/2;
+  pev(el,'pointerdown',x,vertical?b.bottom-10:b.left+10,{pointerId:1});
+  await tick(30);
+  const first=Number(el.value);
+  pev(el,'pointerdown',x,vertical?b.top+10:b.right-10,{pointerId:2});
+  await tick(30);
+  const afterSecond=Number(el.value);
+  pev(el,'pointerup',x,vertical?b.top+10:b.right-10,{pointerId:2});
+  pev(el,'pointerup',x,vertical?b.bottom-10:b.left+10,{pointerId:1});
+  await tick(150);
+  return {first, afterSecond, secondIgnored: first===afterSecond};
+};
+
+window.svc=()=>calls.slice();
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>
