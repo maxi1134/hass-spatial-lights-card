@@ -1,0 +1,181 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Max lumens</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:700px}#ed{width:520px}</style>
+</head><body><div id="host"></div><div id="ed"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+let card, hass;
+
+// ONE light alone on the card, so its pool can be measured without a
+// neighbour's light adding into it.
+window.mount=async function(over, attrs){
+  const st={entity_id:'light.x', state:'on',
+    attributes:Object.assign({friendly_name:'X', brightness:255, rgb_color:[255,255,255],
+      color_mode:'rgb', supported_color_modes:['rgb']}, attrs||{})};
+  hass={states:{'light.x':st}, entities:{},
+    callService:()=>Promise.resolve(), callWS:()=>Promise.resolve([]),
+    connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:['light.x'],
+    positions:{'light.x':{x:50,y:50}}, aspect_ratio:'1:1',
+    background_image:{url:'floorplan.svg'},
+    light_field:{enabled:true}}, over||{}));
+  card.hass=hass; host.appendChild(card);
+  await tick(700); window.card=card; window.hassObj=hass;
+  return card.constructor.BUILD;
+};
+
+// Total painted light on the field canvas -- the same honest measure the glow
+// work used: peak alpha alone would miss the pool changing size, which is
+// exactly the axis under test here.
+window.energy=function(){
+  const cv=card.shadowRoot.querySelector('canvas.light-field');
+  if(!cv||!(cv.width>0)) return {noCanvas:true, energy:0, litPx:0, radius:0};
+  const w=cv.width,h=cv.height;
+  const d=cv.getContext('2d').getImageData(0,0,w,h).data;
+  let e=0, lit=0, peak=0, maxR=0;
+  const cx=w/2, cy=h/2;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      const a=d[i+3]/255;
+      if(a<=0.02) continue;
+      const l=(0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2])*a;
+      e+=l; lit++;
+      if(l>peak) peak=l;
+      const r=Math.hypot(x-cx,y-cy);
+      if(r>maxR) maxR=r;
+    }
+  }
+  return {energy:Math.round(e), litPx:lit, peak:Math.round(peak), radius:Math.round(maxR),
+          canvasPx:w*h};
+};
+
+window.atLumens=async function(lm, over, attrs){
+  const cfg=Object.assign({}, over||{});
+  if(lm!=null) cfg.lumens_overrides={'light.x':lm};
+  await window.mount(cfg, attrs);
+  return window.energy();
+};
+
+// THE INVARIANT: painted energy tracks the lumen ratio, not its square.
+// alpha_exp + 2*size_exp === 1 is what makes that true.
+window.energyTracksLumens=async function(over){
+  const base=await window.atLumens(800, over);
+  const rows=[];
+  for (const lm of [200,400,800,1600,3200]){
+    const m=await window.atLumens(lm, over);
+    rows.push({lm, energy:m.energy, radius:m.radius, peak:m.peak,
+      energyRatio: base.energy? Math.round(m.energy/base.energy*100)/100 : null,
+      lumenRatio: lm/800,
+      radiusRatio: base.radius? Math.round(m.radius/base.radius*100)/100 : null});
+  }
+  // Allow generous tolerance: the gradient is artistic, the canvas is
+  // quantised, and the alpha saturates at 1 for very bright fixtures.
+  const within=(a,b,tol)=>Math.abs(a-b)<=tol;
+  return {rows,
+    // energy should follow the lumen ratio, NOT its square
+    tracksLinear: rows.every(r=>r.lumenRatio>=1 || within(r.energyRatio, r.lumenRatio, 0.35)),
+    notQuadratic: rows.every(r=>r.lumenRatio<=1 || r.energyRatio < r.lumenRatio*r.lumenRatio*0.8),
+    // both axes must actually respond
+    brighterIsBigger: rows[4].radius > rows[0].radius,
+    brighterIsBrighter: rows[4].energy > rows[0].energy,
+    defaultIsNeutral: rows[2].energyRatio===1};
+};
+
+// 800 (and an absent entry) must render byte-identically to no feature at all.
+window.defaultIsInvisible=async function(){
+  const none=await window.atLumens(null);
+  const eight=await window.atLumens(800);
+  const zero=await window.atLumens(0);        // rejected -> default
+  const junk=await window.atLumens('abc');    // rejected -> default
+  const neg=await window.atLumens(-500);      // rejected -> default
+  return {none:none.energy, eight:eight.energy, zero:zero.energy, junk:junk.energy, neg:neg.energy,
+    allIdentical: [eight.energy, zero.energy, junk.energy, neg.energy].every(v=>v===none.energy)};
+};
+
+// Lumens and the light's CURRENT brightness must compose, not replace.
+window.composesWithBrightness=async function(){
+  const out={};
+  for (const b of [64,255]){
+    for (const lm of [800,3200]){
+      const m=await window.atLumens(lm, null, {brightness:b});
+      out['b'+b+'_lm'+lm]={energy:m.energy, radius:m.radius};
+    }
+  }
+  out.brightnessStillMatters = out.b64_lm800.energy < out.b255_lm800.energy;
+  out.lumensStillMatterWhenDim = out.b64_lm3200.energy > out.b64_lm800.energy;
+  return out;
+};
+
+// scale_with_brightness:false ignores the light's level but must NOT ignore lumens.
+window.ignoresScaleFlag=async function(){
+  const cfg=(lm)=>({glow:{enabled:true,shape:'round',width:'60%',intensity:0.5,
+    scale_with_brightness:false}, light_field:{enabled:true}, lumens_overrides:{'light.x':lm}});
+  await window.mount(cfg(800)); const a=window.energy();
+  await window.mount(cfg(3200)); const b=window.energy();
+  return {at800:a.energy, at3200:b.energy, lumensStillApply: b.energy>a.energy};
+};
+
+// The classic renderer must honour it too.
+window.classicRenderer=async function(){
+  const out={};
+  for (const lm of [800,3200]){
+    await window.mount({glow:{enabled:true,shape:'round',width:'40%',intensity:0.6},
+      light_field:{enabled:false}, lumens_overrides:{'light.x':lm}});
+    const g=card.shadowRoot.querySelector('.light-glow');
+    const cs=getComputedStyle(g), b=g.getBoundingClientRect();
+    out['lm'+lm]={w:Math.round(b.width), h:Math.round(b.height), opacity:cs.opacity};
+  }
+  return Object.assign(out, {
+    biggerAt3200: out.lm3200.w > out.lm800.w,
+    brighterAt3200: parseFloat(out.lm3200.opacity) >= parseFloat(out.lm800.opacity)});
+};
+
+// Extremes the user explicitly allows must not break anything.
+window.extremes=async function(){
+  const out={};
+  for (const lm of [1, 50, 100000]){
+    const t0=performance.now();
+    const m=await window.atLumens(lm);
+    out['lm'+lm]={energy:m.energy, radius:m.radius, ms:Math.round(performance.now()-t0),
+      finite:Number.isFinite(m.energy)};
+  }
+  out.allFinite=Object.values(out).every(v=>v.finite!==false);
+  return out;
+};
+
+// The editor round-trips it.
+window.editor=async function(){
+  const col=document.getElementById('ed'); col.innerHTML='';
+  const ed=document.createElement('spatial-light-color-card-editor');
+  ed.hass=hass||{states:{},entities:{},callService:()=>Promise.resolve(),
+    callWS:()=>Promise.resolve([]),connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  ed.setConfig({type:'custom:spatial-light-color-card',entities:['light.x','light.y'],
+    positions:{'light.x':{x:50,y:50},'light.y':{x:20,y:20}},
+    lumens_overrides:{'light.x':1600}});
+  col.appendChild(ed);
+  await tick(450);
+  const inputs=[...ed.shadowRoot.querySelectorAll('.entity-overrides input[data-key="lumens"]')];
+  const restored=inputs.map(i=>[i.dataset.entity, i.value, i.placeholder]);
+  let fired=null;
+  ed.addEventListener('config-changed',(e)=>{fired=e.detail.config;});
+  const t=inputs.find(i=>i.dataset.entity==='light.y');
+  if(t){ t.value='2500'; t.dispatchEvent(new Event('input',{bubbles:true})); }
+  await tick(600);
+  return {count:inputs.length, restored,
+    restoredCorrectly: restored.length===2
+      && restored.find(r=>r[0]==='light.x')[1]==='1600'
+      && restored.find(r=>r[0]==='light.y')[1]===''
+      && restored[0][2]==='800',
+    wrote: fired && fired.lumens_overrides,
+    wroteNew: !!(fired && fired.lumens_overrides && fired.lumens_overrides['light.y']===2500)};
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>

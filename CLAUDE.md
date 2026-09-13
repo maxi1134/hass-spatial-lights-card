@@ -842,6 +842,61 @@ now casts real wall shadows (its emitter frame grows from a 10%-reach stub, so w
 culled), and `scale_with_brightness: false` users see no change at all, since that branch never read
 the ratio -- which is also why it was the existing workaround.
 
+## 8j. Max lumens
+
+`lumens_overrides` is a per-entity map (entity -> number) saying what a bulb puts out at full
+brightness. `LUMENS_DEFAULT` is 800 -- the figure on the side of a standard smart bulb -- and every
+scale is a RATIO to it, so a card that never sets one renders byte-identically to before the feature
+existed. Verified: absent, 800, 0, a negative and a non-number all paint the same 5076300 energy.
+There is deliberately no upper clamp; the only validation is finite-and-positive, and a rejected value
+is dropped so the entity falls back to the default rather than rendering something nobody asked for.
+
+**The two exponents are not free, and the obvious reading of them is wrong.** Painted light is roughly
+alpha x area and area goes with the square of the radius, so
+
+    LUMENS_ALPHA_EXP + 2 * LUMENS_SIZE_EXP === 1
+
+is what makes the plan receive as much light as the bulb emits. Taking alpha linearly from luminous
+flux AND the radius from the inverse-square law -- each defensible alone, and the pair is what you
+reach for first -- violates it badly: energy would go as the SQUARE of the ratio, and doubling a
+bulb's lumens would put four times the light on the plan.
+
+Within the constraint the split is a judgement. All of it on alpha (1, 0) is the most physical for a
+fixed beam angle: twice the flux through the same solid angle is twice as bright over the same
+footprint, and the pool only appears to grow because its dim edge crosses the eye's threshold. But
+the request was explicitly that RANGE respond too, and a pool that never changes size does not read as
+a brighter lamp. 0.5 / 0.25 gives both axes something visible while keeping the total honest.
+Measured against a 1:1 plan: 200 lm -> 0.24x energy, 400 -> 0.50x, 1600 -> 2.12x, 3200 -> 2.95x
+against lumen ratios of 0.25, 0.5, 2 and 4, with the radius moving 0.61x to 1.50x across that 16x
+range. The 3200 figure falls short of 4x because the alpha saturates at 1 -- a very bright fixture
+stops getting brighter and only keeps getting wider, which is the right way for it to fail.
+
+**`_lumenScale` returns the two multipliers already separated** because they land in different places:
+`flux` multiplies the emitter's alpha, `size` multiplies its width AND its length. Both are exactly 1
+for an unconfigured light, which is what keeps the feature invisible until used.
+
+**It is NOT gated on `scale_with_brightness`.** That flag asks whether the pool should track the
+light's CURRENT level; this is a fixed property of the hardware, true whether the bulb is dimmed or
+not. Verified: with the flag off, 3200 lm still paints four times the energy of 800 lm. The two
+compose rather than replace -- a dim 3200 lm bulb outshines a dim 800 lm one, and brightness still
+matters at a fixed lumen figure.
+
+**One seam per renderer.** The classic path scales `gc` ITSELF, in the resolved copy that already
+turns percentages into px, because `length` derives from `gc.length` and every shape case in the
+switch reads `gc.width` directly -- patching each use would have been a dozen sites and one of them
+would have been missed. The field path scales `width` and `baseLength` in `_getFieldEmitter`,
+including the no-glow-config branch that falls back to `light_field.radius`: a light diffusing on the
+default radius alone is still a fixture with a lumen rating, and leaving it out would make the setting
+work only for lights that happened to have a glow block. Both alphas are clamped to 1 before the
+exposure multiply, or a bright fixture would hand the canvas an out-of-range alpha.
+
+`.harness/lumens.html` measures the invariant rather than asserting a pixel: `energyTracksLumens()`
+sweeps five figures and checks energy follows the ratio and NOT its square, `defaultIsInvisible()`
+pins the five ways of saying 800, `composesWithBrightness()` and `ignoresScaleFlag()` pin the
+interaction with the light's level, `classicRenderer()` covers the other renderer, and `extremes()`
+runs 1, 50 and 100000 lm for finiteness and for the hang the sweep is documented to be capable of
+(section 8b).
+
 **Legacy (default).** `_updateAllGlows()` iterates lights and applies a `light-glow` div with shape, length, color, and optional wall-shadow mask. Wall masks are cached per `(entityId, wallConfigVersion, glow shape/size)`. When `_fieldActive`, `_renderLightsHTML` does not emit the div and `_updateAllGlows` returns immediately.
 
 **Light field (`light_field.enabled`).** One shared `<canvas class="light-field">` inside `#canvas`, between `.grid` and the `.light` markers. `.light-halo` (the icon-only / minimal-ui colour carrier) is gated on `!_fieldActive` alongside `.light-glow` — it is a second projected-light source, and left ungated it painted inside `.light`'s own stacking context (i.e. above the field canvas), double-glowing and escaping every wall. Each `.light` is its own stacking context (its glow sits at `z-index:-1` inside it), which is the structural reason the legacy glows can never merge — one surface fixes it. `_renderLightField()` draws every lit entity with `globalCompositeOperation='lighter'`, so overlapping colours add.

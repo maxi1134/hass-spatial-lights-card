@@ -193,6 +193,32 @@ group_exempt_overrides:
   light.uv_bedroom: true
 ```
 
+### Max lumens
+
+Bulbs list what they put out. Tell the card, and the light it projects onto your
+plan matches: open a light in the editor's entity list and set **Max lumens**.
+
+The default is **800** — what a standard smart bulb emits — so a card that never
+sets one looks exactly as it did before. There is no upper limit; floodlights are
+fine.
+
+A brighter fixture gets **both** a stronger pool and a slightly wider one, and a
+dimmer fixture the reverse. The two are balanced so the plan receives as much
+light as the bulb actually emits: doubling the lumens roughly doubles the light
+on the plan, rather than quadrupling it. In practice, over a 16× range of bulbs
+the pool's radius moves about 2.5×.
+
+It combines with the light's current brightness rather than replacing it — a
+dimmed 3000 lm bulb still outshines a dimmed 800 lm one — and it applies even
+with `scale_with_brightness` off, since lumens are a property of the fixture
+rather than of its current level.
+
+```yaml
+lumens_overrides:
+  light.kitchen_ceiling: 1600
+  light.bedside_lamp: 450
+```
+
 ### Switch-only lights
 
 Select a light that can only be switched on and off — no brightness, no colour, no
@@ -427,6 +453,7 @@ Position history stores up to 50 steps.
 | `icon_mirror` | string | `"none"` | Global icon mirroring: `none`, `horizontal`, `vertical`, or `both`. |
 | `icon_mirror_overrides` | map | `{}` | Per-entity icon mirror overrides (e.g., `light.lamp: "horizontal"`). |
 | `group_exempt_overrides` | map | `{}` | Per-entity `true` to mark a light **not affected by group selection** — drag-select and select-all skip it, and it is left out of effects or script buttons fired with nothing selected. Tap, long-press, Shift-click and Enter still work on it. See [Not affected by group selection](#not-affected-by-group-selection). |
+| `lumens_overrides` | map | `{}` | Per-entity maximum output in lumens (default `800`). A brighter bulb throws a stronger and slightly wider pool of light on the plan. No upper limit. See [Max lumens](#max-lumens). |
 | `size_overrides` | map | `{}` | Per-entity size overrides (e.g., `light.lamp: 40`). |
 | `icon_only_overrides` | map | `{}` | Per-entity icon-only mode overrides (e.g., `light.lamp: true`). |
 | `background_image` | string/map | `null` | URL string, or object `{url, fit, size, position, repeat, blend_mode, opacity, rendering, auto_aspect}`. `opacity` accepts 0–1; `repeat` takes any CSS `background-repeat`. See [Background Image](#background-image) for `fit`, `rendering` and `auto_aspect`. |

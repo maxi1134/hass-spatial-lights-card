@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.40.3 (fork-maxi1134)';
+  static BUILD = 'v1.41.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -66,6 +66,42 @@ class SpatialLightColorCard extends HTMLElement {
    * where anyone could see the difference, and both ends clamp regardless.)
    */
   static BAR_THUMB = 9;
+
+  /**
+   * What a bulb is assumed to emit when nobody has said otherwise, in lumens.
+   *
+   * 800 because that is what a standard smart bulb ships as -- the E27/A19
+   * "60W equivalent" every manufacturer lists. It is the DEFAULT rather than a
+   * baseline in any physical sense: every scale below is a ratio to it, so a
+   * card that never sets a lumen figure renders exactly as it did before the
+   * feature existed.
+   */
+  static LUMENS_DEFAULT = 800;
+
+  /**
+   * How a lumen ratio is split between "brighter" and "further".
+   *
+   * Painted light is roughly alpha x area, and area goes with the square of
+   * the radius, so the two exponents are not free: for the plan to receive as
+   * much light as the bulb actually emits, they must satisfy
+   *
+   *     LUMENS_ALPHA_EXP + 2 * LUMENS_SIZE_EXP === 1
+   *
+   * Scaling alpha linearly AND the radius by the square root -- the reading
+   * that looks obvious, one from luminous flux and one from the inverse-square
+   * law -- violates it badly: energy would go as the SQUARE of the ratio, so
+   * doubling a bulb's lumens would put four times the light on the plan.
+   *
+   * Within that constraint the split is a judgement. All of it on alpha (1, 0)
+   * is the most physical for a fixed beam angle -- twice the flux through the
+   * same solid angle is twice as bright over the same footprint, and the pool
+   * only appears to grow because its dim edge crosses the eye's threshold.
+   * But the request was explicitly that RANGE respond too, and a pool that
+   * never changes size does not read as a brighter lamp. 0.5 / 0.25 gives both
+   * axes something visible while keeping the total honest.
+   */
+  static LUMENS_ALPHA_EXP = 0.5;
+  static LUMENS_SIZE_EXP = 0.25;
 
   /**
    * The floor as a percentage, for the readouts that must not under-report it.
@@ -344,6 +380,23 @@ class SpatialLightColorCard extends HTMLElement {
       });
     }
 
+    // Normalize lumens_overrides (per-entity maximum output, in lumens).
+    // Deliberately NO upper clamp -- stadium floodlights exist and the request
+    // was explicit that the field not have one. The lower bound is the only
+    // real constraint: zero or negative is not a brightness, it is a light
+    // that cannot be represented, and a non-number would propagate as NaN into
+    // the emitter geometry and run the visibility sweep on NaN coordinates.
+    // A rejected value is dropped rather than coerced, so the entity falls
+    // back to LUMENS_DEFAULT instead of silently rendering something nobody
+    // asked for.
+    const lumensOverrides = {};
+    if (config.lumens_overrides && typeof config.lumens_overrides === 'object') {
+      Object.entries(config.lumens_overrides).forEach(([entity, lm]) => {
+        const parsed = typeof lm === 'number' ? lm : parseFloat(lm);
+        if (Number.isFinite(parsed) && parsed > 0) lumensOverrides[entity] = parsed;
+      });
+    }
+
     // Normalize icon_only_overrides (per-entity icon-only mode)
     const iconOnlyOverrides = {};
     if (config.icon_only_overrides && typeof config.icon_only_overrides === 'object') {
@@ -420,6 +473,7 @@ class SpatialLightColorCard extends HTMLElement {
       // out of the controls box.
       color_bar_height: normalizedBarHeight,
       size_overrides: sizeOverrides,
+      lumens_overrides: lumensOverrides,
 
       // Minimal UI mode (hides circles completely except when selected)
       minimal_ui: config.minimal_ui || false,
@@ -10071,6 +10125,31 @@ class SpatialLightColorCard extends HTMLElement {
    * bail earlier for anything off, and that is what stops this lighting up a
    * dark plan.
    */
+  /**
+   * How much bigger or brighter this fixture is than the assumed 800 lm one.
+   *
+   * Returns the two multipliers already separated, because they are applied in
+   * different places and at different times: `flux` multiplies the emitter's
+   * alpha, `size` multiplies its width AND its length. Both are 1 for an
+   * unconfigured light, which is what makes this feature invisible until used.
+   *
+   * NOT gated on `scale_with_brightness`. That flag asks whether the pool
+   * should track the light's CURRENT level; this is a fixed property of the
+   * hardware, true of the fixture whether it is dimmed or not, and a 1600 lm
+   * bulb at 50% is still a 1600 lm bulb.
+   */
+  _lumenScale(entityId) {
+    const map = this._config && this._config.lumens_overrides;
+    const lm = map && map[entityId];
+    const base = SpatialLightColorCard.LUMENS_DEFAULT;
+    if (!Number.isFinite(lm) || lm <= 0 || lm === base) return { flux: 1, size: 1 };
+    const ratio = lm / base;
+    return {
+      flux: Math.pow(ratio, SpatialLightColorCard.LUMENS_ALPHA_EXP),
+      size: Math.pow(ratio, SpatialLightColorCard.LUMENS_SIZE_EXP),
+    };
+  }
+
   _brightnessRatio(attributes) {
     const b = Number(attributes && attributes.brightness);
     if (!Number.isFinite(b)) return 1;
@@ -10098,12 +10177,16 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     const gcRaw = this._getGlowConfig(entityId);
+    // Scaled into gc itself rather than at each use: `length` below derives
+    // from gc.length, and every shape case in the switch reads gc.width
+    // directly, so this is the one seam that reaches all of them.
+    const lumens = this._lumenScale(entityId);
     // Percent sizes resolve to px here so every shape case below, and the wall
     // mask geometry, keep working on plain numbers.
     const gc = {
       ...gcRaw,
-      width: this._resolveGlowLength(gcRaw.width, canvasRect),
-      length: this._resolveGlowLength(gcRaw.length, canvasRect),
+      width: this._resolveGlowLength(gcRaw.width, canvasRect) * lumens.size,
+      length: this._resolveGlowLength(gcRaw.length, canvasRect) * lumens.size,
     };
     // Absent brightness means full output; see _brightnessRatio.
     const ratio = this._brightnessRatio(state.attributes);
@@ -10123,7 +10206,8 @@ class SpatialLightColorCard extends HTMLElement {
 
     // Scale dimensions with brightness if configured
     const length = gc.scale_with_brightness ? gc.length * Math.max(ratio, 0.1) : gc.length;
-    const opacity = gc.scale_with_brightness ? gc.intensity * Math.max(ratio, 0.05) : gc.intensity;
+    const opacity = Math.min(1,
+      (gc.scale_with_brightness ? gc.intensity * Math.max(ratio, 0.05) : gc.intensity) * lumens.flux);
     const { r, g, b } = rgb;
 
     // Reset shape-specific properties
@@ -10709,19 +10793,24 @@ class SpatialLightColorCard extends HTMLElement {
     const stops = hasParams ? gc.gradient_stops : null;
     const scaleB = hasParams ? gc.scale_with_brightness : true;
     const baseIntensity = hasParams ? gc.intensity : 0.7;
-    const width = hasParams
+    // Applied to the no-config path too: a light diffusing on light_field.radius
+    // alone is still a fixture with a lumen rating, and leaving it out would
+    // make the setting work only for lights that also had a glow block.
+    const lumens = this._lumenScale(entityId);
+    const width = (hasParams
       ? this._resolveGlowLength(gc.width, rect)
-      : this._resolveGlowLength(lf.radius, rect) * 2;
-    const baseLength = hasParams
+      : this._resolveGlowLength(lf.radius, rect) * 2) * lumens.size;
+    const baseLength = (hasParams
       ? this._resolveGlowLength(gc.length, rect)
-      : this._resolveGlowLength(lf.radius, rect) * 2;
+      : this._resolveGlowLength(lf.radius, rect) * 2) * lumens.size;
     // Already rotated by _getGlowConfig; a light with no emission config emits
     // a disc, so its direction is immaterial.
     const direction = hasParams ? gc.direction : 0;
 
     // Matches _updateGlow: length tracks brightness, width does not.
     const length = scaleB ? baseLength * Math.max(ratio, 0.1) : baseLength;
-    const alpha = (scaleB ? baseIntensity * Math.max(ratio, 0.05) : baseIntensity) * lf.exposure;
+    const alpha = Math.min(1,
+      (scaleB ? baseIntensity * Math.max(ratio, 0.05) : baseIntensity) * lumens.flux) * lf.exposure;
 
     // gc comes from _getGlowConfig, which has ALREADY turned the direction and
     // the offsets. Rotating them again here would double-apply the turn.
@@ -12415,6 +12504,13 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._config.icon_only_mode) yamlLines.push(`icon_only_mode: true`);
 
     // Per-entity size overrides
+    if (this._config.lumens_overrides && Object.keys(this._config.lumens_overrides).length) {
+      yamlLines.push('lumens_overrides:');
+      Object.entries(this._config.lumens_overrides).forEach(([entity, lm]) => {
+        yamlLines.push(`${indent}${entity}: ${lm}`);
+      });
+    }
+
     if (this._config.size_overrides && Object.keys(this._config.size_overrides).length) {
       yamlLines.push('size_overrides:');
       Object.entries(this._config.size_overrides).forEach(([entity, size]) => {
@@ -12653,6 +12749,7 @@ class SpatialLightColorCard extends HTMLElement {
       always_show_controls: false, controls_below: true,
       default_entity: null, show_entity_icons: true, icon_style: 'mdi',
       light_size: 56, icon_only_mode: false, size_overrides: {}, icon_only_overrides: {},
+      lumens_overrides: {},
       group_exempt_overrides: {},
       icon_rotation: 0, icon_rotation_overrides: {}, icon_mirror: 'none', icon_mirror_overrides: {},
       // Aligned with `setConfig` defaults so removing the field from YAML doesn't
@@ -13997,6 +14094,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     const labelOverride = (this._config.label_overrides && this._config.label_overrides[entity]) || '';
     const sizeOverride = (this._config.size_overrides && this._config.size_overrides[entity]) || '';
+    const lumensOverride = (this._config.lumens_overrides && this._config.lumens_overrides[entity]) || '';
     const colorOverride = this._config.color_overrides && this._config.color_overrides[entity];
     const colorOn = typeof colorOverride === 'string' ? colorOverride : (colorOverride && (colorOverride.state_on || colorOverride.on) ? (colorOverride.state_on || colorOverride.on) : '');
     const colorOff = typeof colorOverride === 'object' && colorOverride ? (colorOverride.state_off || colorOverride.off || '') : '';
@@ -14039,6 +14137,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <label>Size (px)</label>
             <input type="number" data-entity="${entity}" data-key="size" value="${sizeOverride}" placeholder="${this._config.light_size || 56}" min="16" max="200">
           </div>
+          <div class="override-row">
+            <label>Max lumens</label>
+            <input type="number" data-entity="${entity}" data-key="lumens" value="${lumensOverride}" placeholder="${SpatialLightColorCard.LUMENS_DEFAULT}" min="1" step="50">
+          </div>
+          <div class="override-sublabel">What this bulb puts out at full brightness. A brighter fixture
+            throws a stronger, slightly wider pool of light on the plan; a dimmer one a weaker, tighter
+            one. No upper limit — floodlights are fine.</div>
           <div class="override-row">
             <label>Color (on)</label>
             <input type="text" data-entity="${entity}" data-key="color_on" value="${this._esc(colorOn)}" placeholder="#hex or empty">
@@ -15621,6 +15726,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._config.entities.splice(idx, 1);
         if (this._config.positions) delete this._config.positions[entity];
         if (this._config.size_overrides) delete this._config.size_overrides[entity];
+        if (this._config.lumens_overrides) delete this._config.lumens_overrides[entity];
         if (this._config.group_exempt_overrides) delete this._config.group_exempt_overrides[entity];
         if (this._config.icon_only_overrides) delete this._config.icon_only_overrides[entity];
         if (this._config.label_overrides) delete this._config.label_overrides[entity];
@@ -15661,6 +15767,17 @@ class SpatialLightColorCardEditor extends HTMLElement {
         if (!this._config.label_overrides) this._config.label_overrides = {};
         if (val) { this._config.label_overrides[entity] = val; }
         else { delete this._config.label_overrides[entity]; }
+      });
+    });
+
+    root.querySelectorAll('.entity-overrides input[data-key="lumens"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.lumens_overrides) this._config.lumens_overrides = {};
+        // parseFloat, not parseInt: nothing about a lumen figure is integral,
+        // and no upper bound, per the request.
+        const num = parseFloat(val);
+        if (Number.isFinite(num) && num > 0) { this._config.lumens_overrides[entity] = num; }
+        else { delete this._config.lumens_overrides[entity]; }
       });
     });
 
