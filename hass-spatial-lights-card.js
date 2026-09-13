@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.39.0 (fork-maxi1134)';
+  static BUILD = 'v1.39.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -7141,8 +7141,15 @@ class SpatialLightColorCard extends HTMLElement {
       if (!cardEngaged) return;
       e.preventDefault();
       this._selectedLights.clear();
+      // _isSelectableEntity was missing here entirely -- select-all has always
+      // swept up binary_sensors, which no other selection path will take and
+      // which nothing downstream can act on. Adding it alongside the exemption
+      // makes this branch agree with the marquee, which has filtered on both
+      // since the marquee was written.
       this._config.entities.forEach(ent => {
-        if (!this._isGroupExempt(ent)) this._selectedLights.add(ent);
+        if (this._isSelectableEntity(ent) && !this._isGroupExempt(ent)) {
+          this._selectedLights.add(ent);
+        }
       });
       this.updateLights();
     }
@@ -8264,7 +8271,7 @@ class SpatialLightColorCard extends HTMLElement {
     // When nothing selected, check ALL entities for unanimity; when selected, check only selected
     const entitiesToCheck = this._selectedLights.size > 0
       ? controlled
-      : this._config.entities;
+      : (this._config.entities || []).filter(id => !this._isGroupExempt(id));
 
     let referenceRgb = null;
     let anyRgbOn = false;
@@ -8293,7 +8300,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     const entitiesToCheck = this._selectedLights.size > 0
       ? controlled
-      : this._config.entities;
+      : (this._config.entities || []).filter(id => !this._isGroupExempt(id));
 
     let referenceKelvin = null;
     let anyTempOn = false;
@@ -8404,6 +8411,11 @@ class SpatialLightColorCard extends HTMLElement {
     const hasSelection = this._selectedLights.size > 0;
     const pool = hasSelection ? [...this._selectedLights] : (this._config.entities || []);
     if (pool.length === 0) return [];
+    // The same pool minus group-exempt lights, for the visibility count alone.
+    // Everything else below deliberately keeps the full pool: the effect_list
+    // harvest (an exempt light's effects still matter to a preset that names
+    // it), the "nobody has effects" bail, and the restriction prerequisite.
+    const groupPool = hasSelection ? pool : pool.filter(id => !this._isGroupExempt(id));
 
     // Collect effect_list from each entity in the full pool
     const entityEffectSets = new Map(); // entity_id -> Set of effects
@@ -8437,7 +8449,22 @@ class SpatialLightColorCard extends HTMLElement {
       // Visibility is always checked against the full pool (all selected,
       // or all card entities). The lights restriction only gates relevance
       // (prerequisite above) and controls which lights get the effect applied.
-      const checkIds = [...pool];
+      //
+      // The ONE exception is the implicit whole-plan case, which has to agree
+      // with what _applyEffectPreset will actually target. That fallback skips
+      // group-exempt lights, so counting them here offers a button that then
+      // does nothing: with nothing selected, an effect only a UV projector
+      // exposes passed `supporting.length > 0`, rendered, took focus,
+      // announced itself, and returned at apply's `supported.length === 0`.
+      //
+      // A preset that NAMES its lights keeps the unfiltered pool, because
+      // apply's restricted branch keeps them too -- filter here and a preset
+      // whose lights are all exempt (exactly the "UV effects" preset someone
+      // will write) would vanish instead.
+      const checkIds = presetLights ? [...pool] : [...groupPool];
+      // An empty set makes the 'all' test vacuously true, which is the dead
+      // button again by another route (every light on the plan exempt).
+      if (checkIds.length === 0) return false;
 
       // Count how many check-lights actually support this effect
       const supporting = checkIds.filter(id => {
@@ -8458,7 +8485,7 @@ class SpatialLightColorCard extends HTMLElement {
 
     const entitiesToCheck = this._selectedLights.size > 0
       ? controlled
-      : this._config.entities;
+      : (this._config.entities || []).filter(id => !this._isGroupExempt(id));
 
     let referenceEffect = null;
     let anyEffectOn = false;

@@ -184,6 +184,78 @@ window.noExemptions=async function(){
   return {selection:sel(), caughtAll:sel().length===4};
 };
 
+// ---- an effect only the EXEMPT light supports -------------------------
+// The render side (_getAvailableEffects) and the apply side
+// (_applyEffectPreset) compute the same "nothing selected -> whole plan" pool
+// independently. Filter one and not the other and you get a button that draws,
+// focuses, announces itself, and does nothing.
+window.deadButton=async function(){
+  await window.mount({
+    effect_presets:[{name:'UV Wave', effect:'UVWave'},{name:'Movie', effect:'Movie'}],
+  });
+  // only the UV projectors expose UVWave
+  const st=window.hassObj||null;
+  card._hass.states['light.uv_a'].attributes.effect_list=['UVWave'];
+  card._hass.states['light.uv_b'].attributes.effect_list=['UVWave'];
+  card._hass.states['light.ceiling_a'].attributes.effect_list=['Movie'];
+  card._hass.states['light.ceiling_b'].attributes.effect_list=['Movie'];
+  card._selectedLights.clear(); card.updateLights(); await tick(200);
+  const offered=card._getAvailableEffects().map(p=>p.effect).sort();
+  calls.length=0;
+  card._applyEffectPreset('UVWave');
+  await tick(220);
+  const uvCalls=calls.slice();
+  calls.length=0;
+  card._applyEffectPreset('Movie');
+  await tick(220);
+  const movieTargets=calls.filter(c=>c.srv==='turn_on').flatMap(c=>{
+    const e=c.data.entity_id; return Array.isArray(e)?e:[e];});
+  return {offered,
+    uvWaveOffered: offered.includes('UVWave'),
+    uvWaveDidNothing: uvCalls.length===0,
+    deadButton: offered.includes('UVWave') && uvCalls.length===0,
+    movieTargets:movieTargets.sort()};
+};
+
+// A preset that NAMES the exempt lights must stay visible and must work.
+window.restrictedPreset=async function(){
+  await window.mount({
+    effect_presets:[{name:'UV Wave', effect:'UVWave', lights:['light.uv_a','light.uv_b']}],
+  });
+  card._hass.states['light.uv_a'].attributes.effect_list=['UVWave'];
+  card._hass.states['light.uv_b'].attributes.effect_list=['UVWave'];
+  card._hass.states['light.ceiling_a'].attributes.effect_list=['Movie'];
+  card._hass.states['light.ceiling_b'].attributes.effect_list=['Movie'];
+  card._selectedLights.clear(); card.updateLights(); await tick(200);
+  const offered=card._getAvailableEffects().map(p=>p.effect);
+  calls.length=0;
+  card._applyEffectPreset('UVWave');
+  await tick(220);
+  const t=calls.filter(c=>c.srv==='turn_on').flatMap(c=>{
+    const e=c.data.entity_id; return Array.isArray(e)?e:[e];});
+  return {offered, visible:offered.includes('UVWave'), targets:t.sort(),
+    works:t.includes('light.uv_a')};
+};
+
+// The "active preset" highlight must not be broken by an exempt light that is
+// running something else.
+// NOTE: _getActivePresetColor bails at `controlled.length === 0`, and with no
+// selection and no default_entity there are no controlled entities at all --
+// so the whole-plan unanimity branch is only REACHABLE with default_entity set.
+// Without it this test returns null for an unrelated reason and proves nothing.
+window.activeHighlight=async function(){
+  await window.mount({color_presets:[{name:'Warm', color:'#ffaa50'}],
+    default_entity:'light.ceiling_a'});
+  // every CEILING light is on the preset colour; the UV is not
+  card._hass.states['light.ceiling_a'].attributes.rgb_color=[255,170,80];
+  card._hass.states['light.ceiling_b'].attributes.rgb_color=[255,170,80];
+  card._hass.states['light.uv_a'].attributes.rgb_color=[80,0,255];
+  card._hass.states['light.uv_b'].attributes.rgb_color=[80,0,255];
+  card._selectedLights.clear(); card.updateLights(); await tick(200);
+  const active=card._getActivePresetColor();
+  return {active, highlighted: !!active};
+};
+
 // ---- the editor switch round-trips -------------------------------------
 window.editor=async function(){
   const col=document.getElementById('ed'); col.innerHTML='';

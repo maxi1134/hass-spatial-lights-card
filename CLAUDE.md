@@ -170,6 +170,27 @@ whether the entity can ever be selected at all (a `binary_sensor` cannot) -- and
 branch in `_applyHoldGesture`. Merging the two would have made a long press on an exempt light open
 more-info instead of adding it, which is the one thing the feature exists to allow.
 
+**Render and apply compute the same pool independently, so both must filter.**
+`_getAvailableEffects` decides which effect buttons EXIST; `_applyEffectPreset` decides what they hit.
+Filtering only the second shipped a button that drew, took focus, announced itself and did nothing --
+with nothing selected, an effect only a UV projector exposes passed the visibility count and then hit
+apply's `supported.length === 0`. But `pool` there serves five jobs and only one is implicit bulk
+targeting, so the filter goes on a SECOND list used for the visibility count alone: the effect_list
+harvest, the "nobody has effects" bail and the `presetLights` prerequisite all keep the full pool. A
+preset that NAMES exempt lights keeps the unfiltered count too, because apply's restricted branch keeps
+them -- filtering there would hide the "UV effects" preset someone will obviously write, trading a dead
+button for an unreachable feature. An empty count returns false, or the `all` mode is vacuously true and
+the dead button is back by another route.
+
+`_getActivePresetColor`, `_getActivePresetTemp` and `_getActivePresetEffect` scan for UNANIMITY to
+decide which preset reads as active, and their whole-plan branch filters for the same reason: one
+projector running its own colour de-highlighted the preset that was active on every real lamp.
+Reachable only with `default_entity` set, since all three bail at `controlled.length === 0` first --
+a test that forgets that returns null for an unrelated reason and proves nothing.
+
+Select-all gained `_isSelectableEntity` while it was being edited: it had never had it, so Ctrl/Cmd+A
+swept up `binary_sensor` entities that no other selection path takes and nothing downstream can act on.
+
 The plan shows no affordance for an exempt light, deliberately: these are the user's own fixtures on
 their own floor plan, and a badge on two or three markers per room is clutter in exchange for
 information the editor already states per entity. `.harness/group-exempt.html` pins all of it,
