@@ -225,6 +225,63 @@ window.perEntityDisable=async function(){
   return out;
 };
 
+// The card-level header and master switch must agree with each other in every
+// cell -- they now share one predicate instead of carrying two inline copies.
+window.cardLevelAgreement=async function(){
+  const col=document.getElementById('ed');
+  const rows=[];
+  for (const [label,cfg] of [
+    ['no glow block, field on',  {light_field:{enabled:true}}],
+    ['no glow block, field off', {light_field:{enabled:false}}],
+    ['glow.enabled true',        {glow:{enabled:true}, light_field:{enabled:true}}],
+    ['glow.enabled false',       {glow:{enabled:false}, light_field:{enabled:true}}],
+    ['glow.enabled false, field off', {glow:{enabled:false}, light_field:{enabled:false}}],
+  ]) {
+    col.innerHTML='';
+    const ed=document.createElement('spatial-light-color-card-editor');
+    ed.hass=hass;
+    ed.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:35,y:45}}}, JSON.parse(JSON.stringify(cfg))));
+    col.appendChild(ed); await tick(400);
+    const sw=ed.shadowRoot.getElementById('cfgGlowEnabled');
+    // the header carries a "diffused"/"classic" suffix only while projecting
+    const hdr=ed.shadowRoot.querySelector('#section-glow .section-title, #section-glow .section-header');
+    rows.push({label, switchOn: sw?!!sw.checked:null,
+      header: hdr ? hdr.textContent.replace(/\s+/g,' ').trim().slice(0,48) : null});
+  }
+  return {rows, allResolved: rows.every(r=>r.switchOn!==null)};
+};
+
+// A hand-written enabled:true is the one state the switch cannot show, so the
+// editor has to say so in words.
+window.forcedOnIsVisible=async function(){
+  const col=document.getElementById('ed');
+  const mk=async (ov)=>{
+    col.innerHTML='';
+    const ed=document.createElement('spatial-light-color-card-editor');
+    ed.hass=hass;
+    const cfg={type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:35,y:45}}, light_field:{enabled:true}};
+    if (ov) cfg.glow_overrides=ov;
+    ed.setConfig(cfg); col.appendChild(ed); await tick(400);
+    return ed;
+  };
+  const noteFor=(ed)=>{
+    const item=[...ed.shadowRoot.querySelectorAll('.entity-item')]
+      .find(i=>i.dataset.entity==='light.a');
+    const subs=[...item.querySelectorAll('.override-sublabel')];
+    return subs.map(x=>x.textContent).join(' ');
+  };
+  const plain=noteFor(await mk(null));
+  const forced=noteFor(await mk({'light.a':{enabled:true}}));
+  const disabled=noteFor(await mk({'light.a':{enabled:false}}));
+  return {
+    plainMentionsForced: /forced ON/i.test(plain),
+    forcedMentionsForced: /forced ON/i.test(forced),
+    disabledMentionsForced: /forced ON/i.test(disabled),
+    pass: !/forced ON/i.test(plain) && /forced ON/i.test(forced) && !/forced ON/i.test(disabled)};
+};
+
 // And the CARD must still honour all three states, editor or no editor.
 window.cardHonoursOverrides=async function(){
   const base=(ov, cardEnabled)=>{

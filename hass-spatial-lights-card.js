@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.42.0 (fork-maxi1134)';
+  static BUILD = 'v1.42.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -14146,6 +14146,13 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // Asking about the exclusion instead makes the control's own state the
     // whole truth -- nothing inherited is displayed, so nothing can drift.
     const glowOverrideDisabled = glowOverride.enabled === false;
+    // The third state the switch cannot show. A hand-written `enabled: true`
+    // pins one light on THROUGH a card-level off, and reads as unchecked here
+    // because it is not an exclusion -- so without saying so, the config has an
+    // effect with nothing on screen to explain it, and the first toggle would
+    // delete it silently. Naming it is what makes that deletion an informed act
+    // rather than a trap.
+    const glowOverrideForced = glowOverride.enabled === true;
     const glowOverrideShape = glowOverride.shape || '';
     const glowOverrideDirection = glowOverride.direction != null ? glowOverride.direction : '';
     const glowOverrideIntensity = glowOverride.intensity != null ? glowOverride.intensity : '';
@@ -14219,7 +14226,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
             <ha-switch data-entity="${entity}" data-key="glowDisabled" ${glowOverrideDisabled ? 'checked' : ''}></ha-switch>
           </div>
           <div class="override-sublabel">Stops this one light projecting, whatever the card is set to.
-            Leave it off and the light follows Light Projection like every other.</div>
+            Leave it off and the light follows Light Projection like every other.${glowOverrideForced
+              ? ' <strong>This light is currently forced ON in YAML</strong> (glow_overrides.enabled:'
+                + ' true), which this switch cannot express — touching it will clear that.'
+              : ''}</div>
           <div class="override-row">
             <label>Shape</label>
             <select data-entity="${entity}" data-key="glowShape">
@@ -14522,9 +14532,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // reading OFF while light is visibly on the plan -- and the user's first
     // flip would then write an explicit false and go dark. One touch resolves
     // the ambiguity permanently.
-    const glowProjects = config.glow && config.glow.enabled != null
-      ? config.glow.enabled === true
-      : lfCfg.enabled;
+    const glowProjects = this._glowProjectsEffective();
     const alSwitches = SpatialLightColorCard.findAdaptiveSwitches(this._hass);
 
     // Save section collapsed state before re-render
@@ -15576,8 +15584,6 @@ class SpatialLightColorCardEditor extends HTMLElement {
     // Switches
     // Same normalizer idiom as _render: the projection switch shows the
     // EFFECTIVE state, so an unconfigured card that is projecting reads on.
-    const lfEnabledForSwitch = SpatialLightColorCard.prototype._normalizeLightField.call(
-      Object.create(SpatialLightColorCard.prototype), c.light_field).enabled;
     const switches = {
       cfgEditPositions: this._editPositionsActive,
       cfgMinimalUI: c.minimal_ui || false,
@@ -15592,7 +15598,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       cfgSwitchTap: c.switch_single_tap || false,
       cfgCanvasTouchScroll: c.canvas_touch_scroll !== false,
       cfgThemeGlass: !!(c.theme && c.theme.glass),
-      cfgGlowEnabled: g.enabled != null ? g.enabled === true : lfEnabledForSwitch,
+      cfgGlowEnabled: this._glowProjectsEffective(),
       cfgGlowScaleBrightness: g.scale_with_brightness !== false,
     };
     const glowGroupEl = root.getElementById('glowSettingsGroup');
@@ -17000,11 +17006,18 @@ class SpatialLightColorCardEditor extends HTMLElement {
     this._fireConfigChanged();
   }
 
-  /** Set/delete a key under config.theme, pruning the object when empty. */
   /**
    * Does a light project, absent a per-entity override? Mirrors the card's
    * three-state rule: an authored `glow.enabled` wins, and with none the
    * renderer choice answers it (an unconfigured card DOES diffuse).
+   *
+   * The ONE answer for both card-level surfaces that need it: the header's
+   * "diffused / classic" suffix and the master switch's checked state. Both
+   * used to carry their own inline copy of the rule and neither called this,
+   * so the file held three spellings of one predicate -- and when the
+   * per-entity switch stopped asking the question, the helper was left with no
+   * callers at all while the duplicates lived on. That is the drift section 8
+   * blames for the four lies, forming again in miniature.
    */
   _glowProjectsEffective() {
     const g = this._config && this._config.glow;
@@ -17014,6 +17027,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       this._config && this._config.light_field).enabled;
   }
 
+  /** Set/delete a key under config.theme, pruning the object when empty. */
   _setThemeKey(key, val) {
     if (!this._config.theme || typeof this._config.theme !== 'object') this._config.theme = {};
     if (val === '' || val == null || val === false) {

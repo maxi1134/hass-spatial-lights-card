@@ -812,8 +812,15 @@ announced "Light Projection — diffused" whenever a renderer was set, regardles
 switch itself rendered `!!(g.enabled)`, so a legacy `light_field: true` card opened reading OFF while
 visibly projecting -- and the user's first flip would then write an explicit false and go dark. And
 the per-entity switch had the same lie, unchecked for both "no override" and "explicitly off", so the
-first click on a light projecting by inheritance killed it. All four then showed the EFFECTIVE state via
-`_glowProjectsEffective()`.
+first click on a light projecting by inheritance killed it. All four were then fixed to show the EFFECTIVE state.
+
+**Only two of them actually called `_glowProjectsEffective()`, and later neither did.** The header's
+"diffused / classic" suffix and the master switch each carried their own inline copy of the
+three-state rule, so the file held THREE spellings of one predicate; when the per-entity switch
+stopped asking the question (see below) the helper was left with no callers at all while the
+duplicates lived on. Both now call it, and it is the single answer again -- the same drift this
+section was written about, forming again in miniature and caught by an audit rather than by a user.
+Verified across five configs that the header suffix and the switch agree in every cell.
 
 **The per-entity one has since been inverted to "Disable glow", and that removes the last of the
 ambiguity rather than papering over it.** The switch now asks one question -- is this light excluded? --
@@ -833,7 +840,13 @@ that unchecking a `{enabled: false, intensity: 0.3}` override leaves `{intensity
 The CARD is unchanged and still honours all three states, so this removed a UI affordance and nothing
 else: a hand-written `glow_overrides: {light.x: {enabled: true}}` still forces one light on through a
 card-level off (measured 2496206 against 0 for the rest of the plan). The editor simply no longer has
-an opinion about that case, because a checkbox cannot express three states honestly. The group's visibility is set by the change handler as well as by
+an opinion about that case, because a checkbox cannot express three states honestly.
+
+**But it does have to SAY so.** A forced-on light reads as unchecked here -- correctly, it is not an
+exclusion -- so without a word on screen the config would have a visible effect with nothing to
+explain it, and the first toggle would delete it silently. The sublabel names it when
+`enabled === true`, which is what makes that deletion an informed act rather than a trap. Verified the
+note appears for `true` and for neither of the other two states. The group's visibility is set by the change handler as well as by
 `_setDOMValues`, because the editor does not rebuild itself after its own change.
 
 **Absent brightness means FULL, and that is one helper on purpose.** `_brightnessRatio(attributes)`
