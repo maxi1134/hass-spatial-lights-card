@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.43.0 (fork-maxi1134)';
+  static BUILD = 'v1.44.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -1712,6 +1712,14 @@ class SpatialLightColorCard extends HTMLElement {
    * The picker: a vertical brightness bar on the left, and a column of hue,
    * saturation and temperature to its right.
    *
+   * ALL FOUR bars are always written, and `_updateControlValues` hides the ones
+   * the selection cannot obey and lies the brightness bar flat when fewer than
+   * three are left. Same reason the switch-only surface is rendered alongside
+   * them rather than swapped in: `updateLights` is deliberately non-destructive
+   * -- only `_renderAll` writes markup -- so a surface that changes with the
+   * SELECTION has to be in the markup already and toggled by a class, or every
+   * selection change would throw away in-flight gestures and bound listeners.
+   *
    * Brightness is the odd one out and the layout says so. The other three pick
    * WHAT the light emits and read left to right along their own axis;
    * brightness picks HOW MUCH, which every physical dimmer in the world puts
@@ -1753,8 +1761,12 @@ class SpatialLightColorCard extends HTMLElement {
     // needs it to become a size container; the input needs it to be turned. No
     // id ever appears in a selector -- the ids are the JS contract, the classes
     // are the CSS one, and keeping them apart is what lets either move.
+    //
+    // `slot-<cls>` is what lets capability shaping hide ONE bar from CSS without
+    // `:has()`, which needs Safari 15.4 -- the same older wall tablets that
+    // drove the rotate()-over-writing-mode decision in the stylesheet.
     const bar = (cls, id, min, max, value, pct, label, extra = '', vertical = false) => `
-          <div class="color-bar-slot${vertical ? ' vertical' : ''}">
+          <div class="color-bar-slot slot-${cls}${vertical ? ' vertical' : ''}">
             <input type="range" class="color-bar-input ${cls}${vertical ? ' vertical' : ''}" id="${id}"
                    min="${min}" max="${max}" value="${value}" aria-label="${label}"
                    ${vertical ? 'aria-orientation="vertical"' : ''}
@@ -4642,12 +4654,32 @@ class SpatialLightColorCard extends HTMLElement {
       .controls-floating.dragging .cf-grip { cursor: grabbing; opacity: 1; }
       .controls-floating.dragging { transition: none; }
 
-      /* H7: capability gating — keep the layout slot occupied so selection
-         changes don't reflow, but visually mute and block interaction when
-         no controlled light supports the relevant control. */
+      /* The whole-block mute, for the one case that earns it: no controlled
+         light at all, so there is nothing to shape the picker to and it keeps
+         its full form rather than collapsing to a bare presets row.
+
+         It is deliberately NOT how an unsupported control is expressed. This
+         carries 'pointer-events: none' over every bar in the block, and it used
+         to fire on '!caps.rgb' -- which left a dimmable bulb's working
+         brightness bar sealed under a dead block. Unsupported controls are
+         hidden by the rules below instead, one bar at a time. */
       .color-bars.disabled {
         opacity: 0.35; pointer-events: none; filter: grayscale(0.7);
       }
+      /* CAPABILITY SHAPING: a bar the selection cannot obey is removed, so the
+         picker is a list of things that actually work. Marker classes on the
+         slots rather than ':has()', which needs Safari 15.4 -- the same older
+         wall tablets that drove the rotate()-over-writing-mode decision. */
+      .color-bars.hide-brightness .slot-brightness,
+      .color-bars.hide-rgb .slot-hue,
+      .color-bars.hide-rgb .slot-tint,
+      .color-bars.hide-temp .slot-temp,
+      .color-bars.hide-col > .color-bar-col { display: none; }
+      /* Fewer than three bars and the row becomes a stack, brightness lying
+         flat on top of whatever is left. This one declaration is all the CSS
+         it needs: 'flat' also removes .vertical from the slot and the input in
+         JS, so both fall back to the base horizontal rules. */
+      .color-bars.flat { flex-direction: column; }
       .controls-floating.no-rgb-support .presets-area .color-preset,
       .controls-below.no-rgb-support .presets-area .color-preset {
         opacity: 0.35; pointer-events: none;
@@ -6252,17 +6284,57 @@ class SpatialLightColorCard extends HTMLElement {
       this._els.temperatureValue.textContent = `${temperature}K`;
     }
 
-    // H7: capability gating — disable controls without a supported target.
-    // Layout space is preserved; only `disabled` attribute / `.disabled` class change.
+    // CAPABILITY SHAPING. A bar no controlled light can obey is removed, not
+    // dimmed, and what survives decides the layout.
+    //
+    // It used to be dimmed, and one line of that did real damage: the
+    // whole-block `.disabled` class carries `pointer-events: none`, and it was
+    // applied on `!caps.rgb` -- i.e. to EVERY non-RGB bulb. So a plain dimmable
+    // light had a working brightness bar sealed under a dead block. Measured on
+    // the reported `supported_color_modes: ['brightness']`: a press at the
+    // bar's own coordinates hit-tested to a `div`, never to the input, with the
+    // input itself `disabled === false` the whole time. The block mute now says
+    // the one thing it can say honestly -- there is no light here to control.
     const caps = this._getControlCapabilities(context.controlled || []);
+    // BARS, not capabilities: hue and saturation are one capability and two
+    // rows, and the layout question below is about how many rows there are.
+    const barCount = (caps.brightness ? 1 : 0) + (caps.rgb ? 2 : 0) + (caps.color_temp ? 1 : 0);
+    // With nothing controllable there is nothing to shape the picker TO, so it
+    // keeps its full form and mutes as a block. An `always_show_controls` card
+    // with an empty selection would otherwise collapse to a bare presets row,
+    // which is a worse answer to "nothing is selected" than a dimmed picker --
+    // and it would resize the panel every time the selection emptied.
+    const shape = caps.anyLight && barCount > 0;
+    // Three or more bars and brightness stands up beside the column; fewer and
+    // there is no column worth standing beside. The vertical bar's whole
+    // justification is that it spans the three horizontal ones -- with one left
+    // it would be a tall bar next to a short one, which is just a tall bar.
+    const flatBars = shape && barCount < 3;
     if (this._els.brightnessSlider) {
       this._els.brightnessSlider.disabled = !caps.brightness;
+      // BOTH the input and its slot, exactly as the renderer writes them: the
+      // slot becomes a size container and the input is turned inside it, so one
+      // without the other is a bar with no box or a box with no bar. Removing
+      // the class is the entire implementation of "flat" -- both fall back to
+      // the base rules every horizontal bar already uses, with no override CSS.
+      this._els.brightnessSlider.classList.toggle('vertical', !flatBars);
+      const slot = this._els.brightnessSlider.closest('.color-bar-slot');
+      if (slot) slot.classList.toggle('vertical', !flatBars);
+      if (flatBars) this._els.brightnessSlider.removeAttribute('aria-orientation');
+      else this._els.brightnessSlider.setAttribute('aria-orientation', 'vertical');
     }
     if (this._els.temperatureSlider) {
       this._els.temperatureSlider.disabled = !caps.color_temp;
     }
     if (this._els.colorBars) {
-      this._els.colorBars.classList.toggle('disabled', !caps.rgb);
+      const bars = this._els.colorBars;
+      bars.classList.toggle('hide-brightness', shape && !caps.brightness);
+      bars.classList.toggle('hide-rgb', shape && !caps.rgb);
+      bars.classList.toggle('hide-temp', shape && !caps.color_temp);
+      // The column as well, or its 8px gap outlives all three of its rows.
+      bars.classList.toggle('hide-col', shape && !caps.rgb && !caps.color_temp);
+      bars.classList.toggle('flat', flatBars);
+      bars.classList.toggle('disabled', !caps.anyLight);
     }
     // Toggle classes on the controls container so preset rows can be dimmed.
     const containers = [this._els.controlsFloating, this._els.controlsBelow].filter(Boolean);

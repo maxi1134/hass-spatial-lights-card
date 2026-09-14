@@ -223,6 +223,30 @@ lumens_overrides:
   light.bedside_lamp: 450
 ```
 
+### Only the controls a light actually has
+
+The picker shows the bars the selected lights can obey, and nothing else.
+
+| The light supports | You get |
+|---|---|
+| Brightness only | one **brightness** bar |
+| Brightness + temperature | **brightness**, **temperature** |
+| Colour (no temperature) | **brightness**, **hue**, **saturation** |
+| Colour + temperature | all four |
+| On/off only | an **Off \| On** control instead — see below |
+
+**With fewer than three bars they all lie flat.** The upright brightness bar
+exists to stand alongside a column of three; with one or two there is no column
+for it to match, so everything is horizontal and full width. Three or more and
+brightness stands up on the left as before.
+
+Capabilities are a **union across the selection**, so grouping a plain dimmable
+bulb with a colour one gives the whole group all four bars.
+
+Colour and temperature **presets** stay visible but dimmed when they have no
+target, rather than disappearing — a presets row that changed length would move
+everything under your thumb each time you selected something different.
+
 ### Switch-only lights
 
 Select a light that can only be switched on and off — no brightness, no colour, no

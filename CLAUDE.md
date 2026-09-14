@@ -33,7 +33,7 @@
 
 **Visual updates:**
 - `_updateSliderVisual(el)` — sets `--slider-percent` / `--slider-ratio` from `value`/`min`/`max`.
-- `_updateControlValues(controlContext)` — full sync to averaged state, plus capability gating via `_getControlCapabilities()` (toggles `disabled` attribute on sliders, `.disabled` on the colour bars, `.no-rgb-support`/`.no-temp-support`/`.no-brightness-support` on the controls container). The temperature slider's warm-to-cool gradient is a static CSS background — it's a visual affordance, not a precise color readout.
+- `_updateControlValues(controlContext)` — full sync to averaged state, plus capability SHAPING via `_getControlCapabilities()`: `.hide-brightness`/`.hide-rgb`/`.hide-temp`/`.hide-col`/`.flat` on `.color-bars`, `.vertical` on the brightness input and its slot, `disabled` on the two gated sliders, `.no-rgb-support`/`.no-temp-support`/`.no-brightness-support` on the controls container (those still only dim PRESETS). The temperature slider's warm-to-cool gradient is a static CSS background — it's a visual affordance, not a precise color readout.
 
 ---
 
@@ -216,7 +216,7 @@ The result is sent in a single batched call (`entity_id: [array]`) so platforms 
 ## 6. Capability Helpers
 
 - `_isEntityAvailable(id)` — `state` is not `unavailable`/`unknown`/null.
-- `_getControlCapabilities(controlled)` — union of `supported_color_modes` across the controlled lights; returns `{rgb, color_temp, brightness, anyLight}`. Drives the disabled/dimmed state of the wheel and sliders.
+- `_getControlCapabilities(controlled)` — union of `supported_color_modes` across the controlled lights; returns `{rgb, color_temp, brightness, anyLight}`. Decides WHICH bars exist (§7b) and dims the presets that have no target.
 - `_getServiceTargets(controlled, capability)` — filters for service calls.
 
 ---
@@ -309,10 +309,66 @@ cross-axis swipe reverts while an along-axis one follows.
 
 `brightnessSlider` and `temperatureSlider` KEPT their ids when they moved into the bars, so every
 existing consumer (`_updateControlValues`'s sync, `_bindSliderGesture`'s commit, `_scheduleSliderCommit`,
-`_applyTemperaturePreset`) keeps working untouched. Capability gating sets the disabled property on
-those two individually — a light may do colour but not temperature — so
-`.color-bar-input:disabled` mutes them on their own, separately from the whole-block
-`.color-bars.disabled` that `caps.rgb` drives.
+`_applyTemperaturePreset`) keeps working untouched. They still take the `disabled` property
+individually, but what the user sees is §7b: an unsupported bar is removed, not muted.
+
+### 7b. The picker is shaped by what the selection can obey
+
+**A bar no controlled light can obey is REMOVED, and what survives decides the layout.** Driven from
+`_updateControlValues`, entirely by classes on `.color-bars`, because `updateLights` is
+non-destructive and only `_renderAll` writes markup — the same constraint that made the switch-only
+surface a class toggle rather than a re-render (§7a).
+
+| selection | bars | brightness |
+|---|---|---|
+| `['brightness']` | brightness | **flat** |
+| `['color_temp']` | brightness, temperature | **flat** |
+| `['hs']` / `['rgb']` | brightness, hue, saturation | vertical |
+| `['rgb','color_temp']` | all four | vertical |
+| no `supported_color_modes` | all four | vertical |
+| `['onoff']` | none — switch-only (§7a) | — |
+
+Counted in BARS, not capabilities: hue and saturation are one capability and two rows, and the
+layout question is how many rows there are. **Three or more and brightness stands upright; fewer and
+everything lies flat.** The vertical bar's whole justification (§7) is that it spans the three
+horizontal ones — with one left it would be a tall bar next to a short one, which is just a tall bar.
+
+`flat` is expressed by REMOVING `.vertical` from the slot and the input, so both fall back to the
+same base rules every horizontal bar already uses; the only CSS the mode needs is
+`.color-bars.flat { flex-direction: column }`. Measured round-tripping a 1-bar and a 4-bar selection
+three times each: 504x34 flat, 34x150 upright, byte-stable in both directions — which is the test
+that matters, because the upright bar's length is `100cqh` against a slot that is only a size
+container while it carries `.vertical`.
+
+Hiding uses marker classes (`slot-brightness`/`slot-hue`/`slot-tint`/`slot-temp`) rather than
+`:has()`, which needs Safari 15.4 — the same older wall tablets that drove the
+rotate()-over-`writing-mode` decision. `.hide-col` hides `.color-bar-col` itself when all three of
+its rows are gone, or its 8px gap outlives its content.
+
+**With NOTHING controllable the picker keeps its full form and mutes as a block.** `shape` is
+`caps.anyLight && barCount > 0`, so an empty selection on an `always_show_controls` card, or a
+selection of unavailable entities, looks exactly as it did before — collapsing to a bare presets row
+is a worse answer to "nothing is selected" than a dimmed picker, and it would resize the panel every
+time the selection emptied.
+
+**The bug this replaced.** `.color-bars.disabled` carries `pointer-events: none` over every bar in
+the block, and it was applied on `!caps.rgb` — i.e. to EVERY non-RGB bulb. So a plain dimmable light
+had a perfectly good brightness bar sealed under a dead block. Reported as "the brightness slider
+does not work for brightness-only bulbs"; reproduced on the exact reported attributes
+(`supported_color_modes: ['brightness']`) by hit-testing rather than by dispatching at the element —
+a press at the bar's own coordinates returned a `div`, never the input, with `input.disabled ===
+false` throughout. **Dispatching a PointerEvent AT an element bypasses hit-testing and would have
+passed**; only `elementFromPoint` at the press coordinates caught it. The class now means the one
+thing it can mean honestly: there is no light here to control.
+
+Presets are deliberately untouched: `.no-rgb-support` / `.no-temp-support` still DIM the colour and
+temperature presets rather than hiding them, because a presets row that changed length would reflow
+the panel on every selection change.
+
+`.harness/caps-bars.html` holds it: `repro` (the reported bulb, with the hit test), `shapes` (eight
+capability combinations plus the empty selection), `everyBarWorks` (a real drag on every surviving
+bar in both layouts), `roundTrip`, `widths` (320/400/560/900, checking nothing overflows the panel)
+and `floating`.
 
 The numeric readouts (`brightnessValue` / `temperatureValue`) have no elements any more; every write to
 them is already element-guarded, so they are inert rather than broken and would light up again if the
