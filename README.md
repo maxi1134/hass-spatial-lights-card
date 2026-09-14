@@ -860,6 +860,15 @@ glow_overrides:
 
 Per-entity glow overrides for shape, direction, and intensity can also be configured in the visual editor by expanding each entity's settings.
 
+The editor's per-entity switch is **Disable glow** — an opt-out. Turn it on and
+that one light never projects, whatever the card is set to; leave it off and the
+light follows the card's **Light Projection** setting like every other. It never
+writes `enabled: true`, so it cannot pin a light on when projection is off card-wide.
+
+If you do want one light lit while the rest of the card is dark, that is still
+available in YAML — `enabled: true` on that entity's override — it just isn't
+something a single checkbox can say without lying about the other two states.
+
 ### Light Diffusion (`light_field`)
 
 **`glow` and `light_field` are not two separate features**, and the editor

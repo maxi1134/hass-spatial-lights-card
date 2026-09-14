@@ -812,8 +812,28 @@ announced "Light Projection — diffused" whenever a renderer was set, regardles
 switch itself rendered `!!(g.enabled)`, so a legacy `light_field: true` card opened reading OFF while
 visibly projecting -- and the user's first flip would then write an explicit false and go dark. And
 the per-entity switch had the same lie, unchecked for both "no override" and "explicitly off", so the
-first click on a light projecting by inheritance killed it. All four now show the EFFECTIVE state via
-`_glowProjectsEffective()`. The group's visibility is set by the change handler as well as by
+first click on a light projecting by inheritance killed it. All four then showed the EFFECTIVE state via
+`_glowProjectsEffective()`.
+
+**The per-entity one has since been inverted to "Disable glow", and that removes the last of the
+ambiguity rather than papering over it.** The switch now asks one question -- is this light excluded? --
+and unchecked means exactly one thing: it inherits, like every light nobody ever touched. Showing the
+effective state fixed the original lie and bought another: the switch moved on its own when the
+card-level master switch or the renderer changed, because it was reporting a value it did not own.
+Asking about the exclusion makes the control's own state the whole truth, so nothing inherited is
+displayed and nothing can drift. Verified: the switch reads the same with the card-level glow on and
+off, where the old one flipped.
+
+Unchecking DELETES `enabled` rather than writing `true` -- `_normalizeGlowOverrides` writes
+`enabled`/`enabled_set` only when the key is present, so removing it is what restores inheritance,
+and writing true would pin the light on THROUGH a card-level off, the opposite of what an opt-out is
+for. An override left holding nothing is then dropped entirely, but a sibling key survives: verified
+that unchecking a `{enabled: false, intensity: 0.3}` override leaves `{intensity: 0.3}`.
+
+The CARD is unchanged and still honours all three states, so this removed a UI affordance and nothing
+else: a hand-written `glow_overrides: {light.x: {enabled: true}}` still forces one light on through a
+card-level off (measured 2496206 against 0 for the rest of the plan). The editor simply no longer has
+an opinion about that case, because a checkbox cannot express three states honestly. The group's visibility is set by the change handler as well as by
 `_setDOMValues`, because the editor does not rebuild itself after its own change.
 
 **Absent brightness means FULL, and that is one helper on purpose.** `_brightnessRatio(attributes)`

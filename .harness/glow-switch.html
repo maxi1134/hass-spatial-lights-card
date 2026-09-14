@@ -1,0 +1,275 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Glow master switch</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:560px}#ed{width:480px}</style>
+</head><body><div id="host"></div><div id="ed"></div>
+<script>
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+const ids=['light.a','light.b'];
+const states={};ids.forEach(i=>states[i]={entity_id:i,state:'on',attributes:{friendly_name:i,
+ brightness:255,rgb_color:[255,170,80],color_mode:'rgb',supported_color_modes:['rgb']}});
+const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+ connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+
+// The reporter's configuration, as read off their editor screenshots.
+const USER=(glowEnabled)=>({type:'custom:spatial-light-color-card',entities:ids,
+  positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+  aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+  glow:{enabled:glowEnabled, shape:'round', falloff:'smooth',
+        length:'50%', width:'50%', intensity:0.17, scale_with_brightness:true},
+  light_field:{enabled:true},
+  glow_walls:[{x1:10,y1:50,x2:60,y2:50}]});
+
+let card;
+window.mount=async function(cfg){
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(JSON.parse(JSON.stringify(cfg))); card.hass=hass; host.appendChild(card);
+  await tick(650); window.card=card; return true;
+};
+
+// Total light energy actually painted on the field canvas. Summing premultiplied
+// luminance over every pixel is the honest measure: peak alpha alone would miss
+// the footprint changing size, and the two bugs move both.
+window.energy=async function(cfg){
+  await window.mount(cfg);
+  const cv=card.shadowRoot.querySelector('canvas.light-field');
+  if(!cv) return {noCanvas:true, energy:0, litPx:0};
+  const d=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;
+  let e=0, lit=0, peak=0;
+  for(let i=0;i<d.length;i+=4){
+    const a=d[i+3]/255;
+    const l=(0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2])*a;
+    e+=l; if(a>0.02) lit++; if(l>peak) peak=l;
+  }
+  const px=cv.width*cv.height;
+  return {energy:Math.round(e), litPx:lit, litFrac:Math.round(lit/px*1000)/1000,
+          peak:Math.round(peak), canvasPx:px};
+};
+
+// The headline: does the switch actually switch anything?
+window.report=async function(){
+  const off=await window.energy(USER(false));
+  const on =await window.energy(USER(true));
+  // and with the classic renderer, for comparison
+  const cOff=await window.energy(Object.assign(USER(false),{light_field:{enabled:false}}));
+  const cOn =await window.energy(Object.assign(USER(true), {light_field:{enabled:false}}));
+  return {
+    diffusedOff:off, diffusedOn:on,
+    classicOff:cOff, classicOn:cOn,
+    // What the user should be able to rely on:
+    switchOffMeansDark: off.energy === 0,
+    onIsNotDimmerThanOff: on.energy >= off.energy,
+    ratioOffOverOn: on.energy ? Math.round(off.energy/on.energy*100)/100 : null,
+  };
+};
+
+// Things that must KEEP working when projection is off.
+window.stillWorks=async function(){
+  const out={};
+  // walls on the dashboard with show_walls: always
+  const w=Object.assign(USER(false),{light_field:{enabled:true, show_walls:'always', wall_width:6, wall_color:'#ff0000'}});
+  await window.mount(w);
+  const cv=card.shadowRoot.querySelector('canvas.light-field');
+  if(cv){
+    const b=cv.getBoundingClientRect(), k=cv.width/b.width;
+    const px=Math.round(0.35*b.width*k), py=Math.round(0.50*b.height*k);
+    const d=cv.getContext('2d').getImageData(px-4,py-4,9,9).data;
+    let best=[0,0,0,0];
+    for(let i=0;i<d.length;i+=4) if(d[i+3]>best[3]) best=[d[i],d[i+1],d[i+2],d[i+3]];
+    out.wallStillDrawn = best[0]>150 && best[1]<90;
+    out.wallPixel = best;
+  } else out.wallStillDrawn=false;
+  // the legacy renderer must resume when the field is off
+  await window.mount(Object.assign(USER(true),{light_field:{enabled:false}}));
+  out.legacyGlowDivs = card.shadowRoot.querySelectorAll('.light-glow').length;
+  // ...and must NOT be emitted while the field owns diffusion
+  await window.mount(USER(true));
+  out.noGlowDivsUnderField = card.shadowRoot.querySelectorAll('.light-glow').length === 0;
+  return out;
+};
+
+// A config that never mentioned glow at all must keep diffusing -- this is the
+// back-compat case the emitter's fallback exists for.
+window.noGlowBlock=async function(){
+  const cfg={type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    light_field:{enabled:true}};
+  const e=await window.energy(cfg);
+  return {energy:e.energy, litFrac:e.litFrac, stillDiffuses: e.energy > 0};
+};
+
+// THE INVARIANT the whole design exists to establish: the master switch can
+// turn a light on or off, but must never change WHAT it emits. Toggling it on a
+// glow block with no emission keys must move energy between one value and
+// exactly zero -- never between two different non-zero values.
+window.emissionNeutral=async function(){
+  const base=(en)=>({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    glow:{enabled:en}, light_field:{enabled:true}});
+  const on=await window.energy(base(true));
+  const off=await window.energy(base(false));
+  const noBlock=await window.noGlowBlock();
+  return {on:{energy:on.energy,peak:on.peak,litFrac:on.litFrac}, offEnergy:off.energy,
+    noBlockEnergy:noBlock.energy,
+    offIsZero: off.energy===0,
+    // switching ON must reproduce the unconfigured card exactly -- same disc,
+    // same alpha -- rather than a 60x80px cone from the pixel defaults
+    onMatchesUnconfigured: on.energy===noBlock.energy};
+};
+
+// Emission parameters with NO `enabled` key must be applied, and must project.
+window.paramsWithoutEnabled=async function(){
+  const cfg={type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    glow:{shape:'round', intensity:0.17, width:'50%'}, light_field:{enabled:true}};
+  const e=await window.energy(cfg);
+  const dflt=await window.noGlowBlock();
+  return {energy:e.energy, peak:e.peak, defaultEnergy:dflt.energy,
+    projects: e.energy>0,
+    usesOwnIntensity: e.energy < dflt.energy*0.6};
+};
+
+// A light switched off per-entity must go DARK, not become the brightest.
+window.perEntityOff=async function(){
+  const mk=(ov)=>({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:25,y:30},'light.b':{x:75,y:70}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    glow:{enabled:true, shape:'round', width:'50%', intensity:0.17},
+    light_field:{enabled:true}, glow_overrides:ov});
+  const both=await window.energy(mk({}));
+  const aOff=await window.energy(mk({'light.a':{enabled:false}}));
+  // an override about intensity only must NOT resurrect a card-level off
+  const cardOff=await window.energy({type:'custom:spatial-light-color-card',entities:ids,
+    positions:{'light.a':{x:25,y:30},'light.b':{x:75,y:70}},
+    aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+    glow:{enabled:false, intensity:0.5}, light_field:{enabled:true},
+    glow_overrides:{'light.a':{intensity:0.9}}});
+  return {bothEnergy:both.energy, oneOffEnergy:aOff.energy, cardOffEnergy:cardOff.energy,
+    oneOffIsDimmer: aOff.energy < both.energy,
+    oneOffIsNotBrighter: aOff.energy <= both.energy,
+    inheritsCardOff: cardOff.energy===0};
+};
+
+// ---------------------------------------------------------------------------
+// The per-entity switch is "Disable glow" -- opt-in disabling. Checked means
+// this one light never projects; unchecked means it inherits, exactly like a
+// light nobody ever touched. Unchecked must DELETE the key rather than write
+// true, or the control would pin lights on through a card-level off.
+// ---------------------------------------------------------------------------
+window.perEntityDisable=async function(){
+  const col=document.getElementById('ed');
+  const mk=async (overrides, cardGlowEnabled)=>{
+    col.innerHTML='';
+    const ed=document.createElement('spatial-light-color-card-editor');
+    ed.hass=hass;
+    const cfg={type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+      light_field:{enabled:true}};
+    if (cardGlowEnabled != null) cfg.glow={enabled:cardGlowEnabled};
+    if (overrides) cfg.glow_overrides=JSON.parse(JSON.stringify(overrides));
+    ed.setConfig(cfg);
+    col.appendChild(ed);
+    await tick(400);
+    return ed;
+  };
+  const sw=(ed,entity)=>[...ed.shadowRoot.querySelectorAll('.entity-overrides ha-switch[data-key="glowDisabled"]')]
+    .find(x=>x.dataset.entity===entity);
+  const out={};
+
+  // 1. what the switch SHOWS for each starting state
+  let ed=await mk(null);                              out.noOverride=!!sw(ed,'light.a').checked;
+  ed=await mk({'light.a':{enabled:false}});           out.explicitFalse=!!sw(ed,'light.a').checked;
+  ed=await mk({'light.a':{enabled:true}});            out.explicitTrue=!!sw(ed,'light.a').checked;
+  ed=await mk({'light.a':{intensity:0.3}});           out.intensityOnly=!!sw(ed,'light.a').checked;
+
+  // 2. it must NOT move when the card-level master switch does -- the drift the
+  //    old effective-state version had
+  ed=await mk(null, true);  const onCard=!!sw(ed,'light.a').checked;
+  ed=await mk(null, false); const offCard=!!sw(ed,'light.a').checked;
+  out.ignoresCardMaster = onCard===false && offCard===false;
+
+  // 3. checking writes enabled:false and nothing else
+  ed=await mk(null);
+  let fired=null; ed.addEventListener('config-changed',(e)=>{fired=e.detail.config;});
+  let t=sw(ed,'light.a'); t.checked=true; t.dispatchEvent(new Event('change',{bubbles:true}));
+  await tick(250);
+  out.onCheck = fired && fired.glow_overrides && fired.glow_overrides['light.a'];
+
+  // 4. unchecking DELETES the key, and drops an override left holding nothing
+  ed=await mk({'light.a':{enabled:false}});
+  fired=null; ed.addEventListener('config-changed',(e)=>{fired=e.detail.config;});
+  t=sw(ed,'light.a'); t.checked=false; t.dispatchEvent(new Event('change',{bubbles:true}));
+  await tick(250);
+  out.onUncheck = fired ? (fired.glow_overrides||{}) : null;
+  out.deletesKey = !!fired && !(fired.glow_overrides && fired.glow_overrides['light.a']);
+
+  // 5. ...but must not take a sibling key with it
+  ed=await mk({'light.a':{enabled:false, intensity:0.3}});
+  fired=null; ed.addEventListener('config-changed',(e)=>{fired=e.detail.config;});
+  t=sw(ed,'light.a'); t.checked=false; t.dispatchEvent(new Event('change',{bubbles:true}));
+  await tick(250);
+  out.keepsSiblings = !!(fired && fired.glow_overrides && fired.glow_overrides['light.a']
+    && fired.glow_overrides['light.a'].intensity===0.3
+    && fired.glow_overrides['light.a'].enabled===undefined);
+
+  out.pass = out.noOverride===false && out.explicitFalse===true && out.explicitTrue===false
+    && out.intensityOnly===false && out.ignoresCardMaster
+    && out.onCheck && out.onCheck.enabled===false
+    && out.deletesKey && out.keepsSiblings;
+  return out;
+};
+
+// And the CARD must still honour all three states, editor or no editor.
+window.cardHonoursOverrides=async function(){
+  const base=(ov, cardEnabled)=>{
+    const c={type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:35,y:45},'light.b':{x:70,y:60}},
+      aspect_ratio:'2:1', background_image:{url:'floorplan.svg'},
+      light_field:{enabled:true}};
+    if (cardEnabled != null) c.glow={enabled:cardEnabled};
+    if (ov) c.glow_overrides=ov;
+    return c;
+  };
+  const out={};
+  out.cardOn_noOverride  = (await window.energy(base(null, true))).energy;
+  out.cardOn_disabled    = (await window.energy(base({'light.a':{enabled:false},'light.b':{enabled:false}}, true))).energy;
+  out.cardOff_noOverride = (await window.energy(base(null, false))).energy;
+  // a hand-written true still forces one light on through a card-level off
+  out.cardOff_forcedTrue = (await window.energy(base({'light.a':{enabled:true}}, false))).energy;
+  out.disabledIsDark = out.cardOn_disabled===0;
+  out.cardOnProjects = out.cardOn_noOverride>0;
+  out.cardOffIsDark = out.cardOff_noOverride===0;
+  out.yamlForceStillWorks = out.cardOff_forcedTrue>0;
+  return out;
+};
+
+// What does the editor switch READ back in each cell?
+window.switchHonesty=async function(){
+  const rows=[];
+  for (const [label,cfg] of [
+    ['no glow block',            {light_field:{enabled:true}}],
+    ['glow.enabled false',       {glow:{enabled:false,intensity:0.17}, light_field:{enabled:true}}],
+    ['glow.enabled true',        {glow:{enabled:true,intensity:0.17}, light_field:{enabled:true}}],
+    ['glow true, field off',     {glow:{enabled:true,intensity:0.17}, light_field:{enabled:false}}],
+  ]) {
+    const col=document.getElementById('ed'); col.innerHTML='';
+    const ed=document.createElement('spatial-light-color-card-editor');
+    ed.hass=hass;
+    ed.setConfig(Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+      positions:{'light.a':{x:35,y:45}}}, JSON.parse(JSON.stringify(cfg))));
+    col.appendChild(ed); await tick(350);
+    const sw=ed.shadowRoot.getElementById('cfgGlowEnabled');
+    const sel=ed.shadowRoot.getElementById('cfgLfEnabled');
+    rows.push({label, switchOn: sw?!!sw.checked:null, renderer: sel?sel.value:null});
+  }
+  return rows;
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>

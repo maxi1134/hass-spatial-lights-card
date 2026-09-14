@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.41.1 (fork-maxi1134)';
+  static BUILD = 'v1.42.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -14132,12 +14132,20 @@ class SpatialLightColorCardEditor extends HTMLElement {
     const rotationOverride = (this._config.icon_rotation_overrides && this._config.icon_rotation_overrides[entity] !== undefined) ? this._config.icon_rotation_overrides[entity] : '';
     const mirrorOverride = (this._config.icon_mirror_overrides && this._config.icon_mirror_overrides[entity]) || '';
     const glowOverride = (this._config.glow_overrides && this._config.glow_overrides[entity]) || {};
-    // Effective, not literal: unchecked used to mean both "no override" and
-    // "explicitly off", so a light projecting by inheritance showed an OFF
-    // switch and the user's first click wrote a false that darkened it.
-    const glowOverrideEnabled = glowOverride.enabled != null
-      ? glowOverride.enabled === true
-      : this._glowProjectsEffective();
+    // OPT-IN DISABLING. The switch asks one question -- "is this light
+    // excluded?" -- and unchecked means exactly one thing: it inherits, like
+    // every light that was never touched.
+    //
+    // It used to ask "does this light project?", which cannot be answered by
+    // one checkbox without lying. Literal `enabled` made unchecked mean both
+    // "no override" and "explicitly off", so a light projecting by inheritance
+    // showed an OFF switch and the first click wrote a false that darkened it.
+    // Showing the EFFECTIVE state fixed that lie and bought another: the switch
+    // then moved on its own when the card-level master switch or the renderer
+    // changed, because it was reporting an inherited value it did not own.
+    // Asking about the exclusion instead makes the control's own state the
+    // whole truth -- nothing inherited is displayed, so nothing can drift.
+    const glowOverrideDisabled = glowOverride.enabled === false;
     const glowOverrideShape = glowOverride.shape || '';
     const glowOverrideDirection = glowOverride.direction != null ? glowOverride.direction : '';
     const glowOverrideIntensity = glowOverride.intensity != null ? glowOverride.intensity : '';
@@ -14207,9 +14215,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
             Shift-click it to control it as usual.</div>
           <div class="override-subsection">Glow Override</div>
           <div class="override-switch">
-            <label>Enable glow</label>
-            <ha-switch data-entity="${entity}" data-key="glowEnabled" ${glowOverrideEnabled ? 'checked' : ''}></ha-switch>
+            <label>Disable glow</label>
+            <ha-switch data-entity="${entity}" data-key="glowDisabled" ${glowOverrideDisabled ? 'checked' : ''}></ha-switch>
           </div>
+          <div class="override-sublabel">Stops this one light projecting, whatever the card is set to.
+            Leave it off and the light follows Light Projection like every other.</div>
           <div class="override-row">
             <label>Shape</label>
             <select data-entity="${entity}" data-key="glowShape">
@@ -15608,11 +15618,12 @@ class SpatialLightColorCardEditor extends HTMLElement {
       root.querySelectorAll('.entity-overrides ha-switch[data-key="groupExempt"]').forEach(sw => {
         sw.checked = !!(c.group_exempt_overrides && c.group_exempt_overrides[sw.dataset.entity]);
       });
-      // Per-entity glow enabled switches
-      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowEnabled"]').forEach(sw => {
+      // Per-entity "disable glow" switches. Checked ONLY on an explicit false;
+      // an absent key and an explicit true are both "not excluded".
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowDisabled"]').forEach(sw => {
         const entity = sw.dataset.entity;
         const override = c.glow_overrides && c.glow_overrides[entity];
-        sw.checked = override ? override.enabled === true : false;
+        sw.checked = !!override && override.enabled === false;
       });
     });
   }
@@ -16885,12 +16896,26 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
     // --- Per-entity glow overrides ---
     requestAnimationFrame(() => {
-      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowEnabled"]').forEach(sw => {
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowDisabled"]').forEach(sw => {
         sw.addEventListener('change', () => {
           const entity = sw.dataset.entity;
           if (!this._config.glow_overrides) this._config.glow_overrides = {};
           if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
-          this._config.glow_overrides[entity].enabled = sw.checked;
+          const ov = this._config.glow_overrides[entity];
+          if (sw.checked) {
+            ov.enabled = false;
+          } else {
+            // DELETED, never set to true. The card's normalizer writes
+            // `enabled`/`enabled_set` only when the key is present, so removing
+            // it is what restores inheritance -- writing true would pin the
+            // light on and resurrect it through a card-level off, which is the
+            // opposite of what this control is for. A YAML author can still
+            // write `enabled: true` by hand and the card still honours it;
+            // this switch simply no longer has an opinion about that case.
+            delete ov.enabled;
+            // An override left holding nothing is noise in the saved config.
+            if (Object.keys(ov).length === 0) delete this._config.glow_overrides[entity];
+          }
           this._fireConfigChanged();
         });
       });
