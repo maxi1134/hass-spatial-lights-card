@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.42.1 (fork-maxi1134)';
+  static BUILD = 'v1.42.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4141,8 +4141,18 @@ class SpatialLightColorCard extends HTMLElement {
           drop-shadow(0 0 1px rgba(0,0,0,0.95))
           drop-shadow(0 1px 3px rgba(0,0,0,0.8));
       }
+      /* A legible neutral is the right DEFAULT for an off glyph -- the
+         resolved off colour is often a near-black domain default, and tinting
+         with it would hide the icon on a dark plan. But a per-entity Color
+         (off), typed by hand for this one light, is not a default and has to
+         win: .has-off-color says the colour came from that field and nowhere
+         else. Without this the field changed the disc in standard mode and
+         nothing at all in the two icon modes, which is how it was reported. */
       .light.icon-only.off .light-icon-mdi {
         color: rgba(255,255,255,0.6);
+      }
+      .light.icon-only.off.has-off-color .light-icon-mdi {
+        color: var(--light-color, rgba(255,255,255,0.6));
       }
       .light.icon-only.off { --light-dim: 0.8; }
       /* Selection indicator for icon-only mode */
@@ -4188,6 +4198,9 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .light.minimal-ui.off .light-icon-mdi {
         color: rgba(255,255,255,0.55);
+      }
+      .light.minimal-ui.off.has-off-color .light-icon-mdi {
+        color: var(--light-color, rgba(255,255,255,0.55));
       }
       .light.minimal-ui.off {
         opacity: 1;
@@ -5329,6 +5342,28 @@ class SpatialLightColorCard extends HTMLElement {
     `;
   }
 
+  /**
+   * The off colour this entity was given BY HAND, or null.
+   *
+   * Deliberately narrower than `_resolveEntityColor(id, false, ...)`, which
+   * also answers with `switch_off_color` / `binary_sensor_off_color` for the
+   * relevant domains. Those have defaults -- `#3a3a3a` for switches -- so an
+   * off icon keyed off the resolved colour would go near-black on a dark plan
+   * for every user who never set one, which is precisely why the off icon
+   * rules hardcode a legible white in the first place.
+   *
+   * A per-entity `color_overrides` entry is different in kind: somebody typed
+   * it into the Color (off) field for this one light, and an explicit choice
+   * should beat a stylesheet default.
+   */
+  _explicitOffColor(entity_id) {
+    const override = this._config.color_overrides?.[entity_id];
+    if (!override) return null;
+    // The string shorthand is an ON colour only -- see _resolveEntityColor.
+    if (typeof override === 'string') return null;
+    return override.state_off || override.off || null;
+  }
+
   _resolveEntityColor(entity_id, isOn, attributes) {
     const [domain] = entity_id.split('.');
     const override = this._config.color_overrides?.[entity_id];
@@ -5435,6 +5470,10 @@ class SpatialLightColorCard extends HTMLElement {
         style += `--icon-transform:${iconTransform};`;
       }
 
+      // Marks an off light whose colour was chosen by hand, so the off icon
+      // rules can yield to it without yielding to a domain default.
+      const offColorSet = !isOn && domain !== 'scene' && !!this._explicitOffColor(entity_id);
+
       // Set light color CSS variable for icon-only/minimal-ui modes
       if ((isIconOnly || isMinimalUI) && color !== 'transparent') {
         style += `--light-color:${color};`;
@@ -5482,7 +5521,7 @@ class SpatialLightColorCard extends HTMLElement {
         : '';
 
       return `
-        <div class="light ${stateClass} ${isSelected ? 'selected' : ''} ${iconOnlyClass}${isUnavailable ? ' unavailable' : ''}"
+        <div class="light ${stateClass} ${isSelected ? 'selected' : ''} ${iconOnlyClass}${offColorSet ? ' has-off-color' : ''}${isUnavailable ? ' unavailable' : ''}"
              style="${style}"
              data-entity="${entity_id}"
              tabindex="0"
@@ -7116,12 +7155,19 @@ class SpatialLightColorCard extends HTMLElement {
 
       // Toggle icon-only class
       light.classList.toggle('icon-only', isIconOnly);
+      light.classList.toggle('has-off-color',
+        !isOn && entity_id.split('.')[0] !== 'scene' && !!this._explicitOffColor(entity_id));
 
-      // Update background/color styling
-      if (isIconOnly) {
+      // Update background/color styling. minimal_ui belongs in this test as
+      // much as icon-only -- both paint the glyph rather than a disc, and
+      // leaving it out stripped --light-color off every minimal-ui light
+      // whenever the display mode was re-applied.
+      if (isIconOnly || !!this._config.minimal_ui) {
         light.style.background = 'transparent';
         if (color !== 'transparent') {
           light.style.setProperty('--light-color', color);
+        } else {
+          light.style.removeProperty('--light-color');
         }
       } else {
         light.style.removeProperty('--light-color');
@@ -12256,6 +12302,8 @@ class SpatialLightColorCard extends HTMLElement {
         ? this._config.icon_only_overrides[id]
         : this._config.icon_only_mode;
       const isMinimalUI = !!this._config.minimal_ui;
+      light.classList.toggle('has-off-color',
+        !isOn && !isScene && !!this._explicitOffColor(id));
 
       if (isIconOnly || isMinimalUI) {
         // For icon-only or minimal-ui mode, use CSS variable for color

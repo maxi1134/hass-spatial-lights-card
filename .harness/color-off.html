@@ -1,0 +1,140 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Color off override</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:640px}</style>
+</head><body><div id="host"></div>
+<script>
+// ha-icon must LOOK like the real one: a custom element that paints something
+// inheriting `color`, or every computed-colour probe reads the host instead.
+class HaIcon extends HTMLElement{
+  connectedCallback(){
+    if(this._done) return; this._done=true;
+    this.attachShadow({mode:'open'}).innerHTML=
+      '<svg style="width:24px;height:24px;fill:currentColor"><rect width="24" height="24"/></svg>';
+    this.style.display='inline-flex';
+  }
+}
+customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms||60));
+let card, hass;
+const OFF_COLOR='#ff0000';
+const ON_COLOR='#00ff00';
+
+// mode: 'standard' | 'icon_only' | 'minimal_ui'
+window.mount=async function(mode, state, overrides){
+  const st={entity_id:'light.x', state:state||'off',
+    attributes:{friendly_name:'X', icon:'mdi:lightbulb',
+      brightness:255, rgb_color:[255,170,80], color_mode:'rgb',
+      supported_color_modes:['rgb']}};
+  hass={states:{'light.x':st}, entities:{},
+    callService:()=>Promise.resolve(), callWS:()=>Promise.resolve([]),
+    connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+  const cfg={type:'custom:spatial-light-color-card', entities:['light.x'],
+    positions:{'light.x':{x:50,y:50}}, aspect_ratio:'2:1',
+    background_image:{url:'floorplan.svg'}, show_icons:true,
+    color_overrides: overrides!==undefined ? overrides
+      : {'light.x':{state_on:ON_COLOR, state_off:OFF_COLOR}}};
+  if (mode==='icon_only') cfg.icon_only_mode=true;
+  if (mode==='minimal_ui') cfg.minimal_ui=true;
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(cfg); card.hass=hass; host.appendChild(card);
+  await tick(650); window.card=card; window.hassObj=hass;
+  return card.constructor.BUILD;
+};
+
+const lightEl=()=>card.shadowRoot.querySelector('.light[data-entity="light.x"]');
+const iconEl=()=>card.shadowRoot.querySelector('.light[data-entity="light.x"] .light-icon-mdi')
+  || card.shadowRoot.querySelector('.light[data-entity="light.x"] ha-icon');
+
+const rgb=(s)=>{const m=String(s).match(/[\d.]+/g);return m?m.slice(0,3).map(v=>Math.round(parseFloat(v))):null;};
+const isRed=(s)=>{const c=rgb(s);return !!c && c[0]>200 && c[1]<60 && c[2]<60;};
+const isGreen=(s)=>{const c=rgb(s);return !!c && c[1]>200 && c[0]<60 && c[2]<60;};
+
+window.probe=function(){
+  const l=lightEl(), i=iconEl();
+  if(!l) return {noLight:true};
+  const cs=getComputedStyle(l);
+  const ics=i?getComputedStyle(i):null;
+  return {
+    classes:[...l.classList].filter(c=>['on','off','icon-only','minimal-ui'].includes(c)).sort(),
+    lightVar: cs.getPropertyValue('--light-color').trim(),
+    lightBg: cs.backgroundColor,
+    iconTag: i?i.tagName.toLowerCase():null,
+    iconClass: i?i.className:null,
+    iconColor: ics?ics.color:null,
+    iconIsRed: ics?isRed(ics.color):null,
+    bgIsRed: isRed(cs.backgroundColor),
+  };
+};
+
+// THE REPORT: with an off-colour override, does the ICON take it?
+window.report=async function(){
+  const out={};
+  for (const mode of ['standard','icon_only','minimal_ui']){
+    await window.mount(mode,'off');
+    out[mode+'_off']=window.probe();
+    await window.mount(mode,'on');
+    out[mode+'_on']=window.probe();
+  }
+  out._summary={
+    // what the user reports: off colour missing from the icon
+    iconOffRed: {
+      standard: out.standard_off.iconIsRed,
+      icon_only: out.icon_only_off.iconIsRed,
+      minimal_ui: out.minimal_ui_off.iconIsRed,
+    },
+    iconOnGreen: {
+      standard: isGreen(out.standard_on.iconColor),
+      icon_only: isGreen(out.icon_only_on.iconColor),
+      minimal_ui: isGreen(out.minimal_ui_on.iconColor),
+    },
+    varOff: {
+      standard: out.standard_off.lightVar,
+      icon_only: out.icon_only_off.lightVar,
+      minimal_ui: out.minimal_ui_off.lightVar,
+    },
+  };
+  return out;
+};
+
+// Does the resolver itself return the off override? (isolates card vs CSS)
+window.resolver=async function(){
+  await window.mount('icon_only','off');
+  return {
+    off: card._resolveEntityColor('light.x', false, hass.states['light.x'].attributes),
+    on:  card._resolveEntityColor('light.x', true,  hass.states['light.x'].attributes),
+    shorthandOff: (()=>{ // the `off:` spelling as well as `state_off:`
+      card._config.color_overrides={'light.x':{on:ON_COLOR, off:OFF_COLOR}};
+      return card._resolveEntityColor('light.x', false, hass.states['light.x'].attributes);
+    })(),
+  };
+};
+
+// The display-mode re-render path writes --light-color too; does it agree?
+window.displayModePath=async function(){
+  await window.mount('minimal_ui','off');
+  const before=window.probe();
+  card._rerenderLightsForDisplayMode();
+  await tick(200);
+  const after=window.probe();
+  return {before:{var:before.lightVar, iconColor:before.iconColor, iconIsRed:before.iconIsRed},
+    after:{var:after.lightVar, iconColor:after.iconColor, iconIsRed:after.iconIsRed},
+    survived: before.lightVar===after.lightVar};
+};
+
+// No override at all -- the off state must keep its default look.
+window.noOverride=async function(){
+  const out={};
+  for (const mode of ['standard','icon_only','minimal_ui']){
+    await window.mount(mode,'off',{});
+    out[mode]=window.probe();
+  }
+  return out;
+};
+</script>
+<script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
+</body></html>

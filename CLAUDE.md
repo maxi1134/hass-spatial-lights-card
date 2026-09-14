@@ -1390,6 +1390,30 @@ This exists because `--label-bg` is structurally translucent in the default `the
 
 Icon glyphs in icon-only / minimal-ui are tinted `var(--light-color)`, i.e. the light's own colour, so they sit at zero contrast in the middle of that light's own pool. Stacked zero-offset `drop-shadow`s give them a tight dark outline (SVG cannot take `text-stroke`); literal colours, never `var()`-resolved, because iOS clips and caches those.
 
+**A per-entity off colour has to beat the off-icon default, and only that.** The two icon modes
+hardcode a legible neutral for an off glyph -- `rgba(255,255,255,0.6)` for icon-only, `0.55` for
+minimal-ui -- and those rules carry three classes, so they beat the two-class
+`.light.icon-only .light-icon-mdi { color: var(--light-color, ...) }` that the ON state uses. Reported
+as "the color off parameter is not applied to the icons", and measured: with
+`color_overrides: {light.x: {state_off: '#ff0000'}}` the marker's `--light-color` was `#ff0000` while
+the glyph computed `rgba(255,255,255,0.6)`. The ON half worked, so the two states disagreed.
+
+**It must NOT simply point those rules at `--light-color`.** `_resolveEntityColor` also answers with
+`switch_off_color` / `binary_sensor_off_color` for the relevant domains, and `switch_off_color`
+DEFAULTS to `#3a3a3a` -- so keying the glyph off the resolved colour would turn every off switch icon
+near-black on a dark plan, for every user who never set one. That default is most of why the neutral
+is hardcoded in the first place. `_explicitOffColor` is therefore deliberately narrower than the
+resolver: a `color_overrides` entry only, and never the string shorthand, which is an ON colour. The
+`has-off-color` class it drives is what lets the override win without the default winning too.
+Verified: with no override the three modes still compute 0.92 / 0.6 / 0.55 white exactly as before.
+
+Standard mode is unchanged and correct: the disc carries the colour there and the glyph stays white in
+BOTH states, so it is symmetric rather than broken.
+
+`_rerenderLightsForDisplayMode` was also missing `minimal_ui` from its icon-mode test entirely, so it
+stripped `--light-color` off every minimal-ui light whenever the display mode was re-applied. Same
+omission, fixed alongside.
+
 `--label-ground` is `var(--card-background-color, #141414)` in auto (the opaque sibling token glass themes leave alone) and a fixed hex in the dark/light palettes. Setting `theme.label_background` explicitly emits `--label-ground: transparent`, so a user who deliberately picks a translucent label still gets one.
 
 ## 8b. Background image sizing
