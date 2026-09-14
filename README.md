@@ -342,11 +342,16 @@ entities, so you never have to touch YAML for this.
 With `controls_below: false` the controls float over the plan.
 
 - **Drag them** by the grip at the top to put them wherever suits your plan.
-  The position is remembered per card, in your browser, and survives
-  reloads and resizes.
+  The position holds for the group you are working on — through state changes,
+  resizes, a deselect and a reselect — and is remembered per card in your
+  browser, so it survives a reload.
+- **Selecting a different group puts them back beside it.** A drag is a nudge
+  for the lights in hand, not a permanent pin, so you never have to undo it
+  before moving on to another room.
 - **Keyboard**: focus the grip and use the arrow keys to nudge it (hold Shift
   for bigger steps), or Escape to go back to automatic placement.
-- **Double-click the grip** to go back to automatic placement.
+- **Double-click the grip** to go back to automatic placement straight away,
+  without changing the selection.
 - Left alone, they anchor to whichever end the selection is **not** at —
   select a light near the bottom and they move to the top.
 - They **compress** on a narrow card, shrinking their padding and wrapping
@@ -400,7 +405,7 @@ Position history stores up to 50 steps.
 ### Desktop vs Mobile Differences
 
 - **Layout:** the controls have the same shape at every width — the brightness bar beside a column of three, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows. Overlaid controls are 420px wide wherever the card has room and shrink to fit when it does not; that follows the card's width, not the browser window's, so a tablet gets the same behaviour as a desktop.
-- **Resetting the overlaid controls:** drag them by the grip to place them by hand; **double-tap (or double-click) the grip** to hand them back to automatic placement beside the selection.
+- **Resetting the overlaid controls:** drag them by the grip to place them by hand. That placement lasts as long as the group you are working on — **selecting a different group** hands them back to automatic placement beside it. To get them back sooner, **double-tap (or double-click) the grip**.
 - **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
 - **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
 - **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.

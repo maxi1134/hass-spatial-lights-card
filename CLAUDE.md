@@ -538,8 +538,48 @@ writes to `localStorage` keyed per card, so a position survives reloads, and
 there through every reselection. Double-clicking the grip (or Escape on it, since it is
 focusable) clears the stored position and tracking resumes -- verified. The grip's tooltip says
 so; it used to say "double-click to reset", which described returning to the bottom anchor and
-stopped being true when tracking landed. The authority is deliberate -- a hand-placed box stays
-put -- but the way back has to be discoverable or the feature reads as broken.
+stopped being true when tracking landed.
+
+**And then the authority was scoped, because "permanently" was the wrong lifetime.** A drag is a
+nudge WITHIN a group -- *not there, here* about the lights currently in hand -- not a decision about
+every group you will ever select. Held past the end of that group it answers a question nobody is
+asking any more: pick a different room and the panel sits beside the lights you just finished with.
+The two ways back (double-tap the grip, Escape on it) are both gestures nobody finds without being
+told, which makes the recovery path worse than the problem.
+
+So a stored position now carries the GROUP it was dropped for. `_saveFloatingPos` stamps it with
+`_cfSelectionKey()` -- the sorted selection, or `default_entity` standing in for an empty one --
+and `_dropStaleFloatingPos`, called from the top of `_placeFloatingControls`, retires it the moment a
+DIFFERENT group is selected. `updateLights` is the single funnel: every selection mutation in the
+file ends there, so no drop site needs its own hook. Measured on a 640x400 plan: dropped for
+`light.kitchen` at [220,52] with `dragged`; selecting `light.garage` moves it to [49,127] with
+`auto-placed`, 47px clear of the new selection, and `localStorage` empty.
+
+Three things deliberately do NOT count as a different group, all measured:
+
+- **A state tick.** Same key, so the drop holds through `updateLights` and through an unrelated
+  brightness change ([220,58] across four ticks).
+- **A deselect.** Clicking the floor is not choosing a different group, and under
+  `always_show_controls` the panel is still on screen -- retiring there would make a deselect look
+  like it moved something. The key for an empty selection is `''`, and `_dropStaleFloatingPos`
+  returns early on a falsy key. Reselecting the same group then still finds its position
+  ([220,52] through deselect -> reselect), and selecting another one still retires it.
+- **A resize or rotation.** The stamp is deliberately geometry-free, unlike `_cfKey` a few lines
+  below it, which includes the canvas box because the free-axis offset depends on it. A hand-placed
+  position is stored as FRACTIONS precisely so it can ride a resize out: 640 -> 900px kept
+  `fx: 0.344` and the `dragged` class.
+
+Two ordering details the retire depends on. The `.dragging` guard is HOISTED above the hand-placed
+branch, or a state tick landing between grab and drop would throw away the position the finger is
+still placing -- the drop that stamps it has not happened yet. Verified: the selection changed
+under the finger mid-drag, the box kept following it, and the drop landed stamped `light.garage`.
+And the retire removes BOTH classes: `dragged` and `auto-placed` share the `left`/`top` rules, so a
+`dragged` left behind after `_clearAutoPlacement` has removed `--cf-x`/`--cf-y` reads as
+`left: 50%` with `transform: none` and throws the box half its own width to the right.
+
+Automatic placement is untouched by all of this -- the retire is the only new code on that path and
+it returns on its first line when nothing is stored. Verified byte-identical: all 11 sweep positions
+(every corner, edge, spread and the idle anchor) match v1.42.2 exactly.
 
 **And a drag has to BE a drag.** The grip's `pointermove` had no movement threshold, so the first
 pointermove of any size wrote a hand-placed position -- one pixel was enough. On touch that is not a

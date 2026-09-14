@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.42.2 (fork-maxi1134)';
+  static BUILD = 'v1.43.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -5652,8 +5652,8 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls">
         <div class="cf-grip" id="cfGrip" role="button" tabindex="0"
-             aria-label="Move controls (double-tap to follow the selection)"
-             title="Drag to move — double-tap to follow the selection"></div>
+             aria-label="Move controls (kept until a different group is selected; double-tap to follow the selection now)"
+             title="Drag to move — kept until you select a different group"></div>
         ${this._colorBarsHTML(avgState, tempRange)}
         ${this._renderSwitchOnly()}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
@@ -9251,6 +9251,56 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * The group the panel is placed FOR: the selection, or the default entity
+   * standing in for an empty one. Sorted, so one set of lights hashes the same
+   * however it was built up -- marquee, shift-click, long-press, select-all.
+   *
+   * Deliberately geometry-free, unlike the placement key further down. A
+   * resize, a rotation or a dashboard column change is not a new group, and a
+   * hand-placed box is stored as FRACTIONS of the canvas precisely so it can
+   * ride all three out.
+   */
+  _cfSelectionKey() {
+    const ids = this._selectedLights.size
+      ? [...this._selectedLights]
+      : (this._config && this._config.default_entity ? [this._config.default_entity] : []);
+    return ids.sort().join(',');
+  }
+
+  /**
+   * Retire a hand-placed position that was dropped for a group which is no
+   * longer the one selected, handing placement back to the tracker. Returns
+   * true when one was retired.
+   *
+   * A drag is a nudge WITHIN a group -- 'not there, here' about the lights
+   * currently in hand -- rather than a permanent pin. Kept past the end of that
+   * group it stopped being an answer to anything: pick a different room and the
+   * panel stayed beside the lights you had just finished with, and the only
+   * ways back were a gesture (double-tap the grip) and a keystroke (Escape on
+   * it) that nobody finds without being told. Tying the position's life to the
+   * group it was placed for makes the escape hatch the thing you were going to
+   * do next anyway.
+   *
+   * An EMPTY selection retires nothing. Clicking the floor to deselect is not
+   * choosing a different group, and under `always_show_controls` the panel is
+   * still on screen -- yanking it back to the anchor there would make a
+   * deselect look like it had moved something it did not.
+   */
+  _dropStaleFloatingPos() {
+    const pos = this._loadFloatingPos();
+    if (!pos) return false;
+    const sel = this._cfSelectionKey();
+    // Stored before this rule existed, so it carries no group at all. Adopt the
+    // current one rather than discarding on sight: it was put where it is on
+    // purpose, and the first real selection change is soon enough to retire it.
+    // In memory only -- the next drop is what persists a stamped one.
+    if (typeof pos.sel !== 'string') { pos.sel = sel; return false; }
+    if (!sel || pos.sel === sel) return false;
+    this._saveFloatingPos(null);
+    return true;
+  }
+
+  /**
    * The dragged position is kept as FRACTIONS of the canvas, not pixels, so it
    * survives a resize, a dashboard column change and a plan rotation without
    * the box drifting off the plan.
@@ -9270,13 +9320,27 @@ class SpatialLightColorCard extends HTMLElement {
       const raw = window.localStorage.getItem(key);
       if (raw) {
         const v = JSON.parse(raw);
-        if (Number.isFinite(v.fx) && Number.isFinite(v.fy)) this._floatingPos = { fx: v.fx, fy: v.fy };
+        if (Number.isFinite(v.fx) && Number.isFinite(v.fy)) {
+          this._floatingPos = {
+            fx: v.fx, fy: v.fy,
+            // null, not absent: an entry written before the group stamp
+            // existed has to stay distinguishable from one dropped for an
+            // empty selection, which is a legitimate stamp of ''.
+            sel: typeof v.sel === 'string' ? v.sel : null,
+          };
+        }
       }
     } catch (_) { /* private mode, or storage disabled: stay with the default */ }
     return this._floatingPos;
   }
 
   _saveFloatingPos(pos) {
+    // Stamped with the group it was placed for, so _dropStaleFloatingPos can
+    // tell 'still about these lights' from 'left over from the last ones'.
+    // Persisted with the fractions rather than held in memory: a reload would
+    // otherwise forget which group it belonged to, and a position whose group
+    // cannot be named outlives every group.
+    if (pos) pos.sel = this._cfSelectionKey();
     this._floatingPos = pos;
     this._floatingPosFor = this._floatingPosKey();
     try {
@@ -9601,11 +9665,26 @@ class SpatialLightColorCard extends HTMLElement {
   _placeFloatingControls() {
     const el = this._els && this._els.controlsFloating;
     if (!el) return;
-    // A hand-placed box stays where it was put. Automatic tracking is the
-    // DEFAULT placement, never an override of a position the user chose.
-    if (this._loadFloatingPos()) { this._applyFloatingPos(); return; }
-    // A gesture in flight is the source of truth.
+    // A gesture in flight is the source of truth. HOISTED above the hand-placed
+    // branch, because the retire below must not fire mid-drag: a state tick
+    // landing between grab and drop would throw away the very position the
+    // finger is placing, and the drop that stamps it has not happened yet.
     if (el.classList.contains('dragging')) return;
+    // A hand-placed box stays where it was put -- for the group it was put
+    // there for. Selecting a different group hands placement back to the
+    // automatic tracker, in the same pass, so the box is beside the new
+    // selection on the frame the selection changes.
+    if (this._dropStaleFloatingPos()) {
+      // BOTH classes, not just the automatic one. They share the left/top
+      // rules, so a 'dragged' left behind once _clearAutoPlacement has removed
+      // --cf-x/--cf-y reads as `left: 50%` with `transform: none` and throws
+      // the box half its own width to the right.
+      el.classList.remove('dragged');
+      this._clearAutoPlacement(el);
+    }
+    // Automatic tracking is the DEFAULT placement, never an override of a
+    // position the user chose for the lights they are still holding.
+    if (this._loadFloatingPos()) { this._applyFloatingPos(); return; }
     const host = el.parentElement;
     if (!host) return;
 
