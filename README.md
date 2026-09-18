@@ -235,6 +235,11 @@ The picker shows the bars the selected lights can obey, and nothing else.
 | Colour + temperature | all four |
 | On/off only | an **Off \| On** control instead — see below |
 
+The **brightness bar previews what the light emits** — its colour at its
+current level. A bulb with no colour of its own previews as white, so a plain
+dimmable light reads as grey at half brightness rather than borrowing the colour
+of whatever you had selected before it.
+
 **With fewer than three bars they all lie flat.** The upright brightness bar
 exists to stand alongside a column of three; with one or two there is no column
 for it to match, so everything is horizontal and full width. Three or more and

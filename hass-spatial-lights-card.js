@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.44.0 (fork-maxi1134)';
+  static BUILD = 'v1.44.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -48,6 +48,21 @@ class SpatialLightColorCard extends HTMLElement {
    * that the swatch tracks the value exactly.
    */
   static PREVIEW_MIN_RATIO = 0.25;
+
+  /**
+   * What a light with NO colour emits, for the brightness track's preview.
+   *
+   * A plain dimmable bulb reports no `rgb_color` at all -- the card cannot know
+   * a colour because there is not one -- and the track is a preview of what the
+   * light puts out, so white is the answer. It is NOT a placeholder: dimmed by
+   * the bar it reads as the grey of a white bulb at that level, which is
+   * exactly right.
+   *
+   * A colour-temperature light does not come through here: Home Assistant
+   * derives `rgb_color` from the kelvin for those, so a warm white arrives as a
+   * real colour and takes the normal path.
+   */
+  static WHITE_RGB = [255, 255, 255];
 
   /**
    * The slider thumb's extent ALONG the track, in px -- the one number the
@@ -1749,7 +1764,14 @@ class SpatialLightColorCard extends HTMLElement {
     // Measured against MIN_B..255, not 0..255, or the fill and the native
     // thumb disagree by the width of the floor.
     const brightPct = ((bright - MIN_B) / (255 - MIN_B)) * 100;
-    const previewRGB = SpatialLightColorCard.dimPreviewRGB(rgb, bright);
+    // NOT `rgb`, which falls back to the picker's default hue when the
+    // selection has no colour. That default is a sensible place to leave the
+    // HUE thumb; it is a lie on the brightness track, which previews what the
+    // light emits -- and it put an orange bar under a plain white bulb on
+    // first paint.
+    const trackBase = Array.isArray(avgState && avgState.color)
+      ? avgState.color : SpatialLightColorCard.WHITE_RGB;
+    const previewRGB = SpatialLightColorCard.dimPreviewRGB(trackBase, bright);
     const previewEdge = SpatialLightColorCard.dimPreviewEdge(previewRGB);
     const range = tempRange || { min: 2000, max: 6500 };
     const temp = this._clampTemperature(
@@ -6239,13 +6261,25 @@ class SpatialLightColorCard extends HTMLElement {
         if (this._els.hueSlider) this._els.hueSlider.value = String(hue);
         if (this._els.tintSlider) this._els.tintSlider.value = String(tint);
       }
-      this._syncColorBars();
-      // The brightness bar shows the light's ACTUAL colour, which is not always
-      // what the two colour bars reconstruct: a dim or warm-white light has a
-      // value they cannot express with V pinned to 100. Remembered as the base
-      // here; the dim itself is applied below, after the bar's value is
-      // written, so the two can never disagree.
-      if (rgb) this._barBaseRGB = rgb.slice();
+      // THE BRIGHTNESS TRACK'S BASE, decided here and nowhere else.
+      //
+      // It is the light's ACTUAL colour, which is not always what the two
+      // colour bars reconstruct: a dim or warm-white light has a value they
+      // cannot express with V pinned to 100. And with NO colour it is white,
+      // never what the bars happen to be holding -- they keep the last
+      // coloured selection's position, and `_syncColorBars` paints from them,
+      // so selecting a blue bulb and then a plain dimmable one painted the
+      // dimmable one's track blue. Reported exactly that way; measured at
+      // rgb(0,0,115) on a white bulb at 45%.
+      //
+      // Passed in rather than left to `_syncColorBars` to read back, so there
+      // is no wrong value written and corrected a few lines later. The drag
+      // paths still call it with no argument, where the bars ARE the truth.
+      const base = rgb || SpatialLightColorCard.WHITE_RGB;
+      this._syncColorBars(base);
+      // Held for the repaints that follow a brightness change, which re-dim
+      // from the base rather than from the already-dimmed track.
+      this._barBaseRGB = base.slice();
     }
 
     if (this._els.brightnessSlider) {
@@ -9952,7 +9986,10 @@ class SpatialLightColorCard extends HTMLElement {
     const el = this._els.brightnessSlider;
     if (!el) return;
     if (Array.isArray(baseRGB) && baseRGB.length === 3) this._barBaseRGB = baseRGB.slice();
-    const base = this._barBaseRGB || [255, 165, 0];
+    // White, not the picker's default hue: an unseeded track belongs to a
+    // light whose colour is unknown, and guessing orange is how a white bulb
+    // ended up with an orange bar.
+    const base = this._barBaseRGB || SpatialLightColorCard.WHITE_RGB;
     const b = parseFloat(el.value);
     const rgb = SpatialLightColorCard.dimPreviewRGB(base, b);
     el.style.setProperty('--bar-preview', `rgb(${rgb.join(',')})`);
@@ -10001,7 +10038,7 @@ class SpatialLightColorCard extends HTMLElement {
    * Called while dragging, so it touches styles only -- never the values,
    * which would fight the user's finger.
    */
-  _syncColorBars() {
+  _syncColorBars(baseRGB) {
     const hueEl = this._els.hueSlider;
     const tintEl = this._els.tintSlider;
     if (hueEl) this._updateSliderVisual(hueEl);
@@ -10011,8 +10048,11 @@ class SpatialLightColorCard extends HTMLElement {
       tintEl.setAttribute('aria-valuetext', `${Math.round(100 - (parseFloat(tintEl.value) || 0))}% saturated`);
     }
     // The brightness bar IS the preview: it carries the current colour, at
-    // the current brightness.
-    this._paintBrightnessPreview(this._colorBarsRGB());
+    // the current brightness. `baseRGB` overrides what the two colour bars
+    // describe, for the one caller that knows better than they do -- the state
+    // sync, where a selection with no colour must not be painted in whatever
+    // the last coloured one left behind.
+    this._paintBrightnessPreview(baseRGB || this._colorBarsRGB());
   }
 
   _applyColorWheelSelection(rgb, { announce = true } = {}) {

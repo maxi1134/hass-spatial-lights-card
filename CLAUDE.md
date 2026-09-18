@@ -816,6 +816,30 @@ from, because brightness is its own axis on the light -- folding it in would dim
 and then walk toward black as each dimmed value round-tripped through hass. Verified: with the bar at
 5%, a hue move still sends `rgb_color: [0,255,0]`.
 
+**A light with NO colour previews as WHITE, never as the last colour seen.** `avgState.color` is
+null for a plain dimmable bulb -- Home Assistant reports no `rgb_color` because there is not one --
+and three separate places guessed at a colour instead of saying so. Two of them guessed the picker's
+default hue (`[255,165,0]`, in `_colorBarsHTML` and in `_paintBrightnessPreview`'s unseeded
+fallback), which put an ORANGE bar under a white bulb on first paint. The third was worse and is what
+was reported: `_syncColorBars` paints the track from `_colorBarsRGB()`, i.e. from the hue and
+saturation bars' own positions -- and those are only written when the selection HAS a colour, so they
+still hold the last coloured selection's. Select a blue RGB light, then a plain dimmable one, and the
+dimmable one's track was painted blue. Measured at `rgb(0,0,115)` on a white bulb at 45%; `rgb(115,75,0)`
+for the orange half on a fresh card.
+
+The base is now decided in ONE place in `_updateControlValues` -- `rgb || WHITE_RGB` -- and passed
+into `_syncColorBars(base)` rather than left for it to read back, so no wrong value is written and
+corrected a few lines later. The drag paths still call `_syncColorBars()` with no argument, where the
+bars ARE the truth. Measured after: blue selection `rgb(0,0,200)`, then white `rgb(115,115,115)`, then
+blue again `rgb(0,0,200)`; a hue drag still repaints the track live.
+
+`WHITE_RGB` is not a placeholder. Dimmed by the bar it is the grey of a white bulb at that level,
+which is exactly what the track is for. Colour-temperature lights do not reach it: HA derives
+`rgb_color` from the kelvin, so a warm white arrives as a real colour (measured `rgb(180,127,76)`)
+and takes the normal path. A `color_temp` light whose integration omits `rgb_color` goes white --
+honest, since there is no colour to show, and the card has no kelvin-to-RGB conversion (the
+temperature bar's ramp is a static CSS gradient, a visual affordance rather than a readout).
+
 **A dimmed track is a black track, so the hairline had to adapt.** The inset was a fixed
 `rgba(0,0,0,0.18)` -- black on black once the colour is dimmed, measured 1.15:1 against the slot at
 the floor, i.e. the control becomes a hole in the panel. `dimPreviewEdge` flips the ring to a light
