@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.44.1 (fork-maxi1134)';
+  static BUILD = 'v1.45.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -81,6 +81,31 @@ class SpatialLightColorCard extends HTMLElement {
    * where anyone could see the difference, and both ends clamp regardless.)
    */
   static BAR_THUMB = 9;
+
+  /**
+   * How short a bar track may be trimmed to before scrolling is the better
+   * answer. With the slot's own padding around it a 16px track is a 32px row,
+   * which still clears a fingertip -- and it is only reached on a plan too
+   * short for the picker at any comfortable size, where the alternative is a
+   * scrollbar over half the panel.
+   */
+  static BAR_H_MIN = 16;
+
+  /**
+   * How much of the plan's height the floating panel may never occupy, in CSS
+   * px, split between its top and bottom edges.
+   *
+   * It was 40, which reserved 20px at each end -- twice what the automatic
+   * placement's own EDGE inset needs, and the whole of it came out of the
+   * picker. At 20 the anchored box's top lands exactly on the plan's top edge
+   * and the placed one keeps its EDGE of 10, so the grip this cap exists to
+   * protect is on screen either way, and the bars get the other 20px back.
+   *
+   * Interpolated into the `max-height` below AND used as the fit budget in
+   * `_fitFloatingControls`, because a cap and a budget that disagree is a
+   * scrollbar nobody can explain.
+   */
+  static CF_VIEWPORT_INSET = 20;
 
   /**
    * What a bulb is assumed to emit when nobody has said otherwise, in lumens.
@@ -187,6 +212,7 @@ class SpatialLightColorCard extends HTMLElement {
     this._cfAt = null;                  // last '<x>,<y>' written by _placeFloatingControls
     this._cfKey = null;                 // selection+geometry the free-axis offset below was computed for
     this._cfFreeY = null;               // held free-axis offset for the sideways placements
+    this._cfFitKey = null;              // plan+shape the bar height was last fitted for
     this._dragState = null;             // { entity, startX, startY, initialLeft, initialTop, rect, moved }
     this._selectionBox = null;          // HTMLElement for rubberband selection (created lazily on drag)
     this._selectionStart = null;        // { x, y, clientX, clientY } — armed on empty-canvas pointerdown
@@ -3745,6 +3771,9 @@ class SpatialLightColorCard extends HTMLElement {
     this._cfSide = null;
     this._cfKey = null;
     this._cfFreeY = null;
+    // The fit lives in an inline style on a element that has just been
+    // replaced, so the memo describes a box that no longer exists.
+    this._cfFitKey = null;
     this._els.controlsBelow = this.shadowRoot.getElementById('controlsBelow');
     this._els.powerToggle = this.shadowRoot.getElementById('powerToggle');
     this._els.switchOnly = this.shadowRoot.getElementById('switchOnly');
@@ -4625,12 +4654,33 @@ class SpatialLightColorCard extends HTMLElement {
            grip is the topmost child, so an over-tall box loses its own drag
            handle first -- and with it any way to move the box off the lights.
            Scrolls internally instead of growing out of the top. */
-        max-height: calc(100% - 40px);
+        max-height: calc(100% - ${SpatialLightColorCard.CF_VIEWPORT_INSET}px);
         overflow-y: auto; overflow-x: hidden;
         overscroll-behavior: contain;
+        /* _fitFloatingControls trims the picker to this cap, so the scrollbar
+           is a last resort now -- a plan shorter than the bars can shrink to.
+           Thin and overlaid there, because a classic 15px bar with arrow
+           buttons steals the width the cap exists to protect. NOT hidden:
+           content really is cut off in that case and saying so is the point. */
+        scrollbar-width: thin;
+        scrollbar-color: var(--text-tertiary, #888) transparent;
         opacity: 0; pointer-events: none; transition: opacity var(--transition-base);
         z-index: 50;
       }
+      .controls-floating::-webkit-scrollbar { width: 6px; }
+      .controls-floating::-webkit-scrollbar-track { background: transparent; }
+      .controls-floating::-webkit-scrollbar-thumb {
+        background: var(--text-tertiary, #888); border-radius: 3px;
+      }
+      /* Height compression, the sibling of the width @container rules further
+         down. Applied by _fitFloatingControls, and only once trimming the bars
+         alone cannot get the panel inside the plan -- so a card with room keeps
+         the padding it was designed with. */
+      /* VERTICAL padding only. The width @container rules below own the
+         horizontal padding and take it down to 7px on a narrow card; a
+         shorthand here outranks them and would push it back OUT to 14 exactly
+         where the box has least room to spare. */
+      .controls-floating.tight { padding-top: 8px; padding-bottom: 8px; gap: 7px; }
       .controls-floating.visible { opacity: 1; pointer-events: auto; }
       /* Placed by pixel offsets instead of by the default bottom-centre
          anchor. Two classes, one mechanism, different AUTHORITY:
@@ -9742,6 +9792,112 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * Trim the picker so it FITS the plan, instead of scrolling inside it.
+   *
+   * The panel is capped at a fraction of `#canvas` -- it has to be,
+   * because the canvas clips and the grip is the topmost child, so an over-tall
+   * box loses its own drag handle first. Inside that cap it scrolled. Measured
+   * on a 4-bar picker (261px of content): it fits a plan 301px tall and nothing
+   * shorter, so a 2:1 plan on a 560px card overflowed by 23px, a 16:9 on a
+   * 420px card by 67px, and a 3:1 by 116px -- with a 15px classic scrollbar,
+   * arrow buttons and all, eating the width the cap exists to protect.
+   *
+   * Everything about a bar's size hangs off ONE variable, `--color-bar-h`: the
+   * track height, the thumb, the slot's padding box, and the upright bar's
+   * length through `100cqh`. So the whole fit is: solve that variable for the
+   * height available, and let the rest follow.
+   *
+   * IT IS NOT A LOOP, which matters because `_placeFloatingControls` runs right
+   * after and its write-guard assumes the size it measures is final. Every
+   * input here is independent of the output: the canvas box, the number of
+   * ROWS the bars form, the slot's padding, the gaps, and the panel's chrome
+   * (its own padding, the grip, the presets row) -- none of which change when
+   * the track gets shorter. The arithmetic is done once and written once.
+   *
+   * The baseline is re-established at the start of every pass -- `tight` off,
+   * the override cleared -- so the decision is always made against the panel's
+   * configured shape. Deciding it from the last pass's RESULT is how a control
+   * like this ends up flapping between two sizes tick after tick.
+   */
+  _fitFloatingControls() {
+    const el = this._els && this._els.controlsFloating;
+    const bars = this._els && this._els.colorBars;
+    if (!el || !bars) return;
+    const host = el.parentElement;
+    if (!host) return;
+    const hb = host.getBoundingClientRect();
+    if (!(hb.height > 0)) return;
+
+    const vis = (n) => !!n && n.getBoundingClientRect().height > 0;
+    const flat = bars.classList.contains('flat');
+    const col = bars.querySelector('.color-bar-col');
+    const slots = [...bars.querySelectorAll('.color-bar-slot')].filter(vis);
+    // An UPRIGHT brightness bar spans the column rather than stacking on it, so
+    // it costs no row and shortening it saves nothing. Flat, every bar is a row.
+    const rows = flat ? slots.length
+      : slots.filter(s => !s.classList.contains('vertical')).length;
+    const configured = this._config.color_bar_height || 34;
+    const clear = () => {
+      el.classList.remove('tight');
+      bars.style.removeProperty('--color-bar-h');
+    };
+    // Nothing to trim: switch-only, or a shape with no stacked bar at all.
+    if (!slots.length || rows < 1) { clear(); this._cfFitKey = null; return; }
+
+    const presets = el.querySelector('.presets-row');
+    // Keyed on every input, so the reflow this costs is paid when the plan or
+    // the picker's shape actually changes rather than on every state tick.
+    const key = [Math.round(hb.height), rows, flat ? 1 : 0, configured,
+      presets ? Math.round(presets.getBoundingClientRect().height) : 0].join('|');
+    if (key === this._cfFitKey) return;
+    this._cfFitKey = key;
+
+    // A HORIZONTAL slot on purpose: the upright one's rect is the rotated box,
+    // so its height is the bar's LENGTH rather than its thickness.
+    const probe = slots.find(s => !s.classList.contains('vertical')) || slots[0];
+    const input = probe.querySelector('.color-bar-input');
+    if (!input) return;
+    const slotExtra = probe.getBoundingClientRect().height
+      - parseFloat(getComputedStyle(input).height);
+    const gap = parseFloat(getComputedStyle(flat ? bars : (col || bars)).rowGap) || 0;
+    if (!Number.isFinite(slotExtra)) return;
+
+    // Everything in the panel that is not bar track. Summed from the children
+    // rather than taken from scrollHeight, which disagrees with itself across
+    // engines about whether the bottom padding of a flex column is in it.
+    const chromeNow = () => {
+      const ps = getComputedStyle(el);
+      let h = parseFloat(ps.paddingTop) + parseFloat(ps.paddingBottom)
+        + parseFloat(ps.borderTopWidth) + parseFloat(ps.borderBottomWidth);
+      const rowGap = parseFloat(ps.rowGap) || 0;
+      let shown = 0;
+      for (const child of el.children) {
+        const r = child.getBoundingClientRect();
+        if (!(r.height > 0)) continue;
+        shown++;
+        const cs = getComputedStyle(child);
+        // The grip's negative top margin is part of what it costs.
+        h += (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+        if (child !== bars) h += r.height;
+      }
+      return h + Math.max(0, shown - 1) * rowGap;
+    };
+
+    // The same number the `max-height` above is built from, by construction.
+    const budget = hb.height - SpatialLightColorCard.CF_VIEWPORT_INSET;
+    const needed = (h, chrome) => chrome + rows * (h + slotExtra) + (rows - 1) * gap;
+
+    clear();
+    if (needed(configured, chromeNow()) <= budget) return;
+
+    el.classList.add('tight');
+    const room = budget - chromeNow() - (rows - 1) * gap;
+    const h = Math.max(SpatialLightColorCard.BAR_H_MIN,
+      Math.min(configured, Math.floor(room / rows - slotExtra)));
+    bars.style.setProperty('--color-bar-h', `${h}px`);
+  }
+
+  /**
    * Put the floating controls NEXT TO the selection: offset just clear of the
    * bounding box of the selection, centred on it across the band, clamped
    * inside the plan. The colour bars belong beside the lights they act on,
@@ -9780,6 +9936,12 @@ class SpatialLightColorCard extends HTMLElement {
     // there for. Selecting a different group hands placement back to the
     // automatic tracker, in the same pass, so the box is beside the new
     // selection on the frame the selection changes.
+    // BEFORE a single placement measurement. This is the one thing that changes
+    // the panel's SIZE, and the write-guard below assumes the size it measures
+    // is final. Its own inputs are the canvas box and the panel's chrome, which
+    // placement never touches, so it settles in one pass rather than starting
+    // the measure -> move -> re-measure loop this method's comment forbids.
+    this._fitFloatingControls();
     if (this._dropStaleFloatingPos()) {
       // BOTH classes, not just the automatic one. They share the left/top
       // rules, so a 'dragged' left behind once _clearAutoPlacement has removed

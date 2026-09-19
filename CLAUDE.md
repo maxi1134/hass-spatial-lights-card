@@ -496,12 +496,64 @@ The grip stops propagation: it sits inside `#canvas`, whose pointerdown currentl
 but incidentally rather than by contract. Its Escape swallows too, or one key would both reposition the
 panel and clear the selection.
 
-**`max-height: calc(100% - 40px)` on the box is not cosmetic.** `#canvas` clips, and the grip is the
+**The height cap on the box is not cosmetic.** `#canvas` clips, and the grip is the
 TOPMOST child, so a box taller than the plan loses its own drag handle first — and with it any way to
 move the panel off the lights. On an ordinary 1.6:1 plan in a 420px column the box was 321px against a
 262px canvas and the grip hit-tested to BODY: the feature was unreachable. It scrolls internally now.
 The same reasoning pins an over-tall box to the BOTTOM on restore rather than the top, because the
 presets row and power toggle live at the bottom and are what you press.
+
+**And then it had to stop scrolling, because scrolling inside the cap is what the cap costs.**
+Reported as "the modal has a scrollbar on it". Measured on a 4-bar picker — 261px of content — it fit
+a plan 301px tall and nothing shorter: a 2:1 plan on a 560px card overflowed by 23px, a 16:9 on a
+420px card by 67px, a 3:1 by 116px. On a desktop that is a 15px classic scrollbar with arrow buttons,
+which also eats the width the cap exists to protect.
+
+Two changes. `CF_VIEWPORT_INSET` took the cap from `calc(100% - 40px)` to `calc(100% - 20px)`: the 40
+reserved 20px at EACH end, twice what the automatic placement's own `EDGE` needs, and all of it came
+out of the picker. At 20 the anchored box's top lands exactly on the plan's top edge and a placed one
+keeps its `EDGE` of 10, so the grip is on screen either way. The constant is interpolated into the
+`max-height` AND used as the fit budget below, because a cap and a budget that disagree are a
+scrollbar nobody can explain.
+
+Then `_fitFloatingControls` trims what is left. Everything about a bar's size hangs off ONE variable —
+`--color-bar-h` drives the track, the thumb, the slot's padding box and the upright bar's `100cqh`
+length — so the whole fit is: solve that variable for the height available. Chrome first: the `.tight`
+class trims the panel's VERTICAL padding and gap (never the horizontal, which the width `@container`
+rules own and take down to 7px — a shorthand here would outrank them and push it back out to 14
+exactly where the box has least room). Bars only if that is not enough, floored at `BAR_H_MIN = 16`,
+which with the slot's padding is still a 32px row.
+
+| plan | before | after |
+|---|---|---|
+| 2:1 @ 560 (canvas 280) | scroll +23 | fits, bars still 34 |
+| 16:9 @ 420 (canvas 236) | scroll +67 | fits, bars 27 |
+| 2:1 @ 420 (canvas 210) | scroll +93 | fits, bars 18 |
+| 21:9 @ 560 (canvas 240) | scroll +63 | fits, bars 28 |
+| 16:9 @ 560 (canvas 315) | fits | unchanged — no `.tight`, bars 34 |
+| 3:1 @ 560 (canvas 187) | scroll +116 | scroll +16 |
+| 4:1 @ 700 (canvas 175) | scroll +128 | scroll +28 |
+
+The last two are letterbox plans too short for a 4-bar picker at any usable size; they keep a
+scrollbar, now `scrollbar-width: thin` at 10px rather than 15. Deliberately NOT hidden — content
+really is cut off there, and saying so is the point. `controls_below` is the answer for a plan that
+shape.
+
+**IT IS NOT A LOOP, and that is the whole risk of a control like this.** Every input is independent of
+the output: the canvas box, the number of ROWS the bars form (an upright brightness bar spans the
+column rather than stacking on it, so it costs no row), the slot's padding, the gaps, and the panel's
+chrome — none of which change when the track gets shorter. Chrome is summed from the panel's children
+rather than read off `scrollHeight`, which disagrees with itself across engines about whether the
+bottom padding of a flex column is in it. The baseline is re-established at the start of every pass
+(`tight` off, the override cleared) so the decision is always made against the CONFIGURED shape;
+deciding it from the last pass's result is exactly how this ends up flapping between two sizes tick
+after tick. Measured on four constrained plans: six `updateLights` ticks plus a state change settle on
+one height, one bar size and one `tight` state each. Memoized on `_cfFitKey` (plan height, rows, flat,
+configured height, presets-row height) so the reflow is paid when the shape changes, not per tick.
+
+It runs from the top of `_placeFloatingControls`, after the `.dragging` guard and before a single
+placement measurement — it is the one thing that changes the panel's SIZE, and the write-guard below
+assumes the size it measures is final.
 
 Three more things the live drag owns: `_applyFloatingPos` bails while `.dragging` (every watched state
 change calls `updateLights`, including the ones this card just caused, and it would rewrite the position

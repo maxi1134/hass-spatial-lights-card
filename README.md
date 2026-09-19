@@ -370,6 +370,11 @@ entities, so you never have to touch YAML for this.
 
 With `controls_below: false` the controls float over the plan.
 
+- **They fit the plan.** The picker is never taller than the floor plan it
+  floats over, and rather than scrolling inside it, it trims its own padding
+  first and then its bar height until it fits. A plan with room is untouched.
+  On a very short, wide plan (3:1 or flatter) even the smallest bars will not
+  fit and it scrolls — `controls_below: true` is the better shape there.
 - **Drag them** by the grip at the top to put them wherever suits your plan.
   The position holds for the group you are working on — through state changes,
   resizes, a deselect and a reselect — and is remembered per card in your
