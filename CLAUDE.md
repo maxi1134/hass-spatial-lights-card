@@ -512,17 +512,33 @@ which also eats the width the cap exists to protect.
 Two changes. `CF_VIEWPORT_INSET` took the cap from `calc(100% - 40px)` to `calc(100% - 20px)`: the 40
 reserved 20px at EACH end, twice what the automatic placement's own `EDGE` needs, and all of it came
 out of the picker. At 20 the anchored box's top lands exactly on the plan's top edge and a placed one
-keeps its `EDGE` of 10, so the grip is on screen either way. The constant is interpolated into the
-`max-height` AND used as the fit budget below, because a cap and a budget that disagree are a
-scrollbar nobody can explain.
+keeps its `EDGE` of 10, so the grip is on screen either way.
 
 Then `_fitFloatingControls` trims what is left. Everything about a bar's size hangs off ONE variable —
 `--color-bar-h` drives the track, the thumb, the slot's padding box and the upright bar's `100cqh`
-length — so the whole fit is: solve that variable for the height available. Chrome first: the `.tight`
-class trims the panel's VERTICAL padding and gap (never the horizontal, which the width `@container`
-rules own and take down to 7px — a shorthand here would outrank them and push it back out to 14
-exactly where the box has least room). Bars only if that is not enough, floored at `BAR_H_MIN = 16`,
-which with the slot's padding is still a 32px row.
+length — so the whole fit is: turn that variable down until the panel stops scrolling. Chrome first:
+the `.tight` class trims the panel's VERTICAL padding and gap (never the horizontal, which the width
+`@container` rules own and take down to 7px — a shorthand here would outrank them and push it back
+out to 14 exactly where the box has least room). Bars only if that is not enough, floored at
+`BAR_H_MIN = 16`, which with the slot's padding is still a 32px row.
+
+**THE BROWSER DECIDES, NOT ARITHMETIC — and this cost a release to learn.** The first version was a
+model: sum the panel's chrome, solve for the height available, write the answer. Every measured case
+agreed with it, and the reporter still had a scrollbar: *"It is the right height, but the scrollbar is
+still present."* A model can be wrong about a containing block, a fractional rect, a row that wraps at
+a width the harness never tried — and it cannot be argued with from inside the card.
+
+`scrollTop` can. Pushed past the end it comes back as the exact distance the box can scroll, which is
+precisely the question a scrollbar answers, and it is a double. **`scrollHeight`/`clientHeight` cannot
+be used for this: they are integers**, so a fraction of a pixel of overflow reads as zero and still
+paints a bar — which is both a plausible shape for the report and the reason the harness's own
+"`overflowBy: 0`" was not evidence of anything. Every overflow check in `caps-bars.html` was moved to
+the `scrollTop` probe for the same reason.
+
+So the whole chrome model went, and with it `CF_VIEWPORT_INSET`'s second job as a fit budget: it is
+the CSS cap and nothing else now, so the cap and the fit cannot drift into a scrollbar nobody can
+explain. What is left is: restore the authored shape, ask, apply `.tight`, ask, then step
+`--color-bar-h` down by `ceil(overflow / rows)` and ask again.
 
 | plan | before | after |
 |---|---|---|
@@ -539,17 +555,22 @@ scrollbar, now `scrollbar-width: thin` at 10px rather than 15. Deliberately NOT 
 really is cut off there, and saying so is the point. `controls_below` is the answer for a plan that
 shape.
 
-**IT IS NOT A LOOP, and that is the whole risk of a control like this.** Every input is independent of
-the output: the canvas box, the number of ROWS the bars form (an upright brightness bar spans the
-column rather than stacking on it, so it costs no row), the slot's padding, the gaps, and the panel's
-chrome — none of which change when the track gets shorter. Chrome is summed from the panel's children
-rather than read off `scrollHeight`, which disagrees with itself across engines about whether the
-bottom padding of a flex column is in it. The baseline is re-established at the start of every pass
-(`tight` off, the override cleared) so the decision is always made against the CONFIGURED shape;
-deciding it from the last pass's result is exactly how this ends up flapping between two sizes tick
-after tick. Measured on four constrained plans: six `updateLights` ticks plus a state change settle on
-one height, one bar size and one `tight` state each. Memoized on `_cfFitKey` (plan height, rows, flat,
-configured height, presets-row height) so the reflow is paid when the shape changes, not per tick.
+**IT STILL TERMINATES, and that is the whole risk of a control that measures itself.** `h` strictly
+decreases and stops at `BAR_H_MIN`; each step is sized from the overflow actually measured
+(`ceil(overflow / rows)` — a pixel off the track is `rows` pixels off the panel), so the first step is
+normally the only one and the remaining three are for what the layout rounds on the way. An upright
+brightness bar spans the column rather than stacking on it, so it costs no row and shortening it would
+buy nothing; `rows` counts the stack, not the bars.
+
+Above all, **every pass starts by restoring the AUTHORED shape** — `tight` off, the override cleared —
+so the decision is never made from its own last result. That is exactly how a control like this ends
+up flapping between two sizes tick after tick. Measured on four constrained plans: six `updateLights`
+ticks plus a live state change settle on one height, one bar size and one `tight` state each.
+
+Memoized on `_cfFitKey` (plan height, rows, flat, configured height, presets-row height) so the reflow
+is paid when the shape changes rather than per tick — but never blindly: the fast path still costs one
+`scrollTop` probe, and a panel that can scroll re-runs the fit whatever the key says. A key can fail to
+notice something; a scrollable panel cannot be talked out of it.
 
 It runs from the top of `_placeFloatingControls`, after the `.dragging` guard and before a single
 placement measurement — it is the one thing that changes the panel's SIZE, and the write-guard below

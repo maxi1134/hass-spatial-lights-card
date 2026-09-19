@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.45.0 (fork-maxi1134)';
+  static BUILD = 'v1.45.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -101,9 +101,9 @@ class SpatialLightColorCard extends HTMLElement {
    * and the placed one keeps its EDGE of 10, so the grip this cap exists to
    * protect is on screen either way, and the bars get the other 20px back.
    *
-   * Interpolated into the `max-height` below AND used as the fit budget in
-   * `_fitFloatingControls`, because a cap and a budget that disagree is a
-   * scrollbar nobody can explain.
+   * It is the CSS cap and nothing else now: `_fitFloatingControls` asks the
+   * panel whether it can scroll rather than recomputing this number, so the
+   * two cannot drift into a scrollbar nobody can explain.
    */
   static CF_VIEWPORT_INSET = 20;
 
@@ -9794,30 +9794,34 @@ class SpatialLightColorCard extends HTMLElement {
   /**
    * Trim the picker so it FITS the plan, instead of scrolling inside it.
    *
-   * The panel is capped at a fraction of `#canvas` -- it has to be,
-   * because the canvas clips and the grip is the topmost child, so an over-tall
-   * box loses its own drag handle first. Inside that cap it scrolled. Measured
-   * on a 4-bar picker (261px of content): it fits a plan 301px tall and nothing
+   * The panel is capped at a fraction of `#canvas` -- it has to be, because the
+   * canvas clips and the grip is the topmost child, so an over-tall box loses
+   * its own drag handle first. Inside that cap it scrolled. Measured on a
+   * 4-bar picker (261px of content): it fitted a plan 301px tall and nothing
    * shorter, so a 2:1 plan on a 560px card overflowed by 23px, a 16:9 on a
-   * 420px card by 67px, and a 3:1 by 116px -- with a 15px classic scrollbar,
-   * arrow buttons and all, eating the width the cap exists to protect.
+   * 420px card by 67px, and a 3:1 by 116px.
    *
    * Everything about a bar's size hangs off ONE variable, `--color-bar-h`: the
    * track height, the thumb, the slot's padding box, and the upright bar's
-   * length through `100cqh`. So the whole fit is: solve that variable for the
-   * height available, and let the rest follow.
+   * length through `100cqh`. So the whole fit is: turn that variable down until
+   * the panel stops scrolling.
    *
-   * IT IS NOT A LOOP, which matters because `_placeFloatingControls` runs right
-   * after and its write-guard assumes the size it measures is final. Every
-   * input here is independent of the output: the canvas box, the number of
-   * ROWS the bars form, the slot's padding, the gaps, and the panel's chrome
-   * (its own padding, the grip, the presets row) -- none of which change when
-   * the track gets shorter. The arithmetic is done once and written once.
+   * THE BROWSER DECIDES, NOT ARITHMETIC. This was first written as a model --
+   * sum the chrome, solve for the height available -- and the model said the
+   * panel fitted on a card where it visibly did not. A model can be wrong about
+   * a containing block, a fractional rect, a wrapped row; it cannot be argued
+   * with from here. `scrollTop` can: pushed past the end it comes back as the
+   * exact distance the box can scroll, which is precisely the question a
+   * scrollbar answers. `scrollHeight`/`clientHeight` cannot be used for it --
+   * they are integers, so a fraction of a pixel of overflow reads as zero and
+   * still paints a bar, which is the shape of the first bug report here.
    *
-   * The baseline is re-established at the start of every pass -- `tight` off,
-   * the override cleared -- so the decision is always made against the panel's
-   * configured shape. Deciding it from the last pass's RESULT is how a control
-   * like this ends up flapping between two sizes tick after tick.
+   * IT STILL TERMINATES, which is the real risk in a control that measures
+   * itself. `h` strictly decreases and stops at `BAR_H_MIN`; each step is sized
+   * from the overflow actually measured, so the first one is normally the only
+   * one; and the pass always starts by restoring the AUTHORED shape, so the
+   * decision is never made from its own last result. That last part is what
+   * keeps it from flapping between two sizes tick after tick.
    */
   _fitFloatingControls() {
     const el = this._els && this._els.controlsFloating;
@@ -9825,15 +9829,21 @@ class SpatialLightColorCard extends HTMLElement {
     if (!el || !bars) return;
     const host = el.parentElement;
     if (!host) return;
-    const hb = host.getBoundingClientRect();
-    if (!(hb.height > 0)) return;
+
+    /** How far the panel can actually scroll, in CSS px. 0 means no scrollbar. */
+    const overflow = () => {
+      const was = el.scrollTop;
+      el.scrollTop = 1e6;
+      const max = el.scrollTop;
+      el.scrollTop = was;
+      return max;
+    };
 
     const vis = (n) => !!n && n.getBoundingClientRect().height > 0;
     const flat = bars.classList.contains('flat');
-    const col = bars.querySelector('.color-bar-col');
     const slots = [...bars.querySelectorAll('.color-bar-slot')].filter(vis);
     // An UPRIGHT brightness bar spans the column rather than stacking on it, so
-    // it costs no row and shortening it saves nothing. Flat, every bar is a row.
+    // shortening it buys no height at all. Flat, every bar is a row.
     const rows = flat ? slots.length
       : slots.filter(s => !s.classList.contains('vertical')).length;
     const configured = this._config.color_bar_height || 34;
@@ -9845,56 +9855,32 @@ class SpatialLightColorCard extends HTMLElement {
     if (!slots.length || rows < 1) { clear(); this._cfFitKey = null; return; }
 
     const presets = el.querySelector('.presets-row');
-    // Keyed on every input, so the reflow this costs is paid when the plan or
-    // the picker's shape actually changes rather than on every state tick.
-    const key = [Math.round(hb.height), rows, flat ? 1 : 0, configured,
+    // clientHeight, not a rect: it is the layout height the percentage cap
+    // resolves against, and it does not move under a transform.
+    const key = [host.clientHeight, rows, flat ? 1 : 0, configured,
       presets ? Math.round(presets.getBoundingClientRect().height) : 0].join('|');
-    if (key === this._cfFitKey) return;
+    // Memoized, but never blindly. A key can fail to notice something; a panel
+    // that can still scroll cannot be talked out of it, so the fast path costs
+    // one probe and heals itself rather than trusting the key to be complete.
+    if (key === this._cfFitKey && !overflow()) return;
     this._cfFitKey = key;
 
-    // A HORIZONTAL slot on purpose: the upright one's rect is the rotated box,
-    // so its height is the bar's LENGTH rather than its thickness.
-    const probe = slots.find(s => !s.classList.contains('vertical')) || slots[0];
-    const input = probe.querySelector('.color-bar-input');
-    if (!input) return;
-    const slotExtra = probe.getBoundingClientRect().height
-      - parseFloat(getComputedStyle(input).height);
-    const gap = parseFloat(getComputedStyle(flat ? bars : (col || bars)).rowGap) || 0;
-    if (!Number.isFinite(slotExtra)) return;
-
-    // Everything in the panel that is not bar track. Summed from the children
-    // rather than taken from scrollHeight, which disagrees with itself across
-    // engines about whether the bottom padding of a flex column is in it.
-    const chromeNow = () => {
-      const ps = getComputedStyle(el);
-      let h = parseFloat(ps.paddingTop) + parseFloat(ps.paddingBottom)
-        + parseFloat(ps.borderTopWidth) + parseFloat(ps.borderBottomWidth);
-      const rowGap = parseFloat(ps.rowGap) || 0;
-      let shown = 0;
-      for (const child of el.children) {
-        const r = child.getBoundingClientRect();
-        if (!(r.height > 0)) continue;
-        shown++;
-        const cs = getComputedStyle(child);
-        // The grip's negative top margin is part of what it costs.
-        h += (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
-        if (child !== bars) h += r.height;
-      }
-      return h + Math.max(0, shown - 1) * rowGap;
-    };
-
-    // The same number the `max-height` above is built from, by construction.
-    const budget = hb.height - SpatialLightColorCard.CF_VIEWPORT_INSET;
-    const needed = (h, chrome) => chrome + rows * (h + slotExtra) + (rows - 1) * gap;
-
+    // Back to the authored shape, always, before anything is measured.
     clear();
-    if (needed(configured, chromeNow()) <= budget) return;
+    if (!overflow()) return;
 
+    // Chrome before content: the panel's own padding and gaps are worth less
+    // than the bars they surround, so they go first and often go far enough.
     el.classList.add('tight');
-    const room = budget - chromeNow() - (rows - 1) * gap;
-    const h = Math.max(SpatialLightColorCard.BAR_H_MIN,
-      Math.min(configured, Math.floor(room / rows - slotExtra)));
-    bars.style.setProperty('--color-bar-h', `${h}px`);
+    let over = overflow();
+    let h = configured;
+    // A pixel off the track takes `rows` pixels off the panel. The extra passes
+    // are for what the layout rounds on the way, not for a second guess.
+    for (let i = 0; i < 4 && over > 0 && h > SpatialLightColorCard.BAR_H_MIN; i++) {
+      h = Math.max(SpatialLightColorCard.BAR_H_MIN, h - Math.ceil(over / rows));
+      bars.style.setProperty('--color-bar-h', `${h}px`);
+      over = overflow();
+    }
   }
 
   /**
