@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.45.1 (fork-maxi1134)';
+  static BUILD = 'v1.45.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4809,9 +4809,25 @@ class SpatialLightColorCard extends HTMLElement {
       .temp-preset:active::after { transform: scale(0.92); }
       .temp-preset.active::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5); }
       .temp-preset.active:hover::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5), 0 0 8px rgba(255,255,255,0.2); }
+      /* ABOVE the button, not below it, and that is not a style choice.
+         These are hover tooltips: out of flow, 'opacity: 0', invisible. But an
+         absolutely positioned descendant still counts toward its scroll
+         container's SCROLLABLE OVERFLOW, visible or not -- and .presets-row is
+         the panel's last child, so a label hanging 2px under a 36px button put
+         ~6px of nothing below the panel's content box and .controls-floating
+         grew a scrollbar over a panel that was exactly the right height.
+         Reported as "it is the right height, but the scrollbar is still
+         present", measured at 8.9px on the reporter's card and reproduced at
+         6px here -- with the only elements past the content bottom being these
+         two labels. Overflow ABOVE a scroll container's start is not
+         scrollable, so flipping them costs nothing and fixes it for good.
+         The chip keeps them legible where they now land, which can be over a
+         colour bar rather than over the panel's own background. */
       .temp-preset .temp-label {
-        position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
-        font-size: 9px; color: var(--text-tertiary); white-space: nowrap; pointer-events: none;
+        position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+        font-size: 9px; color: var(--text-secondary); white-space: nowrap; pointer-events: none;
+        background: var(--controls-bg, rgba(20,20,20,0.95));
+        padding: 1px 4px; border-radius: 4px;
         opacity: 0; transition: opacity var(--transition-fast);
       }
       .temp-preset:hover .temp-label { opacity: 1; }
@@ -4837,9 +4853,12 @@ class SpatialLightColorCard extends HTMLElement {
         pointer-events: none;
       }
       .effect-preset.active ha-icon { color: rgba(255,255,255,0.95); }
+      /* Above the button for the same reason .temp-label is -- see there. */
       .effect-preset .effect-label {
-        position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
-        font-size: 9px; color: var(--text-tertiary); white-space: nowrap; pointer-events: none;
+        position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+        font-size: 9px; color: var(--text-secondary); white-space: nowrap; pointer-events: none;
+        background: var(--controls-bg, rgba(20,20,20,0.95));
+        padding: 1px 4px; border-radius: 4px;
         opacity: 0; transition: opacity var(--transition-fast);
       }
       .effect-preset:hover .effect-label { opacity: 1; }
@@ -9867,19 +9886,40 @@ class SpatialLightColorCard extends HTMLElement {
 
     // Back to the authored shape, always, before anything is measured.
     clear();
-    if (!overflow()) return;
+    let over = overflow();
+    if (!over) return;
 
     // Chrome before content: the panel's own padding and gaps are worth less
     // than the bars they surround, so they go first and often go far enough.
     el.classList.add('tight');
-    let over = overflow();
+    const tightened = overflow();
+    // NOTHING IS PAID FOR THAT IS NOT BOUGHT. Not all overflow is height: an
+    // absolutely positioned descendant hanging below the last row adds to the
+    // scroll area without making the panel any taller, and no amount of
+    // trimming touches it. Trimming anyway is not neutral -- it took a
+    // reporter's bars from 34px to 22px chasing 8.9px of invisible tooltip
+    // that was never going to move.
+    if (tightened >= over) el.classList.remove('tight');
+    else over = tightened;
+    if (!over) return;
+
     let h = configured;
     // A pixel off the track takes `rows` pixels off the panel. The extra passes
     // are for what the layout rounds on the way, not for a second guess.
     for (let i = 0; i < 4 && over > 0 && h > SpatialLightColorCard.BAR_H_MIN; i++) {
+      const prevH = h, prevOver = over;
       h = Math.max(SpatialLightColorCard.BAR_H_MIN, h - Math.ceil(over / rows));
       bars.style.setProperty('--color-bar-h', `${h}px`);
       over = overflow();
+      if (prevOver - over < 1) {
+        // The step bought less than a pixel: whatever is overflowing is not the
+        // bars. Give the height back and leave the scrollbar, which is at least
+        // honest about there being something below.
+        h = prevH;
+        if (h >= configured) bars.style.removeProperty('--color-bar-h');
+        else bars.style.setProperty('--color-bar-h', `${h}px`);
+        break;
+      }
     }
   }
 

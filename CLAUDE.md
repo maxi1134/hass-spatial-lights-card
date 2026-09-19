@@ -555,6 +555,30 @@ scrollbar, now `scrollbar-width: thin` at 10px rather than 15. Deliberately NOT 
 really is cut off there, and saying so is the point. `controls_below` is the answer for a plan that
 shape.
 
+**NOT ALL OVERFLOW IS HEIGHT, and the fit had to learn that the hard way.** The reporter came back
+once more: the panel was the right height and the scrollbar was still there. Their numbers settled it
+in one read — `canScroll: 8.89` on a panel whose parent was 2681px tall, so the `max-height` cap was
+nowhere near it, and whose children summed to exactly its own height. Nothing was too tall; something
+was hanging BELOW.
+
+**The preset hover labels.** `.effect-label` and `.temp-label` are `position: absolute;
+top: calc(100% + 2px)` with `opacity: 0` — invisible, out of flow, and still counted in their scroll
+container's scrollable overflow, because that is what absolutely positioned descendants do. Hanging
+under `.presets-row`, the panel's LAST child, they put ~6px of nothing below its content box.
+Reproduced by listing every descendant past the panel's content bottom: the two labels, and nothing
+else. They are flipped to `bottom: calc(100% + 2px)` now — overflow above a scroll container's start
+is not scrollable, so it costs nothing — with a chip background, because above the button they can
+land over a colour bar instead of the panel's own ground. Every one of these buttons also carries a
+`title`, so the label was never the only affordance.
+
+**And the fit now refuses to pay for what it does not buy.** Trimming cannot touch an overhang, but it
+trimmed anyway: it took the reporter's bars from 34px to 22px and applied `.tight`, chasing 8.9px of
+invisible tooltip that was never going to move, and left the scrollbar exactly where it was. Each step
+now checks that the overflow actually fell by at least a pixel; if it did not, the height is given
+back and the loop stops. `.tight` is reverted on the same rule. Measured with an injected 40px
+overhang: bars stay at 34, `.tight` stays off, and it holds across five ticks — where the old code
+ground down and stayed down.
+
 **IT STILL TERMINATES, and that is the whole risk of a control that measures itself.** `h` strictly
 decreases and stops at `BAR_H_MIN`; each step is sized from the overflow actually measured
 (`ceil(overflow / rows)` — a pixel off the track is `rows` pixels off the panel), so the first step is
