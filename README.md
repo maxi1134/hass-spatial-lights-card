@@ -2,7 +2,7 @@ Made because controlling dozens of lightbulbs became otherwise impossible: it re
 
 This card allows arbitrary positioning and instant selection and control of dozens of lights on a 2D canvas.
 
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Mihonarium&repository=hass-spatial-lights-card)
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin)
 
 <img width="880" alt="Drag to select a group of lights on the floor plan, then recolor, dim, or switch them together" src="docs/demo_maxi.gif" />
 
@@ -90,8 +90,27 @@ over projected light.
 ## Installation
 
 ### Via HACS (Recommended)
-1. [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Mihonarium&repository=hass-spatial-lights-card)
-2. Install the card and reload your browser when prompted.
+
+This fork is not in the default HACS store, so HACS has to be told where to find
+it — once. After that it updates like any other card.
+
+1. [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin)
+
+   HACS opens and offers to add `maxi1134/hass-spatial-lights-card` as a custom
+   repository. Accept, then install the card.
+
+2. **Or add it by hand:** HACS → the three-dot menu → **Custom repositories** →
+   URL `https://github.com/maxi1134/hass-spatial-lights-card`, type **Dashboard**.
+   Then find **Spatial Lights Card** in HACS and install it.
+
+3. Reload your browser when prompted.
+
+> **Already running the upstream card?** Remove it in HACS first. Both
+> repositories are named `hass-spatial-lights-card`, so HACS installs them to the
+> same path — `/config/www/community/hass-spatial-lights-card/` — behind the same
+> dashboard resource URL, and whichever updated last wins. Your dashboard YAML
+> needs no changes either way: the card type is `custom:spatial-light-color-card`
+> in both.
 
 ### Manual Installation
 
