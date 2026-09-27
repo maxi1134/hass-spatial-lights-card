@@ -84,6 +84,7 @@ stay legible over projected light.
 
 - An interactive 2D layout, so a light sits where it actually sits in the room.
 - Multi-select and batch control of color, brightness, and temperature.
+- Drag a rectangle round a group of lights, or switch to a **freehand lasso** and draw any shape you like.
 - Scenes, Switches, Binary Sensors and Input Booleans, each with their own display colors.
 - Background image support (URL, size, blend modes).
 - An optional default entity, for when you want to grab a whole room at once.
@@ -192,6 +193,34 @@ nothing is selected.
 > hold your finger still for a moment first — a short vibration tells you it took
 > — then drag. Pinch-zoom always works. If you would rather the canvas never
 > scrolled, set `canvas_touch_scroll: false` and every touch goes to selection.
+
+---
+
+### Lasso: select any shape you like
+
+A rectangle is the wrong shape for most rooms. An L-shaped living room, a run of
+lights down a hallway, everything except the one lamp in the middle — none of
+those is a box.
+
+Set `selection_mode: lasso` and the drag draws a freehand outline instead:
+
+```yaml
+selection_mode: lasso   # 'box' (default) or 'lasso'
+```
+
+Everything inside the outline gets selected, and **inside means inside** — draw a
+U around a room and a light sitting in the notch is left out, where a rectangle
+would have grabbed it.
+
+Nothing else about selecting changes. Same drag on empty canvas, same Shift/Ctrl
+to add to what you already have, same skipping of lights marked
+[not affected by group selection](#not-affected-by-group-selection), same live
+update as you draw so you can see what you are about to get. On touch, the same
+rules decide whether a drag scrolls the page or starts a selection — near-vertical
+scrolls, anything else draws, and holding still for a moment claims it outright.
+
+The shape is not saved anywhere. It is a gesture, not a zone; let go and it is
+gone.
 
 ---
 
@@ -598,6 +627,7 @@ editor — I only reach for YAML when I want something the editor does not expos
 | `grid_size` | number | `25` | Grid spacing in pixels when snapping. |
 | `label_mode` | string | `"smart"` | Light label style: `smart` (compact abbreviation), `full` (alias `friendly_name`), `initials`, `entity_id`, `none`. |
 | `canvas_touch_scroll` | boolean | `true` | Vertical touch swipes on the canvas scroll the page (marquee needs a sideways drag). Set `false` to reserve all canvas touches for selection. |
+| `selection_mode` | string | `"box"` | How a drag on empty canvas selects: `box` is the rubber-band rectangle, `lasso` draws a freehand outline and selects everything inside it. See [Lasso](#lasso-select-any-shape-you-like). |
 | `theme_mode` | string | `"auto"` | `auto` follows your HA theme (including glass themes), `dark` keeps the card's original dark palette, `light` is a fixed light palette. |
 | `theme` | map | `{}` | Fine-grained appearance overrides — see [Theming](#-theming). |
 | `label_overrides` | map | `{}` | Map entity_id → custom label. |

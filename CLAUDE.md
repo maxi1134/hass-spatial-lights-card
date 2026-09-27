@@ -139,6 +139,50 @@ shipped file and drives the race, the toggle-out, the `binary_sensor` fallback a
 - Rubber-band: a pointerdown on empty canvas arms `_selectionStart`/`_selectionPointerId`; the `.selection-box` materializes only after 5 px of movement, hit-testing is rAF-coalesced and diffed, and a completed tap (not pointerdown) is what deselects. Touch ownership is decided in JS, not by touch-action: the canvas is `touch-action: auto` (class `touch-scroll`) and `_handleCanvasTouchMove` (non-passive) rules on the first cancelable touchmove — movement within ~22° of vertical is declined to the browser (native scroll → pointercancel, selection kept, box never created thanks to a touch gate on box creation), anything else claims `_selectionTouchClaim = 'select'` and preventDefaults every subsequent touchmove so the marquee can then travel in any direction. A ~300 ms still hold (`_selectionHoldTimer`) claims 'select' outright for deliberately vertical box drags; `_handleCanvasContextMenu` swallows Android's ~500 ms long-press contextmenu while claimed.
 - Preset hold-to-preview sets `_suppressPresetClick` so the synthesized click on release never applies the preset.
 
+**`selection_mode: 'lasso'` draws a freehand outline instead of a rectangle**, and it is deliberately
+a change of SHAPE and nothing else. Default stays `'box'`, so an existing card renders and behaves
+byte-identically -- verified: no config key produces a `.selection-box` div, records zero lasso points,
+and returns the same four lights a rectangle always did.
+
+**`_selectionBox` stays the one "a band is live" handle whichever shape it holds.** Five sites arm,
+drive, commit and abort the gesture (the hold-timer claim, the 5px lazy materialize, the per-frame
+driver, the pointerup commit, `_cancelActiveInteractions`), and every one of them treats that field as
+a boolean. A parallel `_selectionLasso` would have meant teaching all five about a second handle --
+including the abort path, which is precisely where this card has been bitten before (section 7, the
+grip drag that never got a pointerup). `_createSelectionShape` returns a `div.selection-box` or an
+`svg.selection-lasso` and the rest of the machine does not care.
+
+**The hit test is one function with a predicate.** `_selectLightsWhere(hits)` walks the markers,
+computes each on-screen centre relative to the canvas, and asks. `_selectLightsInBox` and
+`_selectLightsInLasso` are both two lines over it, so the exempt filtering, the additive base and the
+no-op guard exist once -- the alternative was a second copy of the block this section spends four
+paragraphs explaining. Screen space, not plan percentages, is also what makes the lasso correct under
+`plan_rotation` for free: the markers are already where the turn put them.
+
+**A lasso of two points selects nothing, and that is how the commit bug was found.** `_extendLasso`
+commits a vertex only once the finger is `LASSO_MIN_STEP` (3px) from the last COMMITTED one. The first
+version measured from the last point in the array and REPLACED it when the step was too small -- so on
+any drag whose pointermoves are finer than the threshold (a trackpad, a slow finger, a high-frequency
+pointer) nothing was ever committed: one point crept along behind the cursor. Measured at 2px steps
+over an 1880px perimeter: **2 points out of 940 moves**. The live tip is now drawn and tested without
+being committed, so the outline still reaches the finger. Same sweep after: 352 points.
+
+`pointInPolygon` is even-odd ray-casting on the half-open interval, and the polygon is implicitly
+CLOSED -- the drawn path closes itself with `Z` from the first move, so what is tested is what is on
+screen. The closing edge is the one nobody draws and the one that decides the lights near the start of
+the sweep; leaving it implied-but-invisible would be the worst of both.
+
+**The concave case is the only test that distinguishes a lasso from a bounding box**, so it is the one
+`.harness/lasso.html` leads with. A U drawn round a 3x3 grid, notch between x=334 and x=366, with two
+lights at x=350 inside it: seven arm lights selected, both notch lights excluded. A bounding-box
+implementation returns all nine and passes every other probe in the file.
+
+Nine more pin the rest: `boxStillDefault` (the untouched default), `modesAgree` (both modes return the
+same four lights for a convex rectangle), `exempt`, `additive`, `rotated` (a quarter-turned plan),
+`abort` (`_cancelActiveInteractions` mid-lasso leaves no orphan SVG, no stale points, no pending hit,
+and the canvas still selects afterwards), `thinning`, `basic` and `drawnMatchesTested` (the static
+predicate against hand-built polygons, including a two-point degenerate and a concave notch).
+
 **Not affected by group selection.** `group_exempt_overrides` is a per-entity map (`{entity: true}`,
 the same shape as `icon_only_overrides`) marking lights that must never be caught by a selection they
 were not individually asked to join. It exists for fixtures that share a plan with ordinary lights but
@@ -146,7 +190,8 @@ should not share their commands -- the reported case was UV projectors, two or t
 
 **The line is DIRECT versus IMPLICIT, not gesture versus gesture.** `_isGroupExempt` is consulted by
 exactly five sites, and all five are places a light gets caught for merely being present: the
-rubber-band (`_selectLightsInBox`), Ctrl/Cmd+A, and the three "nothing selected, so act on the whole
+rubber-band (`_selectLightsWhere`, which is now both the box AND the lasso -- one call site because
+one function), Ctrl/Cmd+A, and the three "nothing selected, so act on the whole
 plan" fallbacks in `_getAdaptiveTargets`, `_applyScriptButton` and `_applyEffectPreset`. Everything
 aimed at one marker still works untouched -- tap, long-press, Shift/Ctrl/Meta-click, Enter on a focused
 light. A tap in particular REPLACES the selection with that one light, so it can never sweep a

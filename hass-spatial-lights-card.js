@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.45.2 (fork-maxi1134)';
+  static BUILD = 'v1.46.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -90,6 +90,37 @@ class SpatialLightColorCard extends HTMLElement {
    * scrollbar over half the panel.
    */
   static BAR_H_MIN = 16;
+
+  /**
+   * Minimum distance, in canvas px, between two recorded lasso points.
+   *
+   * A pointermove can fire every few pixels, so an un-thinned lasso round a
+   * room is several hundred points -- a path string rewritten on every frame
+   * and an O(points) test run per light per frame. Three px keeps the outline
+   * indistinguishable from the finger while holding a fast sweep to a few
+   * dozen points, and it smooths the jitter a trackpad puts into a slow one.
+   */
+  static LASSO_MIN_STEP = 3;
+
+  /**
+   * Is (x, y) inside the polygon? Ray-casting, even-odd, on the half-open
+   * interval so a vertex is counted once rather than twice.
+   *
+   * The polygon is implicitly CLOSED -- the caller never has to repeat the
+   * first point, and the drawn path closes itself the same way, so what is
+   * tested is exactly what is drawn.
+   */
+  static pointInPolygon(x, y, pts) {
+    if (!Array.isArray(pts) || pts.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i][0], yi = pts[i][1];
+      const xj = pts[j][0], yj = pts[j][1];
+      if ((yi > y) !== (yj > y)
+        && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
 
   /**
    * How much of the plan's height the floating panel may never occupy, in CSS
@@ -220,7 +251,9 @@ class SpatialLightColorCard extends HTMLElement {
     this._selectionModeAdditive = false;
     this._selectionBase = null;
     this._selectionRaf = null;          // coalesces rubber-band hit-testing to one run/frame
-    this._pendingSelectionRect = null;
+    this._pendingSelectionHit = null;   // {kind:'box'|'lasso', ...} awaiting that frame
+    this._lassoPoints = null;           // canvas-relative px path, lasso mode only
+    this._lassoTip = null;              // live finger position, drawn but not yet committed
     /**
      * Touch gesture arbitration for empty-canvas drags. With
      * canvas_touch_scroll the canvas is touch-action:auto and WE decide who
@@ -521,6 +554,9 @@ class SpatialLightColorCard extends HTMLElement {
       // page and pinch zooms; rubber-band selection needs a deliberate
       // horizontal-ish drag. Set false to restore gesture-exclusive canvas.
       canvas_touch_scroll: config.canvas_touch_scroll !== false,
+      // How a drag on empty canvas selects: 'box' is the rubber-band rectangle
+      // and stays the default, because it is what every existing card does.
+      selection_mode: config.selection_mode === 'lasso' ? 'lasso' : 'box',
       // 'auto' (default): follow the dashboard's Home Assistant theme —
       // including light themes and translucent/glass card backgrounds.
       // 'dark': the card's original fixed dark palette. 'light': a fixed
@@ -4501,6 +4537,32 @@ class SpatialLightColorCard extends HTMLElement {
         position: absolute; border: 1.5px solid color-mix(in srgb, var(--accent-primary) 50%, transparent); background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
         border-radius: 8px; pointer-events: none; backdrop-filter: blur(2px);
       }
+      /* The lasso band. An SVG rather than a clip-path on a div, because the
+         outline is the affordance: you have to see the line your finger is
+         drawing, not only the region it encloses.
+
+         'inset: 0' with no viewBox makes one SVG unit one canvas pixel, which
+         is the same space _selectLightsWhere measures the markers in -- so the
+         drawn shape and the tested polygon cannot drift apart. */
+      .selection-lasso {
+        position: absolute; inset: 0; pointer-events: none; overflow: visible;
+        z-index: 3;
+      }
+      /* Plain values first: an engine without color-mix() drops those two
+         declarations and would otherwise leave the band invisible -- which,
+         for the one thing telling you what you are about to select, is worse
+         than a slightly off accent. */
+      .selection-lasso path {
+        fill: rgba(99,102,241,0.10);
+        fill: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+        stroke: rgba(99,102,241,0.65);
+        stroke: color-mix(in srgb, var(--accent-primary) 65%, transparent);
+        stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round;
+        /* Dashed so the closing edge -- the part nobody drew -- reads as
+           implied rather than as a line they left behind. */
+        stroke-dasharray: 5 4;
+        fill-rule: evenodd;
+      }
 
       /* ---------- Canvas elements (links, sensors, templates) ---------- */
       .canvas-element {
@@ -7906,15 +7968,10 @@ class SpatialLightColorCard extends HTMLElement {
           if (!this._selectionStart || this._selectionPointerId == null) return;
           this._selectionTouchClaim = 'select';
           if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15);
-          // Materialize the box right away as the "selection mode" cue.
+          // Materialize the band right away as the "selection mode" cue.
           if (!this._selectionBox) {
-            this._selectionBox = document.createElement('div');
-            this._selectionBox.className = 'selection-box';
-            Object.assign(this._selectionBox.style, {
-              left: `${this._selectionStart.x}px`, top: `${this._selectionStart.y}px`,
-              width: '0px', height: '0px',
-            });
-            this._els.canvas.appendChild(this._selectionBox);
+            this._selectionBox = this._createSelectionShape(
+              this._selectionStart.x, this._selectionStart.y);
             if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
               this._selectedLights.clear();
               this.updateLights();
@@ -8017,9 +8074,8 @@ class SpatialLightColorCard extends HTMLElement {
       const dx = e.clientX - this._selectionStart.clientX;
       const dy = e.clientY - this._selectionStart.clientY;
       if (Math.hypot(dx, dy) > 5) {
-        this._selectionBox = document.createElement('div');
-        this._selectionBox.className = 'selection-box';
-        this._els.canvas.appendChild(this._selectionBox);
+        this._selectionBox = this._createSelectionShape(
+          this._selectionStart.x, this._selectionStart.y);
         if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
           this._selectedLights.clear();
           this.updateLights();
@@ -8032,23 +8088,28 @@ class SpatialLightColorCard extends HTMLElement {
       const rect = this._els.canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const left = Math.min(this._selectionStart.x, x);
-      const top = Math.min(this._selectionStart.y, y);
-      const width = Math.abs(x - this._selectionStart.x);
-      const height = Math.abs(y - this._selectionStart.y);
-      Object.assign(this._selectionBox.style, {
-        left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
-      });
-      // Box visuals track every move; the hit-testing + selection commit is
+      if (this._config.selection_mode === 'lasso') {
+        // The outline is a copy, not the live array: the flush below runs a
+        // frame later, by which time the real one has grown.
+        this._pendingSelectionHit = { kind: 'lasso', points: this._extendLasso(x, y).slice() };
+      } else {
+        const left = Math.min(this._selectionStart.x, x);
+        const top = Math.min(this._selectionStart.y, y);
+        const width = Math.abs(x - this._selectionStart.x);
+        const height = Math.abs(y - this._selectionStart.y);
+        Object.assign(this._selectionBox.style, {
+          left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+        });
+        this._pendingSelectionHit = { kind: 'box', left, top, width, height };
+      }
+      // Band visuals track every move; the hit-testing + selection commit is
       // coalesced to one run per frame (it walks all lights with
       // getBoundingClientRect and can trigger the full update pipeline).
-      this._pendingSelectionRect = { left, top, width, height };
       if (!this._selectionRaf) {
         this._selectionRaf = requestAnimationFrame(() => {
           this._selectionRaf = null;
-          const r = this._pendingSelectionRect;
-          this._pendingSelectionRect = null;
-          if (r && this._selectionBox) this._selectLightsInBox(r.left, r.top, r.width, r.height);
+          if (this._selectionBox) this._flushSelectionHit();
+          else this._pendingSelectionHit = null;
         });
       }
     }
@@ -8122,13 +8183,11 @@ class SpatialLightColorCard extends HTMLElement {
           cancelAnimationFrame(this._selectionRaf);
           this._selectionRaf = null;
         }
-        if (this._pendingSelectionRect) {
-          const r = this._pendingSelectionRect;
-          this._pendingSelectionRect = null;
-          this._selectLightsInBox(r.left, r.top, r.width, r.height);
-        }
+        this._flushSelectionHit();
         this._selectionBox.remove();
         this._selectionBox = null;
+        this._lassoPoints = null;
+        this._lassoTip = null;
       } else if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
         // A completed tap on empty canvas deselects. This lives here (not in
         // pointerdown) so a scroll the browser reclaims mid-gesture — which
@@ -8401,6 +8460,8 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectionBox.remove();
       this._selectionBox = null;
     }
+    this._lassoPoints = null;
+    this._lassoTip = null;
     this._selectionStart = null;
     this._selectionPointerId = null;
     this._selectionBase = null;
@@ -8409,7 +8470,7 @@ class SpatialLightColorCard extends HTMLElement {
       cancelAnimationFrame(this._selectionRaf);
       this._selectionRaf = null;
     }
-    this._pendingSelectionRect = null;
+    this._pendingSelectionHit = null;
     if (this._selectionHoldTimer) {
       clearTimeout(this._selectionHoldTimer);
       this._selectionHoldTimer = null;
@@ -8431,7 +8492,84 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._pendingTemperature != null) this._handleTemperatureChange();
   }
 
-  _selectLightsInBox(left, top, width, height) {
+  /**
+   * The rubber-band element for the configured selection mode, appended and
+   * returned. ONE handle, `_selectionBox`, whatever the shape: every site that
+   * arms, drives, commits or aborts the gesture treats it as "a band is live",
+   * and giving the lasso its own parallel handle would mean teaching all five
+   * of them about a second one -- including the abort path, which is where
+   * this card has been bitten before.
+   */
+  _createSelectionShape(x, y) {
+    if (this._config.selection_mode === 'lasso') {
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('class', 'selection-lasso');
+      const path = document.createElementNS(NS, 'path');
+      svg.appendChild(path);
+      this._lassoPoints = [[x, y]];
+      this._lassoTip = null;
+      this._els.canvas.appendChild(svg);
+      return svg;
+    }
+    const div = document.createElement('div');
+    div.className = 'selection-box';
+    Object.assign(div.style, { left: `${x}px`, top: `${y}px`, width: '0px', height: '0px' });
+    this._els.canvas.appendChild(div);
+    return div;
+  }
+
+  /**
+   * Extend the lasso to (x, y) and redraw it. Returns the live point list.
+   *
+   * The drawn path is CLOSED (`Z`) from the first move, so the region being
+   * tested is the region on screen -- an open outline would leave the user
+   * guessing where the implied closing edge runs, which is precisely the edge
+   * that decides the lights near the start of the sweep.
+   */
+  _extendLasso(x, y) {
+    const pts = this._lassoPoints || (this._lassoPoints = []);
+    const last = pts[pts.length - 1];
+    // Measured from the last COMMITTED vertex, never from a moving tip. The
+    // first version replaced the last point when the step was too small, so on
+    // a drag whose pointermoves are finer than the threshold -- a trackpad, a
+    // slow finger, a high-frequency pointer -- nothing was ever committed: the
+    // single point crept along behind the cursor and the outline stayed a
+    // line. Measured at 2px steps over an 1880px perimeter: 2 points recorded
+    // out of 940 moves, and a lasso of two points selects nothing.
+    if (!last || Math.hypot(x - last[0], y - last[1]) >= SpatialLightColorCard.LASSO_MIN_STEP) {
+      pts.push([x, y]);
+      this._lassoTip = null;
+    } else {
+      // Too close to earn a vertex, but the outline still has to reach the
+      // finger. The tip is drawn and tested without being committed, so it
+      // costs nothing and cannot swallow the vertex before it.
+      this._lassoTip = [x, y];
+    }
+    const live = this._lassoTip ? pts.concat([this._lassoTip]) : pts;
+    const path = this._selectionBox && this._selectionBox.querySelector('path');
+    if (path) {
+      path.setAttribute('d', `M${live.map(pt => `${Math.round(pt[0])} ${Math.round(pt[1])}`).join('L')}Z`);
+    }
+    return live;
+  }
+
+  /** Run whichever hit test the pending gesture describes. */
+  _flushSelectionHit() {
+    const hit = this._pendingSelectionHit;
+    this._pendingSelectionHit = null;
+    if (!hit) return;
+    if (hit.kind === 'lasso') this._selectLightsInLasso(hit.points);
+    else this._selectLightsInBox(hit.left, hit.top, hit.width, hit.height);
+  }
+
+  /**
+   * Walk the lights and select every one whose ON-SCREEN centre satisfies
+   * `hits`. Screen space, not plan percentages, which is what makes both
+   * callers correct under `plan_rotation` for free: the markers are already
+   * where the turn put them, so no coordinate has to be un-rotated here.
+   */
+  _selectLightsWhere(hits) {
     const lights = this.shadowRoot.querySelectorAll('.light');
     const rect = this._els.canvas.getBoundingClientRect();
     const inside = new Set();
@@ -8439,15 +8577,14 @@ class SpatialLightColorCard extends HTMLElement {
       const r = light.getBoundingClientRect();
       const cx = r.left - rect.left + r.width / 2;
       const cy = r.top - rect.top + r.height / 2;
-      if (cx >= left && cx <= left + width && cy >= top && cy <= top + height) {
-        // Exempt lights are skipped HERE, on the way into `inside`, not from
-        // the committed target below -- so the additive base (which may hold an
-        // exempt light a long press deliberately put there) survives the band
-        // passing back over it.
-        if (this._isSelectableEntity(light.dataset.entity)
-          && !this._isGroupExempt(light.dataset.entity)) {
-          inside.add(light.dataset.entity);
-        }
+      if (!hits(cx, cy)) return;
+      // Exempt lights are skipped HERE, on the way into `inside`, not from
+      // the committed target below -- so the additive base (which may hold an
+      // exempt light a long press deliberately put there) survives the band
+      // passing back over it.
+      if (this._isSelectableEntity(light.dataset.entity)
+        && !this._isGroupExempt(light.dataset.entity)) {
+        inside.add(light.dataset.entity);
       }
     });
     const target = this._selectionModeAdditive && this._selectionBase
@@ -8459,6 +8596,20 @@ class SpatialLightColorCard extends HTMLElement {
       return;
     }
     this._commitSelection(target);
+  }
+
+  /** Everything inside the drawn outline. Concave shapes included -- that is
+   *  the whole point of it, so the test is point-in-polygon and never the
+   *  polygon's bounding box. */
+  _selectLightsInLasso(points) {
+    if (!Array.isArray(points) || points.length < 3) return;
+    const pts = points;
+    this._selectLightsWhere((x, y) => SpatialLightColorCard.pointInPolygon(x, y, pts));
+  }
+
+  _selectLightsInBox(left, top, width, height) {
+    this._selectLightsWhere((x, y) =>
+      x >= left && x <= left + width && y >= top && y <= top + height);
   }
 
   _syncOverlayState() {
@@ -12937,6 +13088,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._config.show_power_button === false) yamlLines.push('show_power_button: false');
     yamlLines.push(`switch_single_tap: ${!!this._config.switch_single_tap}`);
     if (this._config.canvas_touch_scroll === false) yamlLines.push('canvas_touch_scroll: false');
+    if (this._config.selection_mode === 'lasso') yamlLines.push('selection_mode: lasso');
     if (this._config.theme_mode && this._config.theme_mode !== 'auto') {
       yamlLines.push(`theme_mode: ${this._config.theme_mode}`);
     }
