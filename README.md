@@ -1,28 +1,44 @@
-Made because controlling dozens of lightbulbs became otherwise impossible: it required infinite scrolling to find the right light or group.
+<p align="center">
+<a href="#installation"><img src="https://img.shields.io/badge/Installation-purple" alt="Get it running"></a>
+<a href="#-quick-start"><img src="https://img.shields.io/badge/Quick%20Start-red" alt="Five minutes, tops"></a>
+<a href="#-usage"><img src="https://img.shields.io/badge/Usage-orange" alt="Every gesture explained"></a>
+<a href="#-all-configuration-options"><img src="https://img.shields.io/badge/All%20Options-green" alt="Every knob in one table"></a>
+<a href="#-glow-effects"><img src="https://img.shields.io/badge/Light%20%26%20Walls-blue" alt="The fun part"></a>
+<a href="#-the-full-size-editor"><img src="https://img.shields.io/badge/Wall%20Editor-cyan" alt="Draw your floorplan"></a>
+<a href="#troubleshooting"><img src="https://img.shields.io/badge/Troubleshooting-violet" alt="When it misbehaves"></a>
+<br></p>
 
-This card allows arbitrary positioning and instant selection and control of dozens of lights on a 2D canvas.
+<h1><p align="center"> Spatial Lights Card </p></h1>
 
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin)
+I have 130-odd Zigbee devices, and a good chunk of them are lights. Finding the
+right one in a Home Assistant dashboard meant scrolling a 1D list of names, and
+grabbing the right *group* meant having predicted that group months in advance.
+Neither of those works once you pass a few dozen bulbs.
 
+This card puts them on a floor plan instead.
+
+You drag a box around the corner of the room you care about, and those lights are
+now a group. Color them, dim them, switch them, all at once. No list, no
+scrolling, no naming things ahead of time.
+
+<p align="center">
 <img width="880" alt="Drag to select a group of lights on the floor plan, then recolor, dim, or switch them together" src="docs/demo_maxi.gif" />
+</p>
 
-
-# Spatial Lights Card for Home Assistant
-
-The Spatial Lights Card lets you place many Home Assistant lights on a 2D canvas, for example, corresponding to their physical locations, making it easy to control arbitrary groups of entities with very few taps and little attention.
-
-You can drag to draw a rectangle around lights, which you'll immediately be able to control as a group. You can toggle individual lights
-
-Very useful when you have a lot of lights, and searching for the one you need by name and icon is tiresome; you can position the lights in a layout that corresponds to the physical room layout, making it easy to select the light you need. You can add a background image, e.g., with the room layout.
-
+<p align="center">
+<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
+</p>
 
 ---
 
 ## What this fork adds
 
-This is a fork of [Mihonarium/hass-spatial-lights-card](https://github.com/Mihonarium/hass-spatial-lights-card)
-with a focus on making the plan itself do the work: real light on the floor
-plan, walls that stop it, and controls that stay out of the way.
+This is a fork of [Mihonarium/hass-spatial-lights-card](https://github.com/Mihonarium/hass-spatial-lights-card),
+and all credit for the original idea goes there.
+
+What I wanted on top of it was for the **plan itself to do the work**: real light
+landing on the floor, walls that actually stop it, and controls that get out of
+the way.
 
 | | |
 | --- | --- |
@@ -36,9 +52,9 @@ plan, walls that stop it, and controls that stay out of the way.
 | **[Draggable controls](#overlaid-controls)** | Overlaid controls can be dragged anywhere on the plan, remember where you put them, and compress on narrow cards. |
 | **[Script buttons](#script-buttons)** | Run any script, scene or service against the lights you have selected, from a button in the controls. |
 
-Plus: plan-relative (`%`) glow sizes so a plan looks the same at every card
-width, a configurable control-bar height, and light labels that stay legible
-over projected light.
+Plus a handful of smaller ones: plan-relative (`%`) glow sizes so a plan looks the
+same at every card width, a configurable control-bar height, and light labels that
+stay legible over projected light.
 
 ---
 
@@ -66,24 +82,24 @@ over projected light.
 
 ## Features
 
-- Interactive 2D layout to position lights exactly where they are in a room.
-- Multi-select and batch control color, brightness, and temperature.
-- Support for Scenes, Switches, Binary Sensors, and Input Booleans with customizable display colors.
+- An interactive 2D layout, so a light sits where it actually sits in the room.
+- Multi-select and batch control of color, brightness, and temperature.
+- Scenes, Switches, Binary Sensors and Input Booleans, each with their own display colors.
 - Background image support (URL, size, blend modes).
-- Optional default entity for whole-room adjustments.
-- Toggleable floating/below controls to match your dashboard style.
-- Glow effects with multiple shapes (cone, round, oval, beam, spotlight, bar, custom polar) and wall occlusion.
+- An optional default entity, for when you want to grab a whole room at once.
+- Controls either below the plan or floating over it, whichever suits your dashboard.
+- Glow effects in a pile of shapes (cone, round, oval, beam, spotlight, bar, custom polar) with wall occlusion.
 - Light diffusion: additive colour mixing on one shared surface, with exact ray-cast shadows.
 - Drawable walls, and doors that stop blocking light when an entity says they are open.
 - Plan rotation in quarter turns, applied as a view transform so your coordinates are never rewritten.
 - A full-size editor for drawing walls and placing lights.
-- Four control bars at a configurable thickness: brightness upright on the left, colour, saturation and temperature stacked beside it.
+- Four control bars at a thickness you choose: brightness upright on the left, colour, saturation and temperature stacked beside it.
 - Overlaid controls you can drag, that remember their position and compress on narrow cards.
 - Script buttons that run a script, scene or service against the current selection.
-- Canvas elements: place sensor readouts, navigation links, and text labels alongside your lights.
+- Canvas elements: sensor readouts, navigation links, and text labels alongside your lights.
 - Icon rotation, mirroring, and per-entity style customization.
-- Effect presets: quick-apply named effects (e.g., colorloop, fireplace) with per-preset light restrictions and filtering.
-- Custom CSS injection for full visual control.
+- Effect presets: quick-apply named effects (colorloop, fireplace, and friends) with per-preset light restrictions and filtering.
+- Custom CSS injection, for when you want full control.
 
 ---
 
@@ -92,18 +108,25 @@ over projected light.
 ### Via HACS (Recommended)
 
 This fork is not in the default HACS store, so HACS has to be told where to find
-it — once. After that it updates like any other card.
+it. Once. After that it updates like any other card.
 
-1. [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin)
+#### 1: Open it in HACS
 
-   HACS opens and offers to add `maxi1134/hass-spatial-lights-card` as a custom
-   repository. Accept, then install the card.
+<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=maxi1134&repository=hass-spatial-lights-card&category=plugin"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
 
-2. **Or add it by hand:** HACS → the three-dot menu → **Custom repositories** →
-   URL `https://github.com/maxi1134/hass-spatial-lights-card`, type **Dashboard**.
-   Then find **Spatial Lights Card** in HACS and install it.
+HACS will offer to add `maxi1134/hass-spatial-lights-card` as a custom
+repository. Accept it, then install the card.
 
-3. Reload your browser when prompted.
+#### 2: Or add it by hand, if that button does nothing for you
+
+- HACS → the three-dot menu → **Custom repositories**
+- URL: `https://github.com/maxi1134/hass-spatial-lights-card`
+- Type: **Dashboard**
+- Then find **Spatial Lights Card** in HACS and install it.
+
+#### 3: Reload your browser when prompted
+
+Voila! The card now shows up in your card picker.
 
 > **Already running the upstream card?** Remove it in HACS first. Both
 > repositories are named `hass-spatial-lights-card`, so HACS installs them to the
@@ -112,28 +135,36 @@ it — once. After that it updates like any other card.
 > needs no changes either way: the card type is `custom:spatial-light-color-card`
 > in both.
 
+---
+
 ### Manual Installation
 
-```bash
-# Copy file
-cp hass-spatial-lights-card.js /config/www/
+If you do not run HACS, this works just as well:
 
-# Add to resources: open Settings → Dashboards → (three dots) → Resources to add via UI. Alternatively, add the following to configuration.yaml:
+```bash
+# Copy the file
+cp hass-spatial-lights-card.js /config/www/
+```
+
+Then register it as a resource. Settings → Dashboards → (three dots) →
+Resources, or in `configuration.yaml`:
+
+```yaml
 resources:
   - url: /local/hass-spatial-lights-card.js
     type: module
-
 ```
 
 ---
 
 ## 🎯 Quick Start
 
-1. Install the resource using one of the methods above.
+1. Install the card with one of the methods above.
 2. Edit a dashboard.
-3. Choose **Add card → Spatial Lights Color Card**.
+3. **Add card → Spatial Lights Color Card**.
 
-**You're all set!** 🎉
+That is genuinely it. Add your entities, drag them roughly where they live, and
+you already have something useful. Everything below is refinement.
 
 ---
 
@@ -150,9 +181,19 @@ resources:
 | Select all lights | Ctrl+A / Cmd+A | — |
 | Deselect all | Click/tap empty canvas, or press Escape | Tap empty canvas |
 
-When lights are selected, the colour bars, brightness slider, and temperature slider control all selected lights as a group. If you have a **default entity** configured, the controls affect that entity when nothing is selected.
+Once lights are selected, everything in the controls acts on all of them at once.
+If you have configured a **default entity**, the controls fall back to that when
+nothing is selected.
 
-> **Note:** On touch devices the card shares the canvas with page scrolling: a drag on empty canvas that starts **near-vertically** (within ~22° of straight up/down) scrolls the dashboard, while any other drag draws the selection box — and once the box has started, it can travel in any direction without being interrupted. For a deliberately vertical box, hold your finger still for a moment first (a short vibration confirms it), then drag. Pinch-zoom always works. Set `canvas_touch_scroll: false` to reserve every canvas touch for selection instead.
+> **On touch devices** the canvas has to share space with page scrolling. A drag
+> on empty canvas that starts **near-vertically** (within ~22° of straight
+> up/down) scrolls the dashboard; anything else draws a selection box, and once
+> the box exists it can travel in any direction. For a deliberately vertical box,
+> hold your finger still for a moment first — a short vibration tells you it took
+> — then drag. Pinch-zoom always works. If you would rather the canvas never
+> scrolled, set `canvas_touch_scroll: false` and every touch goes to selection.
+
+---
 
 ### Toggling Lights On/Off
 
@@ -162,9 +203,19 @@ When lights are selected, the colour bars, brightness slider, and temperature sl
 | Toggle a switch/scene | Double-click (or single click if `switch_single_tap` is on) | Double-tap (or single tap if `switch_single_tap` is on) |
 | Turn the whole selection on/off | Power button below the bars | Power button below the bars |
 
-> **Note:** If `switch_single_tap` is enabled, switches and scenes activate immediately on a single tap/click instead of being selected.
+> With `switch_single_tap` enabled, switches and scenes fire immediately on a
+> single tap instead of being selected.
 
-The **power button** sits at the start of the presets row — under the sliders on desktop, beside the colour bars on mobile — so the sliders keep their full width. It acts on whatever the sliders control: the selected lights, or the default entity when nothing is selected. It is filled when every one of them is on (pressing turns them all off), outlined when only some are on (pressing turns the rest on), and neutral when all are off. Hide it with `show_power_button: false`.
+The **power button** sits at the start of the presets row — under the sliders on
+desktop, beside the colour bars on mobile — so the sliders keep their full width.
+It acts on whatever the sliders act on: the selection, or the default entity when
+there is none.
+
+It is filled when every light is on (pressing turns them all off), outlined when
+only some are (pressing turns the rest on), and neutral when all are off. Hide it
+with `show_power_button: false` if you have no use for it.
+
+---
 
 ### Opening Light Details
 
@@ -172,39 +223,48 @@ The **power button** sits at the start of the presets row — under the sliders 
 |--------|---------|--------|
 | Open more-info panel | Right-click, or long-click (~650 ms) with nothing selected | Long-press (~500 ms) with nothing selected |
 
-The more-info panel is the standard Home Assistant entity dialog where you can see attributes, history, and settings.
+That is the standard Home Assistant entity dialog — attributes, history,
+settings, the lot.
 
-> **The long-press does two jobs, and the selection decides which.** With nothing selected it opens
-> more-info, as above. While lights *are* selected it **adds** the light you pressed to the group —
-> a phone has no Shift key, so this is the only gesture left that can build a selection by hand.
-> It only ever adds: holding a light that is already selected leaves the group exactly as it was, so
-> a press you are not sure registered is always safe to repeat. To remove one, Shift/Ctrl-click it on
-> a desktop, or press Enter with it focused; to drop the whole group, tap empty canvas or press
-> Escape. To reach more-info while a selection is live, clear the selection first and then
-> long-press — or right-click, which opens more-info on a desktop whatever is selected. Entities that
-> cannot be selected at all (binary sensors) keep long-press-for-more-info in both states.
+> **The long-press does two jobs, and the selection decides which.**
+>
+> With nothing selected it opens more-info, as above. While lights *are* selected
+> it **adds** the light you pressed to the group. A phone has no Shift key, so
+> this is the only gesture left that can build a selection by hand.
+>
+> It only ever adds. Holding a light that is already selected changes nothing, so
+> a press you are not sure registered is always safe to repeat. To remove one,
+> Shift/Ctrl-click it on a desktop or press Enter with it focused; to drop the
+> whole group, tap empty canvas or hit Escape.
+>
+> To reach more-info while a selection is live, clear the selection first — or
+> just right-click, which opens more-info on a desktop no matter what is
+> selected. Entities you cannot select at all (binary sensors) keep
+> long-press-for-more-info in both states.
+
+---
 
 ### Not affected by group selection
 
-Some fixtures share a floor plan with ordinary lights but should not share their
-commands — UV projectors, grow lights, anything you do not want swept up when you
-drag a box around a room.
+I have UV projectors in most rooms. They share the floor plan with ordinary
+lights, and I very much do not want them swept up every time I drag a box around
+the living room.
 
-Open a light in the card editor's entity list and turn on **Not affected by
-group selection**. From then on that light:
+Open a light in the card editor's entity list and turn on **Not affected by group
+selection**. From then on, that light:
 
 - is **skipped by drag-select** and by select-all;
 - is **left out of effect presets and script buttons** fired with nothing
   selected (which otherwise target every light on the plan).
 
-It stays completely controllable, by anything aimed at it directly:
+It stays completely controllable, as long as you aim at it directly:
 
 - **tap it** — selects just that light, replacing the selection;
-- **long-press it** — adds it to the group you already have selected;
-- **Shift/Ctrl/Cmd-click** or **Enter** on it — toggles its membership.
+- **long-press it** — adds it to the group you already have;
+- **Shift/Ctrl/Cmd-click** or **Enter** — toggles its membership.
 
-Naming it explicitly always wins too: set it as `default_entity`, or list it in
-an effect preset's own lights, and it is targeted normally.
+Naming it explicitly always wins too. Set it as `default_entity`, or list it in an
+effect preset's own lights, and it gets targeted normally.
 
 ```yaml
 group_exempt_overrides:
@@ -212,29 +272,31 @@ group_exempt_overrides:
   light.uv_bedroom: true
 ```
 
+---
+
 ### Max lumens
 
-Bulbs list what they put out. Tell the card, and the light it projects onto your
+Bulbs tell you what they put out. Tell the card, and the light it paints on your
 plan matches: open a light in the editor's entity list and set **Max lumens**.
 
-The default is **800** — what a standard smart bulb emits — so a card that never
-sets one looks exactly as it did before. There is no upper limit; floodlights are
-fine.
+The default is **800**, which is what a standard smart bulb emits, so a card that
+never sets one looks exactly as it did before. There is no upper limit —
+floodlights are fine.
 
 A brighter fixture gets **both** a stronger pool and a slightly wider one, and a
-dimmer fixture the reverse. The two are balanced so the plan receives about as
-much light as the bulb emits: doubling the lumens roughly doubles the light on
-the plan, rather than quadrupling it. Over a 16× range of bulbs the pool's
-radius moves about 2.5×.
+dimmer one the reverse. The two are balanced so the plan receives about as much
+light as the bulb actually emits: doubling the lumens roughly doubles the light on
+the plan rather than quadrupling it. Over a 16× range of bulbs, the pool's radius
+moves about 2.5×.
 
-That balance holds up to roughly **1600 lm** at the default glow intensity,
-which is where the pool reaches full opacity. Brighter fixtures than that keep
-widening but stop getting brighter — there is no more headroom to give them.
+That balance holds up to roughly **1600 lm** at the default glow intensity, which
+is where the pool hits full opacity. Anything brighter keeps widening but stops
+getting brighter — there is simply no headroom left to give it.
 
-It combines with the light's current brightness rather than replacing it — a
-dimmed 3000 lm bulb still outshines a dimmed 800 lm one — and it applies even
-with `scale_with_brightness` off, since lumens are a property of the fixture
-rather than of its current level.
+It combines with the light's current brightness rather than replacing it, so a
+dimmed 3000 lm bulb still outshines a dimmed 800 lm one. It also applies with
+`scale_with_brightness` off, since lumens are a property of the fixture and not of
+its current level.
 
 ```yaml
 lumens_overrides:
@@ -242,9 +304,12 @@ lumens_overrides:
   light.bedside_lamp: 450
 ```
 
+---
+
 ### Only the controls a light actually has
 
-The picker shows the bars the selected lights can obey, and nothing else.
+There is no point showing a hue bar to a bulb that only does white. The picker
+shows the bars your selection can actually obey, and nothing else.
 
 | The light supports | You get |
 |---|---|
@@ -254,90 +319,96 @@ The picker shows the bars the selected lights can obey, and nothing else.
 | Colour + temperature | all four |
 | On/off only | an **Off \| On** control instead — see below |
 
-The **brightness bar previews what the light emits** — its colour at its
-current level. A bulb with no colour of its own previews as white, so a plain
-dimmable light reads as grey at half brightness rather than borrowing the colour
-of whatever you had selected before it.
+The **brightness bar previews what the light emits**: its colour, at its current
+level. A bulb with no colour of its own previews as white, so a plain dimmable
+light reads as grey at half brightness rather than borrowing the colour of
+whatever you had selected before it.
 
-**With fewer than three bars they all lie flat.** The upright brightness bar
-exists to stand alongside a column of three; with one or two there is no column
-for it to match, so everything is horizontal and full width. Three or more and
-brightness stands up on the left as before.
+**With fewer than three bars, they all lie flat.** The upright brightness bar only
+exists to stand alongside a column of three; with one or two there is no column to
+match, so everything goes horizontal and full width. Three or more and brightness
+stands back up on the left.
 
 Capabilities are a **union across the selection**, so grouping a plain dimmable
 bulb with a colour one gives the whole group all four bars.
 
 Colour and temperature **presets** stay visible but dimmed when they have no
-target, rather than disappearing — a presets row that changed length would move
-everything under your thumb each time you selected something different.
+target, rather than vanishing. A presets row that changed length would move
+everything under your thumb every time you selected something different, and that
+is maddening.
+
+---
 
 ### Switch-only lights
 
-Select a light that can only be switched on and off — no brightness, no colour, no
+Select a light that can only be switched — no brightness, no colour, no
 temperature — and the colour bars are replaced by a single **Off | On** control
-instead of four greyed-out ones.
+rather than four greyed-out ones.
 
-- All selected lights **on** or all **off** → that half is filled in.
-- Selected lights **disagree** → neither half is filled, and a line underneath
-  reads `2 on, 1 off`. Each button is a destination, so one press settles the
-  whole group either way.
+- All selected lights **on**, or all **off** → that half is filled in.
+- They **disagree** → neither half is filled, and a line underneath reads
+  `2 on, 1 off`. Each button is a destination, so one press settles the whole
+  group either way.
 
-The panel is exactly the same height in all three, so nothing moves under your
-thumb while the lights catch up.
+The panel is exactly the same height in all three states, so nothing moves under
+your thumb while the lights catch up.
 
-**Group it with a capable light and the bars come back** — for the whole group.
-Capabilities are a union across the selection, so one dimmable or colour light is
-enough to make brightness, colour and temperature available to everything selected
-alongside it.
+**Group it with a capable light and the bars come back**, for the whole group.
+Capabilities are a union, so one dimmable or colour light is enough to make
+brightness, colour and temperature available to everything selected alongside it.
 
 Scripts, scenes and effect buttons stay put throughout. `show_power_button`
-controls only the small round toggle in the presets row — a switch-only
-selection always gets the Off | On control, since otherwise it would have no
-control at all.
+controls only the small round toggle in the presets row — a switch-only selection
+always gets the Off | On control, because otherwise it would have no control at
+all.
+
+---
 
 ### Colour bars
 
-The controls are four bars in an L: brightness stands upright on the left, as
-tall as the other three together, with colour, saturation and temperature
-stacked to its right.
+The colour wheel is gone. In its place are four bars in an L: brightness stands
+upright on the left, as tall as the other three together, with colour, saturation
+and temperature stacked to its right.
 
 1. **Brightness** — the upright bar on the left. Drag **up for brighter**, down
-   for dimmer, the way every physical dimmer works. It is filled with the colour
-   the lights are showing right now, *at* their current brightness: almost black
-   at the bottom of the range, full colour at the top. It goes down to 1% but
-   never to 0, so it dims a light without switching it off (that is the power
-   button's job). The *swatch* stops darkening at 25%, so even a light dimmed
-   right down still shows you which colour is set -- the bar keeps reporting the
-   real level.
+   for dimmer, the way every physical dimmer in the world works. It is filled with
+   the colour the lights are showing right now, *at* their current brightness:
+   almost black at the bottom of the range, full colour at the top. It goes down
+   to 1% but never to 0, so it dims a light without switching it off — that is the
+   power button's job. The *swatch* stops darkening at 25%, so even a light dimmed
+   right down still shows you which colour is set, while the bar keeps reporting
+   the real level.
 2. **Colour** — the full spectrum. Picking a hue here sets it at **full
-   saturation**; use the bar below to take it back toward white.
-3. **Saturation** — the pure hue on the left running to white on the right. It
-   sits directly under the colour bar because it modifies what that bar picked,
-   and it stays wherever you put it until you pick a new colour.
+   saturation**; use the bar below to walk it back toward white.
+3. **Saturation** — pure hue on the left, white on the right. It sits directly
+   under the colour bar because it modifies what that bar picked, and it stays
+   where you put it until you pick a new colour.
 4. **Temperature** — warm on the left, cool on the right.
 
-Brightness is upright because it is the one bar that is not a colour choice:
-the other three pick *what* the light emits, brightness picks *how much*.
+Brightness is upright because it is the one bar that is not a colour choice: the
+other three pick *what* the light emits, brightness picks *how much*.
 
 - **Tap/click** anywhere along a bar to jump straight to that value.
 - **Drag** to sweep; the lights follow live, throttled to about seven updates a
-  second so a long drag doesn't flood the connection.
+  second so a long drag does not flood your connection.
 - **Arrow keys** step whichever bar has focus.
-- **Height** is configurable: `color_bar_height` (px, default 34), or the
-  **Control Bar Height** slider in the editor's **Display** section.
+- **Height** is yours: `color_bar_height` (px, default 34), or the **Control Bar
+  Height** slider in the editor's **Display** section.
 - On mobile, starting a vertical scroll on a bar releases it so the page can
-  scroll, rather than the bar swallowing the gesture.
+  scroll, rather than the bar swallowing your gesture.
 
-These four replaced the colour wheel and the separate brightness and
-temperature sliders. There is no magnifier or full-screen picker any more
-either: a bar running the full width of the controls has nothing left to aim
-at. The numeric readouts (the brightness percentage and the Kelvin value) went
-with the old sliders — ask if you want them back.
+These four replaced the colour wheel and the separate brightness and temperature
+sliders. There is no magnifier or full-screen picker any more either — a bar
+running the full width of the controls has nothing left to aim at. The numeric
+readouts (brightness percentage, Kelvin value) went with the old sliders; open an
+issue if you want them back.
+
+---
 
 ### Script buttons
 
-Add buttons to the controls that run a script against the lights you have
-selected:
+Buttons in the controls that run a script against the lights you have selected.
+This is the escape hatch for anything the card does not do natively.
 
 ```yaml
 script_buttons:
@@ -353,7 +424,7 @@ script_buttons:
       entity_id: scene.movie_night # ...send the scene instead
 ```
 
-The script receives the entities as `entity_id`, so a script like this gets
+The script receives the entities as `entity_id`, so a script like this one gets
 exactly the lights you had selected:
 
 ```yaml
@@ -369,67 +440,80 @@ flash_lights:
 
 | key | default | meaning |
 | --- | --- | --- |
-| `script` | required | Any callable `domain.service`. Home Assistant gives every script its own service (`script.my_script`), so scripts can be named directly; scenes and automations are activated through `scene.turn_on` / `automation.trigger` with the entity in `data`. `service:` works as an alias for this key. |
+| `script` | required | Any callable `domain.service`. Home Assistant gives every script its own service (`script.my_script`), so scripts can be named directly; scenes and automations go through `scene.turn_on` / `automation.trigger` with the entity in `data`. `service:` works as an alias for this key. |
 | `name` | from the service id | Button label and tooltip. |
 | `icon` | `mdi:script-text-play` | Any mdi icon. |
 | `target_key` | `entity_id` | The variable name the entities arrive under. |
 | `data` | none | Fixed arguments merged into the call. |
 | `pass_entities` | `true` | Set `false` to send no entities at all. |
 
-With nothing selected the button falls back to `default_entity`, and failing
-that to every entity on the card (not only lights) — the same widening the
-effect presets use. Unavailable entities are dropped before the call, and if
-nothing is left the button does nothing.
+With nothing selected the button falls back to `default_entity`, and failing that
+to every entity on the card (not only lights) — the same widening the effect
+presets use. Unavailable entities are dropped before the call, and if nothing is
+left the button does nothing rather than erroring at you.
 
 They can also be managed in the visual editor: the **Presets** section has a
 **Script Buttons** list with an entity picker for your `script.*` and `scene.*`
 entities, so you never have to touch YAML for this.
 
+---
+
 ### Overlaid controls
 
 With `controls_below: false` the controls float over the plan.
 
-- **They fit the plan.** The picker is never taller than the floor plan it
-  floats over, and rather than scrolling inside it, it trims its own padding
-  first and then its bar height until it fits. A plan with room is untouched.
-  On a very short, wide plan (3:1 or flatter) even the smallest bars will not
-  fit and it scrolls — `controls_below: true` is the better shape there.
-- **Drag them** by the grip at the top to put them wherever suits your plan.
-  The position holds for the group you are working on — through state changes,
-  resizes, a deselect and a reselect — and is remembered per card in your
-  browser, so it survives a reload.
-- **Selecting a different group puts them back beside it.** A drag is a nudge
-  for the lights in hand, not a permanent pin, so you never have to undo it
-  before moving on to another room.
-- **Keyboard**: focus the grip and use the arrow keys to nudge it (hold Shift
-  for bigger steps), or Escape to go back to automatic placement.
+- **They fit the plan.** The picker is never taller than the floor plan it floats
+  over, and rather than scrolling inside it, it trims its own padding first and
+  then its bar height until it fits. A plan with room is left untouched. On a very
+  short, wide plan (3:1 or flatter) even the smallest bars will not fit and it
+  scrolls — `controls_below: true` is the better shape there.
+- **Drag them** by the grip at the top to put them wherever suits your plan. The
+  position holds for the group you are working on — through state changes,
+  resizes, a deselect and a reselect — and is remembered per card in your browser,
+  so it survives a reload.
+- **Selecting a different group puts them back beside it.** A drag is a nudge for
+  the lights in hand, not a permanent pin, so you never have to undo it before
+  moving on to another room.
+- **Keyboard**: focus the grip and use the arrow keys to nudge it (hold Shift for
+  bigger steps), or Escape to go back to automatic placement.
 - **Double-click the grip** to go back to automatic placement straight away,
   without changing the selection.
-- Left alone, they anchor to whichever end the selection is **not** at —
-  select a light near the bottom and they move to the top.
-- They **compress** on a narrow card, shrinking their padding and wrapping
-  the presets rather than spilling past the plan.
+- Left alone, they anchor to whichever end the selection is **not** at. Select a
+  light near the bottom and they move to the top.
+- They **compress** on a narrow card, shrinking their padding and wrapping the
+  presets rather than spilling past the plan.
 
 Setting `default_entity` keeps them on screen permanently, since it names the
-light they act on when nothing is selected. If that puts them in your way,
-drag them.
+light they act on when nothing is selected. If that puts them in your way, drag
+them.
+
+---
 
 ### Color Presets & Live Colors
 
-- **Click/tap** a preset circle to apply that color to all selected lights.
-- **Hover** over a preset (desktop) to temporarily highlight which lights on the canvas currently have that color.
-- **Long-press** a preset (~300 ms, mobile) to highlight which lights have that color. Release to clear the highlight.
-- When all selected lights share the same color as a preset, that preset shows a subtle active ring indicator.
-- **Live colors** (when `show_live_colors` is enabled) show the colors currently in use by your lights, automatically deduplicated.
-- **Live temperatures** appear as a separate group. A thin vertical separator line divides color presets from temperature presets when they are on the same row.
+- **Click/tap** a preset circle to apply that color to every selected light.
+- **Hover** a preset (desktop) to temporarily highlight which lights on the canvas
+  currently have that color.
+- **Long-press** a preset (~300 ms, mobile) for the same highlight. Release to
+  clear it.
+- When every selected light shares a preset's color, that preset shows a subtle
+  active ring.
+- **Live colors** (`show_live_colors`) show the colors your lights are currently
+  using, deduplicated automatically. Very handy for syncing one room to another.
+- **Live temperatures** appear as their own group, with a thin vertical separator
+  dividing them from the color presets when they share a row.
+
+---
 
 ### Moving Lights on the Canvas
 
-Lights are **locked** by default. To reposition them:
+Lights are **locked** by default, because nothing is more annoying than dragging a
+light out of place while trying to select it. To reposition them:
 
 1. Open the card editor (pencil icon on the dashboard).
 2. Toggle **Edit Positions** in the card settings.
-3. Drag lights to their new positions on the preview — changes flow into the editor automatically; press **Save** to persist them.
+3. Drag lights around on the preview — changes flow into the editor automatically;
+   press **Save** to keep them.
 
 | Action | Desktop | Mobile |
 |--------|---------|--------|
@@ -440,7 +524,9 @@ Lights are **locked** by default. To reposition them:
 | Undo move | Ctrl+Z / Cmd+Z | — |
 | Redo move | Ctrl+Y / Cmd+Shift+Z | — |
 
-Position history stores up to 50 steps.
+Position history keeps up to 50 steps, so experiment freely.
+
+---
 
 ### Keyboard Shortcuts
 
@@ -455,29 +541,50 @@ Position history stores up to 50 steps.
 | Enter | Activate the focused light, preset or canvas element |
 | Space | Toggle the focused entity on/off, or activate a focused preset |
 
+---
+
 ### Desktop vs Mobile Differences
 
-- **Layout:** the controls have the same shape at every width — the brightness bar beside a column of three, then the power button and presets. They compress (padding, gaps, preset wrapping) as the card narrows. Overlaid controls are 420px wide wherever the card has room and shrink to fit when it does not; that follows the card's width, not the browser window's, so a tablet gets the same behaviour as a desktop.
-- **Resetting the overlaid controls:** drag them by the grip to place them by hand. That placement lasts as long as the group you are working on — **selecting a different group** hands them back to automatic placement beside it. To get them back sooner, **double-tap (or double-click) the grip**.
-- **Preset highlighting:** On desktop, hovering over a preset highlights matching lights. On mobile, you need to long-press (~300 ms) the preset.
-- **Light size:** On mobile, light circles are capped at 50 px regardless of the configured `light_size`.
-- **Floating controls:** On desktop, floating controls are centered. On mobile, they stretch edge-to-edge with padding.
-- **Multi-select modifiers** (Shift/Ctrl/Cmd) are only available on desktop.
+- **Layout:** the controls have the same shape at every width — the brightness bar
+  beside a column of three, then the power button and presets. They compress
+  (padding, gaps, preset wrapping) as the card narrows. Overlaid controls are
+  420px wide wherever the card has room and shrink to fit when it does not. That
+  follows the *card's* width, not the browser window's, so a wall tablet behaves
+  like a desktop.
+- **Resetting the overlaid controls:** drag them by the grip to place them by
+  hand. That placement lasts as long as the group you are working on —
+  **selecting a different group** hands them back to automatic placement beside
+  it. To get them back sooner, **double-tap (or double-click) the grip**.
+- **Preset highlighting:** hover on desktop, long-press (~300 ms) on mobile.
+- **Light size:** on mobile, light circles are capped at 50 px regardless of
+  `light_size`.
+- **Floating controls:** centered on desktop, edge-to-edge with padding on mobile.
+- **Multi-select modifiers** (Shift/Ctrl/Cmd) are desktop-only.
+
+---
 
 ### 💡 Tips
 
-1. Click/tap empty space on the canvas to deselect all lights.
-2. Add a **Default Entity** containing all of a room's lights to control the whole room when nothing is selected.
-3. Add **color presets** to quickly apply favorite colors with a single tap.
-4. Enable **live colors** to see and reuse colors already present in the room.
-5. Hover over a preset (or long-press on mobile) to see which lights currently have that color.
-6. Use **Ctrl+A** to quickly select all lights for batch adjustments.
-7. Right-click (or long-press on mobile with nothing selected) any light to open its full detail panel.
-8. On mobile, long-press lights one after another to build a group — each press adds one, and pressing an already-selected light changes nothing, so it is safe to repeat.
+1. Click or tap empty space on the canvas to deselect everything.
+2. Set a **Default Entity** containing all of a room's lights, and you can control
+   the whole room without selecting anything.
+3. Add **color presets** for the colors you actually use. One tap beats aiming at
+   a spectrum every time.
+4. Enable **live colors** to reuse a color that is already on in the room.
+5. Hover a preset (or long-press on mobile) to see which lights currently have it.
+6. **Ctrl+A** grabs everything, for when you want the whole place the same colour.
+7. Right-click (or long-press with nothing selected) any light for its full detail
+   panel.
+8. On mobile, long-press lights one after another to build a group. Each press
+   adds one, and pressing an already-selected light changes nothing, so it is safe
+   to repeat when you are not sure it took.
 
 ---
 
 ## 📋 All Configuration Options
+
+Everything the card understands, in one place. Most of it is also in the visual
+editor — I only reach for YAML when I want something the editor does not expose.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -537,24 +644,31 @@ Position history stores up to 50 steps.
 | `custom_css` | string | `""` | Custom CSS injected into the card's shadow DOM. |
 | `style_overrides` | map | `{}` | Per-entity inline CSS style overrides (e.g., `light.lamp: "filter: blur(2px);"`). |
 
-> ℹ️ **Label modes:** `smart` **abbreviates** the friendly name to 2–3 letters ("Kitchen Ceiling Light" — KC), disambiguating trailing numbers and direction words. Use `full` if you want the whole friendly name, and `label_overrides` for individual entities. Override individual entities with `label_overrides`.
+> ℹ️ **On label modes:** `smart` **abbreviates** the friendly name down to 2–3
+> letters ("Kitchen Ceiling Light" → KC), disambiguating trailing numbers and
+> direction words as it goes. Use `full` if you want the whole friendly name, and
+> `label_overrides` for the individual entities that need a hand.
 
 ---
 
 ## 🖌 Custom Colors & Backgrounds
 
 ### Global Colors
-Customize the default appearance of non-light entities by setting the Switch On Color, Switch Off Color, and Scene Color.
+
+Non-light entities get their own default colors: Switch On Color, Switch Off
+Color, and Scene Color.
+
 <!--```yaml
 switch_on_color: "#00ff00"
 switch_off_color: "#ff0000"
 scene_color: "#55aaff"
 ```-->
 
-
 ### Color Presets
 
-Add quick-select color circles next to the colour bars so you can apply frequently used colors with a single tap.
+Quick-select circles next to the colour bars, for the colors you keep coming back
+to.
+
 <!--```yaml
 color_presets:
   - "#ff0000"
@@ -567,7 +681,10 @@ color_presets:
 
 <br/><br/>
 
-Enable **Show Live Colors** to also display the current colors of your lights as preset circles. When hovering a preset (or long-pressing on mobile), the lights that currently have that color are highlighted on the canvas. If all controlled lights share the same color, the matching preset shows a subtle ring indicator.
+Enable **Show Live Colors** to add the colors your lights are currently showing as
+extra circles. Hover one (or long-press on mobile) and the lights wearing that
+color light up on the canvas. When everything you are controlling already shares a
+preset's color, that preset gets a subtle ring.
 
 <!--```yaml
 color_presets:
@@ -578,11 +695,12 @@ show_live_colors: true
 
 ### Individual Overrides
 
-Have a switch or some other entity that you want to have a specific color when it's on/off?
+Got a switch or some other entity that wants its own color when it's on or off?
 
 <img width="41" height="40" alt="image" src="https://github.com/user-attachments/assets/19080d4d-49a9-4f0a-9ead-47c25f61027b" />
 
-Use Color Overrides. You can provide a single color (applied when "on") or specific colors for both states. (Above is the override with #02fae9 for state_on.)
+Use Color Overrides. Give it a single color (applied when on) or one for each
+state. Above is the override with `#02fae9` for `state_on`.
 
 <!--```yaml
 color_overrides:
@@ -597,16 +715,19 @@ color_overrides:
 ```-->
 
 ### Background Image
-Add a floorplan or texture behind your lights.
+
+This is the part that makes the whole card click. Put your floor plan behind the
+lights:
+
 ```yaml
 background_image:
   url: "/local/floorplan.png"
 ```
 
-That is the whole configuration for a floor plan. The canvas measures the image
+That is the entire configuration for a floor plan. The canvas measures the image
 and adopts its aspect ratio, so the plan fills the canvas **exactly** — never
 cropped, never letterboxed, never squashed — and a light placed over the sofa on
-desktop stays over the sofa on a phone.
+your desktop is still over the sofa on your phone.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -617,7 +738,7 @@ desktop stays over the sofa on a phone.
 | `size` | — | Raw CSS `background-size`; overrides `fit` when set |
 | `position` / `repeat` / `blend_mode` / `opacity` | CSS defaults | Passed straight through |
 
-Auto-aspect steps aside as soon as you pin the geometry yourself — set
+Auto-aspect steps aside the moment you pin the geometry yourself — set
 `aspect_ratio`, or `auto_aspect: false`:
 
 ```yaml
@@ -628,20 +749,21 @@ background_image:
 canvas_height: 520
 ```
 
-`canvas_height` does **not** override auto-aspect; it is the fallback for when
+`canvas_height` does **not** override auto-aspect. It is the fallback for when
 there is no plan image, or the image fails to load. (Cards added through the UI
 used to always carry a `canvas_height`, which would have meant the fix never
 engaged for them.)
 
-> **Upgrading:** if you previously matched `aspect_ratio` to your image by hand,
-> nothing changes. If you did not, your canvas now takes the plan's ratio rather
-> than a fixed height, so the whole plan becomes visible and your light
-> positions land on the plan features their percentages always referred to —
-> under the old `cover` default the plan was cropped, so they didn't. Set
+> **Upgrading from an older version:** if you previously matched `aspect_ratio` to
+> your image by hand, nothing changes. If you did not, your canvas now takes the
+> plan's ratio rather than a fixed height, so the whole plan becomes visible and
+> your light positions land on the plan features their percentages always referred
+> to — under the old `cover` default the plan was cropped, so they didn't. Set
 > `auto_aspect: false` and `fit: cover` to keep the previous look exactly.
 
 ### Light Size
-Customize the size of light circles globally or per-entity.
+
+Size the light circles globally, or per entity.
 
 <!--```yaml
 # Global size (default is 56px)
@@ -655,9 +777,10 @@ size_overrides:
 
 ### Icon-Only Mode
 
-Display lights as icons without the filled circle background. Icons show the light's color when on and remain visible (dimmed) when off.
+Lights as bare icons, no filled circle behind them. Icons take the light's color
+when on and stay visible (dimmed) when off.
 
-Also experiment with Minimal UI.
+Worth experimenting with Minimal UI at the same time.
 
 <!--```yaml
 # Enable for all lights
@@ -670,17 +793,20 @@ icon_only_overrides:
   light.floor_lamp: false  # Keep filled circle for floor lamp
 ```-->
 
-When icon-only mode is enabled:
-- Icons are colored based on the light's state
-- A subtle border ring shows the light's color when on
-- Off lights remain visible with a dimmed appearance
-- Great for cleaner layouts or when using background images
+With icon-only mode on:
+
+- Icons are colored by the light's state
+- A subtle border ring carries the light's color when on
+- Off lights stay visible, dimmed
+- It looks great over a background image
 
 ---
 
 ## ✨ Effect Presets
 
-Add quick-apply buttons for named light effects (e.g., colorloop, fireplace, candle). Each preset shows as a labeled icon button alongside color presets.
+Quick-apply buttons for named light effects — colorloop, fireplace, candle,
+whatever your bulbs advertise. Each one shows up as a labeled icon button
+alongside the color presets.
 
 ### Basic Usage
 
@@ -704,16 +830,21 @@ effect_presets:
 
 ### Filtering Logic
 
-Effect presets are only shown when relevant. Two global settings control visibility:
+A button for an effect none of your lights support is just clutter, so presets
+only show when they are relevant. Two global settings decide:
 
-- **`effect_filter_default`** (default: `any`): When nothing is selected, show the effect if **any** canvas entity supports it.
-- **`effect_filter_selected`** (default: `all`): When lights are selected, show the effect only if **all** selected lights support it.
+- **`effect_filter_default`** (default `any`): with nothing selected, show the
+  effect if **any** canvas entity supports it.
+- **`effect_filter_selected`** (default `all`): with lights selected, show it only
+  if **all** of them support it.
 
-Each preset can override the global mode with its own `filter_default` / `filter_selected`.
+Each preset can override the global mode with its own `filter_default` /
+`filter_selected`.
 
 ### Light Restrictions
 
-Use `lights` to restrict which entities an effect applies to. This is useful when an effect is only available on certain lights:
+Use `lights` to pin an effect to specific entities. Handy when only your LED
+strips know what `colorloop` means:
 
 ```yaml
 effect_presets:
@@ -731,12 +862,15 @@ effect_presets:
     filter_selected: all
 ```
 
-- **Visibility**: A preset with a `lights` restriction is only shown when at least one restricted light is in the current pool (all entities when nothing selected, or the selected lights).
-- **Applying**: When clicked, the effect is applied to the intersection of the selected lights and the restriction. With no selection, it applies to all restricted lights.
+- **Visibility**: a restricted preset only shows when at least one of its lights is
+  in the current pool (all entities when nothing is selected, or the selection).
+- **Applying**: the effect lands on the intersection of your selection and the
+  restriction. With no selection, it applies to all the restricted lights.
 
 ### Active Indicator
 
-When all controlled lights share the same active effect, the matching preset button shows a ring indicator — the same behavior as color presets.
+When every controlled light shares the same active effect, the matching button
+gets a ring — same behaviour as the color presets.
 
 Effect presets can be configured in the visual editor's **Presets** section.
 
@@ -744,16 +878,39 @@ Effect presets can be configured in the visual editor's **Presets** section.
 
 ## 🌗 Adaptive Lighting
 
-If you run the [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting) custom integration (HACS), the card can show an extra effect-style **toggle button** that hands the selected lights to adaptive control — brightness and color temperature follow the sun — or pauses it again.
+If you run the [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting)
+integration — and if you do not, you should, it is one of the best things in HACS
+— the card can show an extra effect-style **toggle button** that hands the
+selected lights back to adaptive control, or pauses it again.
 
-**Requires the integration**: the card itself doesn't compute sun-based brightness; it drives the integration's services. Enable the button with `adaptive_lighting: true` (or the switch in the visual editor's **Presets** section, which also tells you which Adaptive Lighting switches it found). The `switch.adaptive_lighting_*` main switch is auto-detected, so that one line is all you need when you have a single Adaptive Lighting configuration.
+**It requires the integration.** The card does not compute sun-based brightness
+itself; it drives the integration's services. Turn the button on with
+`adaptive_lighting: true`, or with the switch in the visual editor's **Presets**
+section, which also tells you which Adaptive Lighting switches it found. The
+`switch.adaptive_lighting_*` main switch is auto-detected, so that one line is all
+you need if you have a single configuration.
 
-**What a press does** (to the selected lights, or all card lights when nothing is selected):
+**What a press actually does** (to the selection, or all card lights when there is
+none):
 
-- **Not adapted → enable.** Calls `adaptive_lighting.set_manual_control` with `manual_control: false` for the pressed lights that the switch manages — Adaptive Lighting marks a light "manually controlled" and stops adapting it the moment you touch its brightness or color (e.g. with this card's sliders); this un-marks them so continuous adaptation resumes. Then calls `adaptive_lighting.apply` so the current adaptive brightness/color land immediately — including on lights the switch doesn't manage, which get a one-shot adaptation.
-- **Adapted (button lit) → pause.** Calls `adaptive_lighting.set_manual_control` with `manual_control: true`, so the lights hold their current values and Adaptive Lighting leaves them alone — the same thing it does by itself when you adjust a light by hand. Press again to resume; turning a light off and on also hands it back to Adaptive Lighting.
+- **Not adapted → enable.** Calls `adaptive_lighting.set_manual_control` with
+  `manual_control: false` for the pressed lights that the switch manages. Adaptive
+  Lighting marks a light "manually controlled" and stops adapting it the moment
+  you touch its brightness or color — with this card's bars, for instance — so
+  this un-marks them and continuous adaptation resumes. Then it calls
+  `adaptive_lighting.apply` so the current adaptive brightness and color land
+  immediately, including on lights the switch does not manage, which get a
+  one-shot adaptation.
+- **Adapted (button lit) → pause.** Calls `adaptive_lighting.set_manual_control`
+  with `manual_control: true`, so the lights hold their current values and
+  Adaptive Lighting leaves them alone — exactly what it does by itself when you
+  adjust a light by hand. Press again to resume; turning a light off and on also
+  hands it back.
 
-**Lit state**: the button shows the ring indicator when every targeted light is currently under adaptive control (switch on, light managed, not marked manually controlled) — that is also when a press pauses instead of enables. Hovering (or long-pressing on touch) highlights the card lights being adapted right now.
+**Lit state**: the button shows its ring when every targeted light is currently
+under adaptive control (switch on, light managed, not marked manually controlled).
+That is also when a press pauses instead of enabling. Hovering (or long-pressing
+on touch) highlights the card lights being adapted right now.
 
 ### Configuration
 
@@ -777,15 +934,23 @@ adaptive_lighting:
   clear_manual_control: true # false = enabling is a one-shot apply that doesn't un-pause the lights
 ```
 
-**Multiple Adaptive Lighting configurations**: with several main switches and no `switch:` configured, the card picks the switch managing the most of the card's lights (read from the switch's `configuration` attribute). If none of them overlaps, the button is hidden — set `switch:` explicitly.
+**Running several Adaptive Lighting configurations?** With multiple main switches
+and no `switch:` configured, the card picks the switch managing the most of the
+card's lights, read from the switch's `configuration` attribute. If none of them
+overlaps, the button hides itself — set `switch:` explicitly in that case.
 
-The visual editor exposes the essentials under **Presets → Adaptive Lighting button** (on/off, switch, turn-on-lights); the remaining options are YAML-only.
+The visual editor exposes the essentials under **Presets → Adaptive Lighting
+button** (on/off, switch, turn-on-lights); the rest is YAML-only.
 
 ---
 
 ## 💡 Glow Effects
 
-Add beautiful, customizable glow effects behind your light entities. Glows respond to entity state — they light up when the entity is on and dim when off. Glow works with lights, switches, binary sensors, and input booleans.
+Now the fun part.
+
+Glows sit behind your light entities and respond to their state — they light up
+when the entity is on and fade when it is off. They work with lights, switches,
+binary sensors and input booleans.
 
 ### Basic Usage
 
@@ -867,11 +1032,13 @@ glow:
 
 ### Custom Shapes
 
-Define arbitrary glow shapes using polar coordinates. Each point is `[angle_degrees, radius]` where:
+For when none of the built-ins is the shape your fixture actually throws. Define
+it in polar coordinates, each point `[angle_degrees, radius]`:
+
 - **Angle**: 0° = down, 90° = right, 180° = up, 270° = left (clockwise)
 - **Radius**: 0 = center, 1 = full extent (can go up to 2)
 
-Points are cosine-interpolated for smooth curves. Minimum 3 points required.
+Points are cosine-interpolated for smooth curves. Three points minimum.
 
 ```yaml
 glow:
@@ -897,7 +1064,7 @@ glow:
 
 ### Per-Entity Glow Overrides
 
-Override glow settings per entity using `glow_overrides`. Any parameter from the glow config can be overridden:
+Any glow parameter can be overridden per entity with `glow_overrides`:
 
 ```yaml
 glow:
@@ -916,50 +1083,53 @@ glow_overrides:
     enabled: false      # Disable glow for this entity
 ```
 
-Per-entity glow overrides for shape, direction, and intensity can also be configured in the visual editor by expanding each entity's settings.
+Shape, direction and intensity can also be set per entity in the visual editor, by
+expanding that entity's settings.
 
 The editor's per-entity switch is **Disable glow** — an opt-out. Turn it on and
-that one light never projects, whatever the card is set to; leave it off and the
-light follows the card's **Light Projection** setting like every other. It never
-writes `enabled: true`, so it cannot pin a light on when projection is off card-wide.
+that one light never projects, whatever the card is set to; leave it off and it
+follows the card's **Light Projection** setting like everything else. It never
+writes `enabled: true`, so it cannot pin a light on while projection is off
+card-wide.
 
-If you do want one light lit while the rest of the card is dark, that is still
-available in YAML — `enabled: true` on that entity's override — it just isn't
+If you *do* want one light lit while the rest of the card is dark, that is still
+available in YAML — `enabled: true` on that entity's override. It just is not
 something a single checkbox can say without lying about the other two states.
 
 ### Light Diffusion (`light_field`)
 
-**`glow` and `light_field` are not two separate features**, and the editor
-presents them as one **Light Projection** section with a *Renderer* choice:
+**`glow` and `light_field` are not two separate features.** The editor presents
+them as one **Light Projection** section with a *Renderer* choice:
 
 | | says what | keys |
 |---|---|---|
 | `glow` | **what each light emits** — shape, size, direction, spread, intensity, falloff, colour | shared by both renderers |
 | `light_field` | **how that emission is composited** — renderer, blending, exposure, ambient, soft shadows, quality | diffused renderer only |
 
-Switching renderer changes nothing about your `glow` config; the diffused
-renderer reads all of it. The only two glow keys it ignores are `blur` and
-`edge_softness` (there is no field equivalent: `samples`/`source_radius` soften SHADOW edges, not a glow's own edge, so `falloff: uniform` and soft `custom` shapes still want the classic renderer),
-and the editor greys those out as *classic only*. `light_field.radius` applies
-only to lights that have no `glow` config of their own.
+Switching renderer changes nothing about your `glow` config; the diffused renderer
+reads all of it. The only two glow keys it ignores are `blur` and `edge_softness`
+(there is no field equivalent: `samples`/`source_radius` soften SHADOW edges, not a glow's own edge, so `falloff: uniform` and soft `custom` shapes still want the classic renderer),
+and the editor greys those out as *classic only*. `light_field.radius` applies only
+to lights that have no `glow` config of their own.
 
-The classic renderer gives each light its own DOM element, so where two glows
-overlap the topmost simply wins and the colours never mix — and each light's
-wall shadow is confined to its own glow box, so a wall cannot shadow a
+The **classic** renderer gives each light its own DOM element. Where two glows
+overlap, the topmost simply wins and the colours never mix — and each light's wall
+shadow is trapped inside its own glow box, so a wall cannot shadow a
 *neighbouring* light's spill.
 
-`light_field` replaces them with a single shared canvas layered over the plan.
-Every light is painted onto that one surface additively, so **overlapping lights
-merge like real light** — a red pool crossing a blue pool is genuinely magenta
-and genuinely brighter — and `glow_walls` become true occluders that **cast
-shadows**, computed as exact visibility polygons rather than approximated with a
-bitmap mask.
+**`light_field`** replaces all of that with a single shared canvas layered over the
+plan. Every light paints onto that one surface additively, so **overlapping lights
+merge like real light** — a red pool crossing a blue pool is genuinely magenta and
+genuinely brighter — and `glow_walls` become true occluders that **cast shadows**,
+computed as exact visibility polygons rather than approximated with a bitmap mask.
+
+This is the feature I forked the card for.
 
 ```yaml
 light_field: true      # shorthand for {enabled: true}
 ```
 
-That single line is enough: every light diffuses its own colour across the plan,
+That single line is enough. Every light diffuses its own colour across the plan,
 and any walls you have configured block it.
 
 ```yaml
@@ -990,20 +1160,20 @@ light_field:
 | `show_walls` | `auto` | `auto` (only while drawing), `always` (also on the live dashboard), `never` |
 | `wall_color` / `wall_width` | grey / `2` | Appearance of the drawn wall outline. Any CSS colour; empty uses a built-in grey. Editable under **Appearance -> Wall Color**, and it applies to the classic renderer too |
 
-**Choosing `over_plan`.** `normal` reads correctly on any plan and is the
-default. `screen` suits dark blueprints (it is a no-op over white). `multiply`
-suits white plans and is the most physically literal — a white floor under a red
-bulb really does look red — but it crushes a dark plan toward black.
+**Choosing `over_plan`.** `normal` reads correctly on any plan and is the default.
+`screen` suits dark blueprints (it is a no-op over white). `multiply` suits white
+plans and is the most physically literal — a white floor under a red bulb really
+does look red — but it crushes a dark plan toward black.
 
 #### Sizes: percent vs pixels
 
 `glow.width`, `glow.length` and `light_field.radius` accept **either** a plain
 number (CSS pixels) or a **percentage of the canvas** (`'26%'`).
 
-Use percentages. A pixel reach covers a different share of the plan at every
-card width, so the same config renders differently in the editor preview, on a
-phone and on a monitor — light positions and walls are already percentages, so
-only the reach was width-dependent. Measured, one config at three widths:
+Use percentages. A pixel reach covers a different share of the plan at every card
+width, so the same config renders differently in the editor preview, on a phone
+and on a monitor. Light positions and walls are already percentages — the reach
+was the one thing left that was not. Measured, one config at three widths:
 
 | | 460 px canvas | 990 px | 1360 px |
 |---|---|---|---|
@@ -1022,26 +1192,28 @@ Plain numbers still mean pixels, so nothing changes until you switch. Only
 `light_field.radius` defaults to a percentage, since it is new here and has no
 existing configs to preserve.
 
-**Existing `glow` config still applies.** When a light has `glow` enabled, the
+**Your existing `glow` config still applies.** When a light has `glow` enabled, the
 field uses its shape, size, direction, colour and falloff, so cones, beams and
-ovals all diffuse and cast shadows through the new renderer. Lights without any
-glow config diffuse as a plain round pool of `radius`.
+ovals all diffuse and cast shadows through the new renderer. Lights with no glow
+config diffuse as a plain round pool of `radius`.
 
-Two glow keys are deliberately ignored by the field: `blur` and
-`edge_softness`. Both existed to fake soft edges on a hard-edged DOM element —
-the field's shadow edges are real geometry, and softening them is what
-`samples` / `source_radius` do (a penumbra that widens with distance from the
-wall, as it should). Set `samples: 1` for crisp shadow edges.
+Two glow keys are deliberately ignored by the field: `blur` and `edge_softness`.
+Both existed to fake soft edges on a hard-edged DOM element. The field's shadow
+edges are real geometry, and softening them is what `samples` / `source_radius` do
+— a penumbra that widens with distance from the wall, as it should. Set
+`samples: 1` for crisp shadow edges.
 
-Cost is modest: 12 lights against 30 wall segments with 5-sample soft shadows
+The cost is modest: 12 lights against 30 wall segments with 5-sample soft shadows
 measures ~6.5 ms for a full solve and ~1.1 ms once the visibility polygons are
-cached (they are keyed on geometry only, so colour and brightness changes never
-re-solve). The card falls back to the classic renderer if a 2D canvas is
+cached. They are keyed on geometry only, so colour and brightness changes never
+re-solve. The card falls back to the classic renderer if a 2D canvas is
 unavailable.
 
 ### Glow Walls
 
-Glow walls are invisible line segments or boxes that block glow from expanding in certain directions — like physical walls in a room. They use 2D ray-casting to create realistic shadow masks.
+Glow walls are invisible line segments or boxes that stop glow from expanding —
+like the physical walls they represent. They use 2D ray-casting to build real
+shadow masks.
 
 **Line segment** (x1, y1 → x2, y2 in canvas percentage coordinates):
 ```yaml
@@ -1066,7 +1238,8 @@ glow_walls:
 Each adjacent pair becomes a segment, so a closed polyline of four points is a
 room. Doors apply to the whole run, not to one edge.
 
-Coordinates use the same 0–100% coordinate system as entity positions. You can mix all three forms:
+Coordinates use the same 0–100% system as entity positions, and you can mix all
+three forms freely:
 ```yaml
 glow_walls:
   - [0, 50, 40, 50]                       # Left wall segment
@@ -1074,13 +1247,13 @@ glow_walls:
   - {x: 30, y: 70, width: 40, height: 30} # Bottom room box
 ```
 
-Glow walls can also be configured in the visual editor's **Walls** section, which shows a count (e.g. "Walls (6)").
+Walls can also be drawn in the visual editor's **Walls** section, which shows a
+count (e.g. "Walls (6)") so you know at a glance whether you have any.
 
 > **Seeing your walls afterwards.** Walls are invisible on a live dashboard by
 > default — they are occluders, not decoration. Set `light_field.show_walls:
 > always` to draw them permanently. That works even with `light_field` disabled
-> (i.e. using the classic per-light glow), so you can always check the geometry
-> you drew:
+> (i.e. on the classic renderer), so you can always check the geometry you drew:
 > ```yaml
 > light_field:
 >   show_walls: always
@@ -1088,8 +1261,8 @@ Glow walls can also be configured in the visual editor's **Walls** section, whic
 
 #### Doors — walls that open
 
-Give a wall an `entity` and it only blocks light in one state, so an open door
-lets light spill into the next room:
+This is my favourite one. Give a wall an `entity` and it only blocks light in one
+state, so an open door genuinely spills light into the next room:
 
 ```yaml
 glow_walls:
@@ -1111,75 +1284,74 @@ A wall with no `entity` is permanent, as before.
 | `switch`, `input_boolean`, `light` | state is `on` |
 | `cover` | state is `open` or `opening`, or `current_position > 0` |
 
-So `blocks_when: closed` (the default) means the wall blocks light when the
-door is shut — which is what you almost always want, and is why the default
-isn't simply "blocks when off".
+So `blocks_when: closed` (the default) means the wall blocks light when the door is
+shut — which is what you almost always want, and is why the default is not simply
+"blocks when off".
 
 An **unavailable, unknown or missing** entity blocks. A wall is the safe
-assumption: a plan that silently springs a hole because a sensor dropped off
-the network is worse than one that stays solid.
+assumption: a plan that silently springs a hole because a sensor dropped off the
+network is worse than one that stays solid.
 
-Doors work on boxes and polylines too — the entity applies to every side. And
-in the wall editor an open door is drawn as a dashed line, so you can see the
-geometry without mistaking it for something that blocks.
+Doors work on boxes and polylines too — the entity applies to every side. And in
+the wall editor, an open door is drawn as a dashed line, so you can see the
+geometry without mistaking it for something solid.
 
-The quickest way to make a door is inside the wall editor itself: **tap the
-wall** and the inspector below the plan shows *It's a door*, an entity picker
-and a *blocks when* selector, plus the live verdict. The selected wall is
-highlighted in gold, so on a plan with dozens of walls you can see exactly
-which one you're editing &mdash; far easier than finding it in a list.
+The quickest way to make a door is inside the wall editor itself: **tap the wall**
+and the inspector below the plan gives you *It's a door*, an entity picker, a
+*blocks when* selector and the live verdict. The selected wall is highlighted in
+gold, so on a plan with dozens of walls you can see exactly which one you are
+editing &mdash; far easier than hunting for it in a list.
 
-The editor form's per-wall panel has the same **Door sensor** picker and
-**Blocks when** selector, and tells you the current verdict — *"Currently off — blocking
-light."* — so you can check the wiring without leaving the dialog.
-
+The editor form's per-wall panel has the same **Door sensor** picker and **Blocks
+when** selector, and tells you the current verdict — *"Currently off — blocking
+light."* — so you can check your wiring without leaving the dialog.
 
 ---
 
 ## 🧭 Rotating the Plan
 
-**Positions → Rotate plan** turns the whole layout a quarter at a time, so you
-can try your floor plan the other way round without re-placing anything.
-Lights, zones, walls, the plan image and the direction each light throws its
-light all turn together.
+**Positions → Rotate plan** turns the whole layout a quarter at a time, so you can
+try your floor plan the other way round without re-placing a single thing. Lights,
+zones, walls, the plan image and the direction each light throws its light all
+turn together.
 
 It is a **view** setting, not a rewrite. Everything you placed — `positions`,
-`canvas_elements`, `glow_walls`, `aspect_ratio` — stays exactly as you authored
-it, and the card applies the turn when it paints. So going back to 0° restores
-your layout precisely, and no arithmetic slip can scramble work you placed by
-hand.
+`canvas_elements`, `glow_walls`, `aspect_ratio` — stays exactly as you authored it,
+and the card applies the turn when it paints. Going back to 0° restores your layout
+precisely, and no arithmetic slip can scramble work you placed by hand.
 
 ```yaml
 plan_rotation: 90     # 0 | 90 | 180 | 270, clockwise. Default 0.
 ```
 
-Two things change shape, unavoidably, on a quarter turn:
+Two things change shape on a quarter turn, unavoidably:
 
-- **The card.** A wide plan becomes a tall one. In a fixed-width dashboard
-  column a 2:1 plan gets roughly four times taller, and the editor preview
-  will need scrolling — the full-size editor (below) is the comfortable way to
-  work while rotated.
+- **The card.** A wide plan becomes a tall one. In a fixed-width dashboard column a
+  2:1 plan gets roughly four times taller, and the editor preview will need
+  scrolling — the full-size editor (below) is the comfortable way to work while
+  rotated.
 - **Nothing else.** Percent glow sizes are rescaled so a light still covers the
   same part of the room; plain pixel sizes are left alone, because a pixel is a
   pixel.
 
-The turn needs a ratio to turn: your plan image supplies one automatically. If
-you have no background image (or `auto_aspect: false`), set `aspect_ratio` to
-the plan's unrotated `W:H` and every orientation lines up — the card logs a
-warning naming this if it is missing.
+The turn needs a ratio to turn, and your plan image supplies one automatically. If
+you have no background image (or `auto_aspect: false`), set `aspect_ratio` to the
+plan's unrotated `W:H` and every orientation lines up. The card logs a warning
+naming this if it is missing.
 
-Icons keep their own upright orientation — `icon_rotation` is not touched, the
-same way map labels stay level when you turn a map.
-
+Icons keep their own upright orientation — `icon_rotation` is not touched, the same
+way map labels stay level when you turn a map.
 
 ---
 
 ## 🖼 The Full-Size Editor
 
-Both wall drawing and light placement happen in the same modal, which
-opens at nearly the full viewport. The card editor gives its preview a
-narrow column, and tracing a floor plan or nudging a light in a 250px-wide
-pane is miserable; this is the comfortable way to do either.
+Wall drawing and light placement happen in the same modal, and it opens at nearly
+the full viewport.
+
+The card editor gives its preview a narrow column, and tracing a floor plan or
+nudging a light in a 250px-wide pane is genuinely miserable. This is the
+comfortable way to do either.
 
 Open it from the card editor, from either end:
 
@@ -1187,27 +1359,26 @@ Open it from the card editor, from either end:
 - **Positions → Place lights on the plan → Open editor**
 
 A **Walls / Lights** switch in its header moves between the two modes without
-closing it. **Done** (or a second `Esc`) closes it and keeps your work;
-**Cancel** closes it and puts the plan back exactly as it was when you opened
-the editor — every wall drawn, moved or deleted, and every light placed, in
-both modes.
+closing it. **Done** (or a second `Esc`) closes it and keeps your work; **Cancel**
+closes it and puts the plan back exactly as it was when you opened the editor —
+every wall drawn, moved or deleted, and every light placed, in both modes.
 
-**Zoom in to place things precisely.** Scroll (or pinch) to zoom on the point
-under the pointer, `Ctrl`/`⌘`-drag or middle-drag to pan, and the — / % / +
-buttons in the header do the same — click the percentage to fit the plan again.
-Every gesture works the same zoomed in, so a light can be nudged a fraction of
-a percent rather than a whole one.
+**Zoom in to place things precisely.** Scroll (or pinch) to zoom on the point under
+the pointer, `Ctrl`/`⌘`-drag or middle-drag to pan, and the — / % / + buttons in
+the header do the same. Click the percentage to fit the plan again. Every gesture
+works the same zoomed in, so a light can be nudged a fraction of a percent rather
+than a whole one.
 
-It sizes itself to your plan: at most 95% of the viewport in either
-direction, as tall as will fit, and only as wide as the plan's own shape
-needs — so a portrait plan gets a portrait editor rather than a narrow strip
-in the middle of a wide empty one.
+It sizes itself to your plan: at most 95% of the viewport in either direction, as
+tall as will fit, and only as wide as the plan's own shape needs — so a portrait
+plan gets a portrait editor rather than a narrow strip in the middle of a wide
+empty one.
 
 ### Drawing walls
 
-Typing four numbers per wall is a poor way to lay out a floor plan, so the
-editor gives you a real drawing surface. The **Walls** section shows a count,
-e.g. "Walls (6)", so you can tell at a glance whether you have any.
+Typing four numbers per wall is a terrible way to lay out a floor plan, so the
+editor gives you a real drawing surface. The **Walls** section shows a count, e.g.
+"Walls (6)".
 
 | Gesture | Result |
 |---------|--------|
@@ -1221,42 +1392,39 @@ e.g. "Walls (6)", so you can tell at a glance whether you have any.
 | Hold `Alt` | Ignore snapping |
 | `Ctrl`/`Cmd` + `Z` | Undo the last wall edit |
 
-Plain dragging always **draws**; `Shift` is what modifies existing geometry.
-That way running a new wall out of a corner — the thing you do dozens of times
-while tracing a plan — needs no modifier, and does not nudge the corner it
-attaches to. Adjusting a corner is the occasional action, so it takes the key.
+Plain dragging always **draws**; `Shift` is what modifies existing geometry. That
+way, running a new wall out of a corner — the thing you do dozens of times while
+tracing a plan — needs no modifier, and does not nudge the corner it attaches to.
+Adjusting a corner is the occasional action, so it takes the key.
 
-Snapping is **on** while drawing — endpoint-to-endpoint first, then 45° angles,
-then the grid. That polarity is deliberately the opposite of dragging lights
-(where `Alt` *enables* snap): an unclosed corner is invisible while you draw it
-and obvious later, when light leaks through the gap.
+Snapping is **on** while drawing: endpoint-to-endpoint first, then 45° angles, then
+the grid. That is deliberately the opposite polarity to dragging lights, where
+`Alt` *enables* snap. An unclosed corner is invisible while you draw it and
+extremely obvious later, when light leaks through the gap.
 
-Walls you draw are written back to `glow_walls` as ordinary line segments, so
-they stay editable as YAML. A `box` you drag an edge of is expanded into its four
+Walls you draw are written back to `glow_walls` as ordinary line segments, so they
+stay editable as YAML. A `box` you drag an edge of is expanded into its four
 segments at that point, since its sides can then move independently.
-
----
-
 
 ### Placing lights
 
-The same full-size editor also places lights: **Positions → Open editor**, or
-switch to **Lights** in its header. Drag a light to move it, tap one to see
-which entity it is, hold `Alt` to ignore the grid. Walls stay visible as
-reference, because placing a light means placing it relative to a room.
+The same editor places lights: **Positions → Open editor**, or switch to **Lights**
+in its header. Drag a light to move it, tap one to see which entity it is, hold
+`Alt` to ignore the grid. Walls stay visible as reference, because placing a light
+means placing it relative to a room.
 
-Selecting a light in the editor's **Entities** list also highlights it on the
-plan in gold — on a plan with twenty lights, a list row tells you nothing about
-where it is.
-
+Selecting a light in the editor's **Entities** list also highlights it on the plan
+in gold. On a plan with twenty lights, a list row tells you nothing about where it
+actually is.
 
 ---
 
 ## Canvas Elements
 
-Place non-entity elements on the canvas alongside your lights. Useful for navigation links, sensor readouts, or custom labels.
+Non-entity elements you can drop on the canvas alongside your lights. Useful for
+navigation links, sensor readouts, or plain room labels.
 
-Three element types are supported:
+Three types:
 
 | Type | Description |
 |------|-------------|
@@ -1266,11 +1434,11 @@ Three element types are supported:
 
 ### Element Properties
 
-Every element also accepts an optional `id`. One is generated (`canvas_el_0`, ...) if
-you leave it out, but setting your own keeps a stable handle for the element when
-you reorder the list — which is what the drag-to-reposition editing writes back to.
+Every element also takes an optional `id`. One is generated (`canvas_el_0`, ...) if
+you leave it out, but setting your own keeps a stable handle when you reorder the
+list — which is what drag-to-reposition writes back to.
 
-All element types share these properties:
+All three types share these:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -1285,9 +1453,12 @@ All element types share these properties:
 
 **Link** elements also accept `icon` (default `"mdi:link"`) and `size` (default `40`).
 
-**Sensor** elements also accept `entity` (required), `prefix`, `suffix` (default: entity's `unit_of_measurement`), `show_icon` (default `true`), and `icon` (default: entity's icon).
+**Sensor** elements also accept `entity` (required), `prefix`, `suffix` (default:
+entity's `unit_of_measurement`), `show_icon` (default `true`), and `icon` (default:
+entity's icon).
 
-**Template** elements also accept `content` — a Jinja template string, re-rendered live whenever its inputs change — and `icon`:
+**Template** elements also accept `content` — a Jinja template string, re-rendered
+live whenever its inputs change — and `icon`:
 
 ```yaml
 - type: template
@@ -1298,7 +1469,7 @@ All element types share these properties:
 
 ### Actions
 
-Actions follow the standard Home Assistant format:
+Standard Home Assistant action format:
 
 | Action | Description |
 |--------|-------------|
@@ -1332,7 +1503,8 @@ canvas_elements:
       opacity: 0.6
 ```
 
-Canvas elements can be configured in the visual editor's **Canvas Elements** section.
+Canvas elements can be configured in the visual editor's **Canvas Elements**
+section.
 
 ---
 
@@ -1340,7 +1512,8 @@ Canvas elements can be configured in the visual editor's **Canvas Elements** sec
 
 ### Global Custom CSS
 
-Inject arbitrary CSS into the card's shadow DOM for full control over the card's appearance:
+Inject arbitrary CSS into the card's shadow DOM, for when you want something the
+options do not cover:
 
 ```yaml
 custom_css: |
@@ -1354,7 +1527,7 @@ custom_css: |
 
 ### Per-Entity Style Overrides
 
-Apply inline CSS to individual entity containers:
+Inline CSS on individual entity containers:
 
 ```yaml
 style_overrides:
@@ -1362,7 +1535,8 @@ style_overrides:
   light.ceiling: "opacity: 0.8; transform: scale(1.2);"
 ```
 
-Both can be configured in the visual editor — global CSS in the **Custom CSS** section, and per-entity styles in each entity's expanded settings panel.
+Both live in the visual editor too — global CSS in the **Custom CSS** section, and
+per-entity styles in each entity's expanded settings panel.
 
 ---
 
@@ -1373,23 +1547,32 @@ Both can be configured in the visual editor — global CSS in the **Custom CSS**
 controls_below: true
 always_show_controls: true
 ```-->
-- Controls remain visible below the layout for quick access.
-- Ideal when you never want controls to cover the floor plan.
+- Controls stay visible below the layout, always within reach.
+- What you want when the floor plan should never be covered.
 
 ### Floating Controls
 <!--```yaml
 controls_below: false
 ```-->
 - Controls appear over the canvas when lights are selected.
-- Minimal overlay that hides automatically when nothing is selected.
+- A minimal overlay that disappears when nothing is selected.
 
 ---
 
 ## 🎭 Theming
 
-By default (`theme_mode: auto`) the card follows your dashboard's Home Assistant theme: card background, text and accent colors, dividers, and corner radius all come from the theme — including translucent "glass" themes, where the canvas stays transparent so the blurred card background shows through. Use `theme_mode: dark` to keep the card's original fixed dark look regardless of theme, or `theme_mode: light` for a fixed light palette.
+By default (`theme_mode: auto`) the card follows your dashboard's Home Assistant
+theme: card background, text and accent colors, dividers and corner radius all come
+from it — including translucent "glass" themes, where the canvas stays transparent
+so the blurred card background shows through.
 
-Everything can be fine-tuned under `theme:` (also available in the visual editor's **Appearance** section, which additionally carries **Wall Color** and **Wall Thickness** — those two live under `light_field:`, not `theme:`, because the card reads them there):
+Use `theme_mode: dark` to keep the card's original fixed dark look regardless of
+your theme, or `theme_mode: light` for a fixed light palette.
+
+Everything can be fine-tuned under `theme:`, which is also in the visual editor's
+**Appearance** section. That section additionally carries **Wall Color** and **Wall
+Thickness** — those two live under `light_field:`, not `theme:`, because that is
+where the card reads them.
 
 ```yaml
 theme_mode: auto
@@ -1410,37 +1593,44 @@ theme:
   glass_blur: 18                 # px, default 16
 ```
 
-All color values accept any CSS color. Every key is optional — leave one out to inherit it from the active theme. For a "Liquid Glass" look on a glass-themed dashboard, `theme_mode: auto` plus `theme: { glass: true }` is usually all you need.
+Every color value takes any CSS color, and every key is optional — leave one out
+and it inherits from the active theme. For a "Liquid Glass" look on a glass-themed
+dashboard, `theme_mode: auto` plus `theme: { glass: true }` is usually all you
+need.
 
 ---
 
 ## Troubleshooting
 
 ### Controls not showing?
+
 - Select at least one light.
 - Or enable Always Show Controls.
-- Or configure the Default Entity to control something when nothing is selected.
+- Or configure a Default Entity, so there is always something to control.
 
 ### Lights not visible on load?
-- Reload the dashboard after updating the card.
+
+- Reload the dashboard after updating the card. Browsers are stubborn about cached
+  JavaScript.
 
 ### Labels hard to read over the light?
 
-They shouldn't be — light is always painted behind the names and icons, and
-labels carry an opaque backing so nothing can bleed through them. If you have
-deliberately set a translucent `theme.label_background`, that choice is
-honoured as-is, so the light *will* show through it; remove it (or give it a
-solid colour) to get the opaque backing back.
+They should not be — light is always painted *behind* the names and icons, and
+labels carry an opaque backing so nothing can bleed through.
+
+If you have deliberately set a translucent `theme.label_background`, that choice is
+honoured as-is, so the light **will** show through it. Remove it, or give it a
+solid colour, to get the opaque backing back.
 
 ### Floor plan looks blurry or soft?
 
-Almost always the source image is being **upscaled**. The card is as wide as its
+Almost always, the source image is being **upscaled**. The card is as wide as its
 dashboard column, and on a 2x display a full-width card renders a plan at
-2000-3000 device pixels across — a 1000px-wide source has to be stretched to
-fill that, and no CSS setting can invent the missing detail.
+2000–3000 device pixels across. A 1000px-wide source has to be stretched to fill
+that, and no CSS setting can invent detail that was never there.
 
-Open the browser console: the card measures your plan and tells you the exact
-width you need, e.g.
+Open the browser console — the card measures your plan and tells you exactly what
+it needs:
 
 ```
 [spatial-lights-card] Plan image is being upscaled 4.1x and will look soft:
@@ -1450,52 +1640,76 @@ source is 400x250, but this card renders it at 1640px wide
 
 What to do, in order of how much it helps:
 
-1. **Use a bigger source.** Export the plan at the width the warning names, or
-   wider. An SVG floor plan is better still — it is resolution-independent and
-   stays sharp at any card width.
-2. **Check what Home Assistant is actually serving.** A URL like
-   `/api/image/serve/<id>/512x512` is a *downscaled variant* — HA generates
-   several sizes on upload and that path pins you to a small one. Put the
-   full-resolution file in `config/www/` and reference it as `/local/plan.png`
-   instead.
-3. **For line art, turn off smoothing:**
-   ```yaml
-   background_image:
-     url: /local/plan.png
-     rendering: crisp-edges   # or: pixelated
-   ```
-   This keeps edges hard rather than interpolated. It sharpens line drawings and
-   hurts photographs, so it is not the default.
-4. **Make the card narrower** (fewer grid columns), so less upscaling is needed.
+#### 1: Use a bigger source
 
-JPEG artifacts are a separate matter — if the plan was saved as a low-quality
-JPEG, re-export it as PNG or SVG.
+Export the plan at the width the warning names, or wider. An SVG floor plan is
+better still — it is resolution-independent and stays sharp at any card width.
+
+#### 2: Check what Home Assistant is actually serving
+
+A URL like `/api/image/serve/<id>/512x512` is a *downscaled variant*. HA generates
+several sizes on upload, and that path pins you to a small one. Put the
+full-resolution file in `config/www/` and reference it as `/local/plan.png`
+instead.
+
+#### 3: For line art, turn off smoothing
+
+```yaml
+background_image:
+  url: /local/plan.png
+  rendering: crisp-edges   # or: pixelated
+```
+
+This keeps edges hard rather than interpolated. It sharpens line drawings and hurts
+photographs, which is why it is not the default.
+
+#### 4: Make the card narrower
+
+Fewer grid columns means less upscaling needed.
+
+JPEG artifacts are a separate matter. If the plan was saved as a low-quality JPEG,
+re-export it as PNG or SVG.
 
 ### Other issues?
-- [Submit the issue on GitHub](https://github.com/Mihonarium/hass-spatial-lights-card/issues/new).
+
+- [Open an issue on this fork](https://github.com/maxi1134/hass-spatial-lights-card/issues/new)
+  for anything involving the features listed under
+  [What this fork adds](#what-this-fork-adds).
+- [Open one upstream](https://github.com/Mihonarium/hass-spatial-lights-card/issues/new)
+  if it reproduces on the original card too.
 
 ---
 
 ## About the design
-The design was somewhat inspired by the Philips Hue light controls, and thinking hard about how to improve over it. I liked about the Philips Hue app the ability to easily grab many lights and make them arbitrary colors, including multiple lights at the same time; and make many lights the same color. However, picking the specific light was still fairly difficult if you have a lot of lights.
 
-This card solves all of the problems: identifying lights by their position in the physical space is much easier than identifying them by their position on the colour bars or finding them by name.
+The original card was inspired by the Philips Hue light controls, and by thinking
+hard about how to improve on them. What the Hue app gets right is letting you grab
+a bunch of lights and set them all to the same arbitrary colour. What it gets wrong
+is picking the specific light in the first place, once you have a lot of them.
 
-This allows very fast and easy setting of arbitrary groups of lights to specific color/temperature/brightness; there’s a mode that shows existing colors and presets to easily sync arbitrary lights to the same color.
+Identifying a light by where it is in the room is simply easier than identifying it
+by name in a list, or by its position in a group you defined months ago. That is
+the whole idea, and it holds up.
 
-Its current state is an enormous improvement over the default ways to have smart home dashboards, which usually have 1D lists with individual controls for each light (and each pre-defined light group) which either take space or need to be opened and are also hard to find if you have a lot of lights.
+It beats the usual smart-home dashboard, which is a 1D list with individual
+controls for each light and each pre-defined group — either eating the whole
+screen, or hidden behind a tap and impossible to find once you have dozens of
+devices.
 
-The card allows placing lights and other entities on a 2D canvas to easily control arbitrary lights/groups of lights (that's always a nightmare once you have dozens of devices).
+What I added on top is the other half of the same idea. If the plan is how you find
+a light, then the plan should also show you what that light is *doing*. So the
+light lands on the floor, it mixes with the light next to it, walls stop it, and an
+open door lets it through.
 
-Lights can be placed corresponding to their physical location and can be selected in arbitrary groups by dragging a selection box over them.
+The card also handles switches (single or double tap, your choice) and binary
+sensors (on/off states in whatever colours you like), plus color presets and a
+live-color mode for syncing arbitrary lights to a colour already in the room.
 
-The card also supports switches (they can be toggled by a double or a single tap, depending on a setting) and binary sensors (it can display on/off states with arbitrary colors).
-
-It also has color presets (for quickly setting lights to a specific color) and a live color mode (for quickly setting lights to a color that some lights in the card already have).
-
-This card made turning dozens of lights to nice colors in arbitrary ways much easier.
+Turning dozens of lights nice colours in arbitrary ways is now the easy part of my
+evening.
 
 ## ToDo
+
 - [ ] Think about adding arbitrary templates/HTML
 - [x] Color effects (not just colors) among presets (with icons?)
 - [ ] Add a setting for toggling lights with a single tap
@@ -1503,4 +1717,3 @@ This card made turning dozens of lights to nice colors in arbitrary ways much ea
 - [ ] Think about a way to toggle groups of lights/the default entity?
 - [ ] Possibly remove the global wall occlusion and do local walls for specific lights instead
 - [ ] A mode to avoid accidental clicks on all lights? (e.g., requiring confirmation or long tap to open the wheel to set anything)
-
