@@ -49,6 +49,18 @@ function stub(W, H, pw, ph) {
     _config: { positions: {}, size_overrides: {}, light_size: 40, default_entity: null },
     _loadFloatingPos: () => null,
     _applyFloatingPos() {},
+    // Nothing hand-placed to retire: this suite is about the TRACKING path,
+    // where the shipped predicate returns false on its first line anyway
+    // (`_loadFloatingPos()` is null above). The retire itself is measured in
+    // the browser, in controls-place.html#groupRetire, where a real drag can
+    // stamp a real group.
+    _dropStaleFloatingPos: () => false,
+    // The fit runs before placement and is the one thing that changes the
+    // panel's SIZE -- which this suite supplies directly (`pw`/`ph`) so it can
+    // flap the height on purpose. Stubbed out for that reason, not because it
+    // is uninteresting: its own convergence is measured in the browser, in
+    // caps-bars.html#fitStable, where a real box can be re-measured.
+    _fitFloatingControls: () => {},
     _toScreenPct: (x, y) => ({ x, y }),          // identity: rotation is covered by rot-math
     _planRotation: () => 0,
     _lightScreenRadius: () => 20,

@@ -175,10 +175,17 @@ window.gripGesture=async function(dx,dy){
   gpev(g,'pointerup',x+dx,y+dy);
   await tick(260);
   const after=window.probe().panel;
+  const storedAfterDrag=storedCount();
+  // Ticks on the SAME group: a drop is a nudge for the lights in hand and must
+  // survive every one of them.
+  for(let i=0;i<3;i++){ card.updateLights(); await tick(110); }
+  const sameGroup=window.probe().panel;
   await window.select(['light.garage']);
   const reselected=window.probe().panel;
-  return {before, after, reselected, stored:storedCount(),
+  return {before, after, sameGroup, reselected,
+    storedAfterDrag, stored:storedCount(),
     moved: before.join()!==after.join(),
+    heldForItsGroup: after.join()===sameGroup.join(),
     stillTracks: after.join()!==reselected.join()};
 };
 
@@ -187,8 +194,12 @@ window.tapVsDrag=async function(){
   const twitch=await window.gripGesture(2,1);
   const drag=await window.gripGesture(72,48);
   return {twitch, drag,
-    pass: !twitch.moved && twitch.stored===0 && twitch.stillTracks
-       && drag.moved && drag.stored===1 && !drag.stillTracks};
+    // A real drag PINS (storedAfterDrag === 1) and holds through every state
+    // tick on the group it was made for -- and is then retired by a DIFFERENT
+    // group, which is what `stillTracks` reads now. A twitch does none of it.
+    pass: !twitch.moved && twitch.storedAfterDrag===0 && twitch.stillTracks
+       && drag.moved && drag.storedAfterDrag===1 && drag.heldForItsGroup
+       && drag.stillTracks && drag.stored===0};
 };
 
 // ---------------------------------------------------------------------------
@@ -307,7 +318,9 @@ window.touchReset=async function(){
   gpev(g,'pointerup',x+72,y+48,77);
   await tick(250);
   const pinned=window.probe().panel;
-  await window.select(['light.garage']);
+  // On the SAME group, which is where a pin now lives. A different group would
+  // retire it and leave the reset below with nothing to clear.
+  for(let i=0;i<3;i++){ card.updateLights(); await tick(110); }
   const stayed=window.probe().panel;
   const storedBefore=storedCount();
   // two taps inside the 350ms window -- NO dblclick event is dispatched
@@ -346,7 +359,10 @@ window.abortMidDrag=async function(){
   await tick(200);
   const latched=el.classList.contains('dragging');
   const a=window.probe().panel;
-  await window.select(['light.garage']); const z=window.probe().panel;
+  // Measured on the SAME group: the commit is what is under test here, and a
+  // different group would retire the committed position before it is counted.
+  for(let i=0;i<3;i++){ card.updateLights(); await tick(110); }
+  const z=window.probe().panel;
   const stored=storedCount();
   // The abort COMMITS the drop, matching _cancelActiveInteractions' own
   // convention (it commits a pending slider value so an interrupted gesture
@@ -445,7 +461,8 @@ window.positionMove=async function(){
   return {before, after, panelFollowed: before.join()!==after.join()};
 };
 
-// A hand-placed panel must win over any automatic placement.
+// A hand-placed panel must win over any automatic placement FOR THE GROUP IT
+// WAS PLACED FOR -- and hand placement back to the tracker for any other.
 window.handPlaced=async function(){
   await window.mount();
   await window.select(['light.kitchen']);
@@ -455,10 +472,111 @@ window.handPlaced=async function(){
   card._applyFloatingPos();
   await tick(200);
   const placed=window.probe().panel;
+  for(let i=0;i<3;i++){ card.updateLights(); await tick(110); }
+  const sameGroup=window.probe().panel;
   await window.select(['light.garage']);   // selection moves to the far corner
   const afterReselect=window.probe().panel;
-  return {auto, placed, afterReselect,
-    handPlacedWins: placed.join()===afterReselect.join()};
+  return {auto, placed, sameGroup, afterReselect, stored:storedCount(),
+    handPlacedWins: placed.join()===sameGroup.join(),
+    retiredForANewGroup: placed.join()!==afterReselect.join(),
+    storageCleared: storedCount()===0,
+    pass: placed.join()===sameGroup.join() && placed.join()!==afterReselect.join()
+      && storedCount()===0};
+};
+
+// ---------------------------------------------------------------------------
+// THE GROUP STAMP. A drag is a nudge WITHIN a group, so its position lives
+// exactly as long as that group is the one selected. Everything that is not a
+// different group -- a state tick, a deselect, a resize -- must leave it alone.
+// ---------------------------------------------------------------------------
+function dragGrip(id){
+  const g=gripEl(), b=g.getBoundingClientRect();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,id);
+  for(let i=1;i<=6;i++) gpev(g,'pointermove',x+i*11,y+i*7,id);
+  gpev(g,'pointerup',x+66,y+42,id);
+}
+const stamp=()=>{const v=card._loadFloatingPos();return v?v.sel:null;};
+
+window.groupRetire=async function(){
+  const out={};
+
+  // --- a DIFFERENT group retires it, and the tracker takes over in that pass
+  await window.mount(); await window.select(['light.kitchen']);
+  dragGrip(101); await tick(260);
+  out.dropped=window.probe(); out.droppedStored=storedCount(); out.stamp=stamp();
+  await window.select(['light.garage']);
+  out.newGroup=window.probe(); out.newGroupStored=storedCount();
+
+  // --- GROWING the selection is a new group: it has different geometry
+  await window.mount(); await window.select(['light.kitchen']);
+  dragGrip(103); await tick(260);
+  const g0=window.probe().panel;
+  await window.select(['light.kitchen','light.garage']);
+  out.grown={before:g0, after:window.probe().panel,
+    retired:g0.join()!==window.probe().panel.join(), stored:storedCount()};
+
+  // --- a DESELECT is not choosing a different group
+  await window.mount(); await window.select(['light.kitchen']);
+  dragGrip(104); await tick(260);
+  const d0=window.probe().panel;
+  await window.select([]);                const d1=window.probe().panel;
+  await window.select(['light.kitchen']); const d2=window.probe().panel;
+  await window.select(['light.garage']);  const d3=window.probe().panel;
+  out.deselect={dropped:d0, empty:d1, sameAgain:d2, other:d3,
+    keptWhileEmpty:d0.join()===d1.join(),
+    keptOnReselect:d0.join()===d2.join(),
+    retiredOnOther:d0.join()!==d3.join()};
+
+  // --- a RESIZE is not a different group either: the stamp is geometry-free
+  await window.mount(); await window.select(['light.kitchen']);
+  dragGrip(105); await tick(260);
+  const fx=(card._loadFloatingPos()||{}).fx;
+  document.getElementById('host').style.width='900px';
+  await tick(450);
+  out.resize={fx:Math.round(fx*1000)/1000, stored:storedCount(), stamp:stamp(),
+    classes:[...panelEl().classList].filter(c=>['dragged','auto-placed'].includes(c))};
+  document.getElementById('host').style.width='640px';
+  await tick(250);
+
+  out.pass = out.droppedStored===1 && out.stamp==='light.kitchen'
+    && out.newGroupStored===0 && !out.newGroup.coversSelection
+    && out.newGroup.classes.split(' ').indexOf('auto-placed')>=0
+    && out.newGroup.classes.split(' ').indexOf('dragged')<0
+    && out.grown.retired && out.grown.stored===0
+    && out.deselect.keptWhileEmpty && out.deselect.keptOnReselect
+    && out.deselect.retiredOnOther
+    && out.resize.stored===1 && out.resize.classes.join()==='dragged';
+  return out;
+};
+
+// A selection change landing MID-DRAG must not retire the position the finger
+// is still placing: the drop that stamps it has not happened yet.
+window.retireMidDrag=async function(){
+  await window.mount(); await window.select(['light.kitchen']);
+  dragGrip(106); await tick(260);
+  const pinned=window.probe().panel;
+  const g=gripEl();
+  try{g.setPointerCapture=()=>{};g.releasePointerCapture=()=>{};}catch(_){}
+  const b=g.getBoundingClientRect(), x=b.left+b.width/2, y=b.top+b.height/2;
+  gpev(g,'pointerdown',x,y,107);
+  for(let i=1;i<=4;i++) gpev(g,'pointermove',x-i*9,y-i*6,107);
+  const grabbed=window.probe().panel;
+  card._selectedLights=new Set(['light.garage']); card.updateLights();
+  await tick(140);
+  const mid=window.probe().panel;
+  gpev(g,'pointermove',x-54,y-36,107);
+  gpev(g,'pointerup',x-54,y-36,107);
+  await tick(280);
+  const dropped=window.probe().panel;
+  return {pinned, grabbed, mid, dropped, stored:storedCount(), stamp:stamp(),
+    followedTheFinger: grabbed.join()!==pinned.join(),
+    tickDidNotSteal: mid.join()===grabbed.join(),
+    // the drop belongs to whatever was selected when the finger lifted
+    dropKept: storedCount()===1 && stamp()==='light.garage',
+    pass: grabbed.join()!==pinned.join() && mid.join()===grabbed.join()
+      && storedCount()===1 && stamp()==='light.garage'};
 };
 </script>
 <script>document.write('<script src="../hass-spatial-lights-card.js?v='+Date.now()+'"><\/script>');</script>
