@@ -167,10 +167,35 @@ pointer) nothing was ever committed: one point crept along behind the cursor. Me
 over an 1880px perimeter: **2 points out of 940 moves**. The live tip is now drawn and tested without
 being committed, so the outline still reaches the finger. Same sweep after: 352 points.
 
-`pointInPolygon` is even-odd ray-casting on the half-open interval, and the polygon is implicitly
-CLOSED -- the drawn path closes itself with `Z` from the first move, so what is tested is what is on
-screen. The closing edge is the one nobody draws and the one that decides the lights near the start of
-the sweep; leaving it implied-but-invisible would be the worst of both.
+**`pointInPolygon` is a WINDING NUMBER, not even-odd parity, and that difference is the whole of
+"going back inside must not unselect".** A hand-drawn lasso crosses itself constantly: you re-enter
+the region you have already enclosed, loop, and leave. Even-odd counts that pocket as enclosed TWICE
+and therefore outside, so it punched a hole in the middle of the selection and dropped whatever stood
+in it. Reported with a screenshot and reproduced exactly -- 8 of 9 lights, the centre one missing --
+before anything was changed. Winding counts DIRECTION instead of crossings, so a second lap adds to
+the first rather than cancelling it. Dan Sunday's `wn_PnPoly`; the half-open `<=`/`>` comparison is
+what stops a vertex being counted twice.
+
+**The convex hull would also have closed the hole, and would have been wrong.** "Outermost limits"
+taken literally fills every concavity, and the U-shaped lasso -- the one case that distinguishes this
+feature from a wider rectangle -- would have become a filled rectangle. `concave` and `reentrant` are
+therefore asserted TOGETHER: the fix has to close the pocket while still excluding the notch, and
+either one alone is passable by a wrong implementation.
+
+`fill-rule: nonzero` on the painted fill is the same rule, and not a coincidence -- the painted region
+and the tested region have to be the same region, or the outline stops being a promise about what you
+are selecting. The polygon is implicitly CLOSED -- the drawn path closes itself with `Z` from the
+first move -- so the closing edge, the one nobody draws and the one that decides the lights near the
+start of the sweep, is tested exactly as it is shown.
+
+**The band is three paths over one `d`, because a glow is a stack and not a colour.** A warm fill
+underneath (`rgba(255,203,84,0.20)`), a 7px halo blurred by 4px, then a 1.7px near-white core with a
+gold `drop-shadow` and a marching dash. All three take the same `d` in one `querySelectorAll` write,
+so the halo cannot drift off the core. The colours are deliberately literal rather than `color-mix`
+or a theme token: this is a transient gesture affordance drawn ACROSS the selection rings, and it has
+to stay distinguishable from them on every theme. The march is disabled under
+`prefers-reduced-motion` -- the card's global rule only zeroes `--transition-fast`, and an animation
+needs saying separately.
 
 **The concave case is the only test that distinguishes a lasso from a bounding box**, so it is the one
 `.harness/lasso.html` leads with. A U drawn round a 3x3 grid, notch between x=334 and x=366, with two

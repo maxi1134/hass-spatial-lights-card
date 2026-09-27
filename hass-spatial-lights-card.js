@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.46.0 (fork-maxi1134)';
+  static BUILD = 'v1.46.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -103,23 +103,38 @@ class SpatialLightColorCard extends HTMLElement {
   static LASSO_MIN_STEP = 3;
 
   /**
-   * Is (x, y) inside the polygon? Ray-casting, even-odd, on the half-open
-   * interval so a vertex is counted once rather than twice.
+   * Is (x, y) enclosed by the path? WINDING NUMBER, not even-odd parity, and
+   * that difference is the whole of "going back inside must not unselect".
    *
-   * The polygon is implicitly CLOSED -- the caller never has to repeat the
-   * first point, and the drawn path closes itself the same way, so what is
-   * tested is exactly what is drawn.
+   * A hand-drawn lasso crosses itself constantly -- you come back into the
+   * region you have already enclosed, loop, and leave. Even-odd counts that
+   * pocket as enclosed TWICE and therefore outside, so it punched a hole in
+   * the middle of the selection and dropped whatever was standing in it.
+   * Reported from a real drag and reproduced exactly: 8 of 9 lights, the
+   * centre one missing. Winding counts direction instead of crossings, so a
+   * second lap adds to the first rather than cancelling it.
+   *
+   * It is also what `fill-rule: nonzero` does, which is not a coincidence --
+   * the painted region and the tested region have to be the same region, or
+   * the outline stops being a promise about what you are selecting.
+   *
+   * Dan Sunday's wn_PnPoly. The half-open `<=` / `>` comparison is what keeps
+   * a vertex from being counted twice; `isLeft` is the sign of the cross
+   * product, i.e. which side of the edge the point falls on. The polygon is
+   * implicitly CLOSED -- the caller never repeats the first point, and the
+   * drawn path closes itself with `Z` the same way.
    */
   static pointInPolygon(x, y, pts) {
     if (!Array.isArray(pts) || pts.length < 3) return false;
-    let inside = false;
-    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-      const xi = pts[i][0], yi = pts[i][1];
-      const xj = pts[j][0], yj = pts[j][1];
-      if ((yi > y) !== (yj > y)
-        && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    let wind = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      const isLeft = (b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1]);
+      if (a[1] <= y) {
+        if (b[1] > y && isLeft > 0) wind++;          // upward crossing, point left
+      } else if (b[1] <= y && isLeft < 0) wind--;    // downward crossing, point right
     }
-    return inside;
+    return wind !== 0;
   }
 
   /**
@@ -4548,20 +4563,44 @@ class SpatialLightColorCard extends HTMLElement {
         position: absolute; inset: 0; pointer-events: none; overflow: visible;
         z-index: 3;
       }
-      /* Plain values first: an engine without color-mix() drops those two
-         declarations and would otherwise leave the band invisible -- which,
-         for the one thing telling you what you are about to select, is worse
-         than a slightly off accent. */
-      .selection-lasso path {
-        fill: rgba(99,102,241,0.10);
-        fill: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-        stroke: rgba(99,102,241,0.65);
-        stroke: color-mix(in srgb, var(--accent-primary) 65%, transparent);
-        stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round;
+      .selection-lasso path { fill: none; stroke: none; }
+      /* FILL-RULE NONZERO, matching what pointInPolygon computes. Even-odd
+         punched a hole wherever the path re-entered its own region, and the
+         painted region has to be the tested region or the outline stops being
+         a promise about what you are selecting. */
+      .selection-lasso .lasso-fill {
+        fill: rgba(255,203,84,0.20);
+        fill-rule: nonzero;
+      }
+      /* The glow is a STACK, not a colour: a wide soft halo under a thin
+         bright core is what reads as luminous. Warm gold rather than the
+         accent, so the band cannot be mistaken for the selection rings it is
+         drawn across -- and deliberately literal rgba, not color-mix or a
+         theme token, because this is a transient gesture affordance and it has
+         to look the same on every theme. */
+      .selection-lasso .lasso-halo {
+        fill: none;
+        stroke: rgba(255,196,64,0.55);
+        stroke-width: 7; stroke-linejoin: round; stroke-linecap: round;
+        filter: blur(4px);
+      }
+      .selection-lasso .lasso-core {
+        fill: none;
+        stroke: #fff4cf;
+        stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round;
         /* Dashed so the closing edge -- the part nobody drew -- reads as
-           implied rather than as a line they left behind. */
-        stroke-dasharray: 5 4;
-        fill-rule: evenodd;
+           implied rather than as a line they left behind. Marching, because a
+           lasso that crawls says "still drawing" without a word of UI. */
+        stroke-dasharray: 9 7;
+        filter: drop-shadow(0 0 4px rgba(255,190,60,0.95));
+        animation: slc-lasso-march 520ms linear infinite;
+      }
+      @keyframes slc-lasso-march { to { stroke-dashoffset: -16; } }
+      /* The card zeroes --transition-fast under prefers-reduced-motion; an
+         animation needs saying separately, and a crawling dash is exactly the
+         kind of perpetual motion that rule exists for. */
+      @media (prefers-reduced-motion: reduce) {
+        .selection-lasso .lasso-core { animation: none; }
       }
 
       /* ---------- Canvas elements (links, sensors, templates) ---------- */
@@ -8505,8 +8544,15 @@ class SpatialLightColorCard extends HTMLElement {
       const NS = 'http://www.w3.org/2000/svg';
       const svg = document.createElementNS(NS, 'svg');
       svg.setAttribute('class', 'selection-lasso');
-      const path = document.createElementNS(NS, 'path');
-      svg.appendChild(path);
+      // THREE paths over one `d`, because a glow is a stack and not a colour.
+      // Fill underneath, a wide soft halo, then a thin bright core on top --
+      // the same recipe the light markers' own halo uses, and the only way to
+      // get a line that reads as luminous rather than merely coloured.
+      for (const cls of ['lasso-fill', 'lasso-halo', 'lasso-core']) {
+        const path = document.createElementNS(NS, 'path');
+        path.setAttribute('class', cls);
+        svg.appendChild(path);
+      }
       this._lassoPoints = [[x, y]];
       this._lassoTip = null;
       this._els.canvas.appendChild(svg);
@@ -8547,9 +8593,11 @@ class SpatialLightColorCard extends HTMLElement {
       this._lassoTip = [x, y];
     }
     const live = this._lassoTip ? pts.concat([this._lassoTip]) : pts;
-    const path = this._selectionBox && this._selectionBox.querySelector('path');
-    if (path) {
-      path.setAttribute('d', `M${live.map(pt => `${Math.round(pt[0])} ${Math.round(pt[1])}`).join('L')}Z`);
+    if (this._selectionBox) {
+      const d = `M${live.map(pt => `${Math.round(pt[0])} ${Math.round(pt[1])}`).join('L')}Z`;
+      // All three layers carry the SAME `d`, so the halo cannot drift off the
+      // core and the fill cannot disagree with either.
+      this._selectionBox.querySelectorAll('path').forEach(el => el.setAttribute('d', d));
     }
     return live;
   }

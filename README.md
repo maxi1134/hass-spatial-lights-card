@@ -212,6 +212,15 @@ Everything inside the outline gets selected, and **inside means inside** — dra
 U around a room and a light sitting in the notch is left out, where a rectangle
 would have grabbed it.
 
+**Cross your own line as much as you like.** Doubling back into a region you have
+already circled does not punch a hole in it — the outline is filled by its
+outermost limits, so a light in the middle stays selected no matter how many
+times the path loops over itself. Genuine notches, like the open side of that U,
+are still notches.
+
+The line glows, and the region it encloses washes warm amber as you draw, so you
+can see what you are about to get before you let go.
+
 Nothing else about selecting changes. Same drag on empty canvas, same Shift/Ctrl
 to add to what you already have, same skipping of lights marked
 [not affected by group selection](#not-affected-by-group-selection), same live
