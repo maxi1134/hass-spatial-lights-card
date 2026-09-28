@@ -210,6 +210,23 @@ as two unrelated lines, which is what a fixed core colour would have given.
 It colours the BOX marquee too, because the option names the band and not one of its two shapes.
 Unset, both keep exactly what they had: the rectangle its `--accent-primary` mix, the lasso its gold.
 
+**All three selection options have editor rows, under Interaction**, and each one
+DELETES its key at the default rather than writing it -- nobody's YAML should grow a
+`selection_mode: box` line for choosing what it already had. The colour writes the
+hex STRING rather than converting to a triplet, because `_normalizeSelectionColor`
+already accepts both and a second parser in the editor is a second thing to keep in
+step. `_setDOMValues` renders either form back into the field, so a card configured
+as `[80, 220, 255]` in YAML does not come up showing an empty colour box.
+
+**`_bindColorField` does NOT fire `config-changed`; its store callback must.** Both
+existing callers are `_setThemeKey` / `_setLightFieldKey`, which fire it themselves,
+so the binder never had to -- and a new callback that only writes `this._config`
+changes nothing HA ever sees. Caught by driving the field in
+`.harness/editor.html#selectionRows` and reading the emitted config off the event:
+the mode and the hold committed, the colour silently did not. Existence of a control
+is not evidence that it is wired, which is the whole reason that probe drives each
+row instead of querying for it.
+
 **`selection_swap_hold` borrows the other shape for one drag**, and the swap is a per-gesture FLAG
 rather than a mutated config: `_effectiveSelectionMode()` is the single place that answers "which
 shape is this drag", and both the shape factory and the move driver ask it. `_config.selection_mode`

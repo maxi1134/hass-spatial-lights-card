@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.48.0 (fork-maxi1134)';
+  static BUILD = 'v1.49.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -16183,6 +16183,25 @@ class SpatialLightColorCardEditor extends HTMLElement {
               <div><div class="label">Scroll Page Over Canvas</div><div class="sublabel">Vertical touch swipes on the canvas scroll the dashboard; area selection needs a sideways drag. Turn off to reserve all canvas touches for selection.</div></div>
               <ha-switch id="cfgCanvasTouchScroll"></ha-switch>
             </div>
+            <div class="option-row">
+              <div><div class="label">Area Selection Shape</div><div class="sublabel">What a drag on empty canvas draws. The rectangle is the classic rubber band; the lasso follows your finger and selects everything inside the outline, notches and all.</div></div>
+              <select id="cfgSelectionMode">
+                <option value="box">Rectangle</option>
+                <option value="lasso">Lasso (freehand)</option>
+              </select>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Hold to Swap Shape</div><div class="sublabel">Hold still this long on empty canvas before dragging, and that one drag uses the OTHER shape. Leave empty to turn it off. 150&ndash;5000 ms.</div></div>
+              <input type="number" id="cfgSelectionSwapHold" min="0" max="5000" step="50" placeholder="Off" style="width:110px;">
+            </div>
+            <div class="input-row">
+              <label>Selection Band Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgSelectionColorPicker" value="#ffcb54">
+                <input type="text" id="cfgSelectionColor" placeholder="Default gold">
+              </div>
+              <div class="sublabel">Colours the fill, the glow and the outline, for both shapes. Any hex or rgb() value; leave empty for the built-in gold.</div>
+            </div>
           </div>
         </div>
 
@@ -16235,6 +16254,22 @@ class SpatialLightColorCardEditor extends HTMLElement {
     setVal('cfgAspectRatio', c.aspect_ratio || '');
     setVal('cfgGridSize', c.grid_size || 25);
     setVal('cfgLabelMode', c.label_mode === 'friendly_name' ? 'full' : (c.label_mode || 'smart'));
+
+    // Selection. `selection_color` is documented as [r, g, b] but a hex string
+    // is equally valid and is what this editor writes, so BOTH forms have to
+    // render back into the text field -- a card configured in YAML must not
+    // come up showing an empty colour box.
+    setVal('cfgSelectionMode', c.selection_mode === 'lasso' ? 'lasso' : 'box');
+    setVal('cfgSelectionSwapHold', c.selection_swap_hold || '');
+    const selCol = c.selection_color;
+    const selHex = Array.isArray(selCol) && selCol.length >= 3
+      ? '#' + selCol.slice(0, 3).map(n =>
+        Math.max(0, Math.min(255, Math.round(Number(n) || 0))).toString(16).padStart(2, '0')).join('')
+      : (typeof selCol === 'string' ? selCol : '');
+    setVal('cfgSelectionColor', selHex);
+    // The picker coerces anything that is not six-digit hex to #000000 without
+    // an event, so it would REPORT a stored rgb() or a named colour as black.
+    if (/^#[0-9a-f]{6}$/i.test(selHex)) setVal('cfgSelectionColorPicker', selHex);
 
     // Appearance (theme)
     const th = c.theme || {};
@@ -16735,6 +16770,35 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._fireConfigChanged();
       });
     }
+
+    // Selection shape, swap hold and band colour. Each DELETES its key at the
+    // default rather than writing it: nobody's YAML should grow a
+    // `selection_mode: box` line for choosing what it already had.
+    const selModeEl = root.getElementById('cfgSelectionMode');
+    if (selModeEl) {
+      selModeEl.addEventListener('change', () => {
+        if (selModeEl.value === 'lasso') this._config.selection_mode = 'lasso';
+        else delete this._config.selection_mode;
+        this._fireConfigChanged();
+      });
+    }
+    this._bindNumberInput('cfgSelectionSwapHold', (val) => {
+      // The card clamps too; doing it here as well is what makes the field
+      // show the value that will actually be used rather than the one typed.
+      if (val == null || val <= 0) delete this._config.selection_swap_hold;
+      else this._config.selection_swap_hold = Math.round(Math.min(5000, Math.max(150, val)));
+    });
+    // Stored as the typed STRING, which `_normalizeSelectionColor` accepts
+    // alongside the [r, g, b] form. Converting to a triplet here would be a
+    // second parser to keep in step with that one.
+    this._bindColorField('cfgSelectionColor', 'cfgSelectionColorPicker', (val) => {
+      if (!val) delete this._config.selection_color;
+      else this._config.selection_color = val;
+      // _bindColorField's commit does NOT fire this -- the other two stores it
+      // serves (_setThemeKey, _setLightFieldKey) each fire it themselves, so a
+      // callback that only writes `_config` changes nothing HA ever sees.
+      this._fireConfigChanged();
+    });
 
     const labelModeEl = root.getElementById('cfgLabelMode');
     if (labelModeEl) {

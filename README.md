@@ -602,6 +602,9 @@ A rectangle is the wrong shape for most rooms. An L-shaped living room, a run of
 lights down a hallway, everything except the one lamp in the middle &mdash; none of
 those is a box.
 
+All three selection settings live in the editor under **Interaction**, so none of
+this needs YAML unless you prefer it.
+
 ```yaml
 selection_mode: lasso   # 'box' (default) or 'lasso'
 ```
@@ -645,6 +648,9 @@ makes without meaning to, and nobody who has not asked for this should discover 
 by accident. Moving before the hold completes just gives you the normal shape.
 Values are clamped to 150&ndash;5000 ms.
 
+In the editor it is **Interaction &rarr; Hold to Swap Shape**; leave the field empty to
+keep it off.
+
 ### The colour of the band
 
 ```yaml
@@ -659,6 +665,10 @@ one of its two shapes. Leave it out and you get the gold.
 RGB rather than any CSS colour, because the band needs the same hue at four
 different opacities and the components have to be separable. An unparseable value
 falls back to the default rather than breaking the band.
+
+The editor has a colour picker for it under **Interaction &rarr; Selection Band
+Color**, which writes the hex form. A `[r, g, b]` triplet set in YAML shows up
+there correctly too.
 
 ### Not affected by group selection
 
