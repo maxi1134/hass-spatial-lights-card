@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.50.0 (fork-maxi1134)';
+  static BUILD = 'v1.50.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -145,6 +145,82 @@ class SpatialLightColorCard extends HTMLElement {
    * implicitly CLOSED -- the caller never repeats the first point, and the
    * drawn path closes itself with `Z` the same way.
    */
+  /**
+   * Cells across the enclosure grid. 128 over the canvas' long axis is ~11px
+   * per cell on a 1400px plan: far finer than any pocket a hand draws, and
+   * 16k cells is a rounding error to flood.
+   */
+  static LASSO_GRID = 128;
+
+  /**
+   * "Is this point enclosed by the outline at all", answered by asking what
+   * CANNOT reach the edge of the plan.
+   *
+   * The winding rule below cannot answer this and no ray-casting rule can. A
+   * hole and the outside world both have winding 0 and both have even crossing
+   * parity -- that is the definition of the problem, not a shortcoming of the
+   * implementation. Winding fixed the pocket you get by doubling back the SAME
+   * way round (v1.46.1); a pocket circled the OTHER way round still cancelled
+   * to zero, and a spiral scribble makes both kinds. Reproduced on the
+   * predicate: an inner loop wound with the outer fills, wound against it does
+   * not.
+   *
+   * So this asks the only question that distinguishes them. Rasterise the
+   * outline onto a coarse grid, flood from the border through whatever the
+   * line does not occupy, and every cell the flood never reached is enclosed --
+   * holes included, by construction, because a hole is precisely a region the
+   * outside cannot get into.
+   *
+   * It is a GRID rather than a canvas because this runs inside the per-frame
+   * hit test: a typed array and a stack cost nothing, while `getImageData`
+   * would stall the pipeline on a GPU readback every frame.
+   *
+   * Returns a predicate, so the caller pays for the flood once and tests every
+   * light against it.
+   */
+  static lassoEnclosure(points, w, h) {
+    const N = SpatialLightColorCard.LASSO_GRID;
+    const sx = N / Math.max(1, w), sy = N / Math.max(1, h);
+    const cell = (x, y) => {
+      const cx = Math.min(N - 1, Math.max(0, Math.floor(x * sx)));
+      const cy = Math.min(N - 1, Math.max(0, Math.floor(y * sy)));
+      return cy * N + cx;
+    };
+    const ON = 1, OUT = 2;
+    const g = new Uint8Array(N * N);
+    // The outline, including the closing segment -- the same one the drawn
+    // path closes itself with, so the barrier is what is on screen.
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i], b = points[(i + 1) % points.length];
+      const steps = Math.ceil(Math.max(
+        Math.abs((b[0] - a[0]) * sx), Math.abs((b[1] - a[1]) * sy))) + 1;
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        g[cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)] = ON;
+      }
+    }
+    const stack = [];
+    for (let i = 0; i < N; i++) {
+      for (const c of [i, (N - 1) * N + i, i * N, i * N + N - 1]) {
+        if (g[c] === 0) { g[c] = OUT; stack.push(c); }
+      }
+    }
+    while (stack.length) {
+      const c = stack.pop();
+      const cx = c % N, cy = (c / N) | 0;
+      if (cx > 0 && g[c - 1] === 0) { g[c - 1] = OUT; stack.push(c - 1); }
+      if (cx < N - 1 && g[c + 1] === 0) { g[c + 1] = OUT; stack.push(c + 1); }
+      if (cy > 0 && g[c - N] === 0) { g[c - N] = OUT; stack.push(c - N); }
+      if (cy < N - 1 && g[c + N] === 0) { g[c + N] = OUT; stack.push(c + N); }
+    }
+    // Strictly 0: neither reached from outside NOR occupied by the line. A
+    // point whose cell the line passes through gets no opinion from here and
+    // falls back to the winding test, which is exact -- so cell size never
+    // costs precision at the boundary, only inside a pocket, where a light is
+    // nowhere near the edge anyway.
+    return (x, y) => g[cell(x, y)] === 0;
+  }
+
   static pointInPolygon(x, y, pts) {
     if (!Array.isArray(pts) || pts.length < 3) return false;
     let wind = 0;
@@ -8817,13 +8893,26 @@ class SpatialLightColorCard extends HTMLElement {
     this._commitSelection(target);
   }
 
-  /** Everything inside the drawn outline. Concave shapes included -- that is
-   *  the whole point of it, so the test is point-in-polygon and never the
-   *  polygon's bounding box. */
+  /**
+   * Everything inside the drawn outline. Concave shapes included -- that is the
+   * whole point of it -- and pockets included too, however the hand got there.
+   *
+   * TWO tests, OR'd, because they answer different halves. `pointInPolygon` is
+   * exact and decides the boundary to the pixel. `lassoEnclosure` decides
+   * whether a point the winding rule called "outside" is actually sealed in by
+   * the outline, which is the half winding provably cannot do: a hole and the
+   * outside world share a winding number of 0.
+   *
+   * Together they are "the outermost limits", which is what was asked for and
+   * what the winding rule alone only approximated.
+   */
   _selectLightsInLasso(points) {
     if (!Array.isArray(points) || points.length < 3) return;
     const pts = points;
-    this._selectLightsWhere((x, y) => SpatialLightColorCard.pointInPolygon(x, y, pts));
+    const rect = this._els.canvas.getBoundingClientRect();
+    const enclosed = SpatialLightColorCard.lassoEnclosure(pts, rect.width, rect.height);
+    this._selectLightsWhere((x, y) =>
+      SpatialLightColorCard.pointInPolygon(x, y, pts) || enclosed(x, y));
   }
 
   _selectLightsInBox(left, top, width, height) {

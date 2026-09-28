@@ -182,9 +182,38 @@ feature from a wider rectangle -- would have become a filled rectangle. `concave
 therefore asserted TOGETHER: the fix has to close the pocket while still excluding the notch, and
 either one alone is passable by a wrong implementation.
 
-`fill-rule: nonzero` on the painted fill is the same rule, and not a coincidence -- the painted region
-and the tested region have to be the same region, or the outline stops being a promise about what you
-are selecting. The polygon is implicitly CLOSED -- the drawn path closes itself with `Z` from the
+**And winding alone was still not "the outermost limits", which this section claimed it was.** It
+fixed the pocket you get by doubling back the SAME way round; a pocket circled the OTHER way still
+cancels to zero. A spiral scribble makes both kinds, which is how it came back a second time with a
+screenshot. Reproduced on the predicate in two lines: the same inner square wound one way fills, wound
+the other does not.
+
+**No ray-casting rule can fix that**, and that is a property of the question rather than of the
+implementation: a hole and the outside world have the same winding number (0) and the same crossing
+parity (even). `lassoEnclosure` therefore asks the only question that separates them -- what can reach
+the EDGE of the plan. It rasterises the outline onto a 128x128 grid, floods from the border through
+whatever the line does not occupy, and every cell the flood never reached is enclosed, holes included
+by construction.
+
+`_selectLightsInLasso` ORs the two: `pointInPolygon` is exact and decides the boundary to the pixel,
+the grid decides whether a point it called "outside" is actually sealed in. A cell the LINE passes
+through gets no opinion from the grid and falls back to winding, so cell size costs nothing at the
+boundary -- only inside a pocket, where a light is nowhere near an edge.
+
+A grid rather than a canvas because this runs in the per-frame hit test: a `Uint8Array` and a stack
+cost nothing, while `getImageData` would stall on a GPU readback every frame. Measured on a
+658-point spiral: every light under the outline selected.
+
+**The flood must not fill genuine concavities, and that is the test that matters.** `opposedLoop`
+asserts the counter-wound pocket IS selected and the open side of a U is NOT, together -- either one
+alone passes with a wrong implementation, and a convex hull would pass the first and fail the second.
+
+**The painted fill is now a SUBSET of the selection, and this section used to claim otherwise.**
+`fill-rule: nonzero` cannot express "whatever cannot reach the edge", so a counter-wound pocket is
+selected but not shaded. Measured with `isPointInPath` on the emitted `d`: the pocket's centre is
+selected, and covered by neither `nonzero` nor `evenodd`. The error is in the safe direction -- you
+always get at least what was highlighted, never less -- and closing it needs sub-loop decomposition
+or a blocky grid-derived fill, neither of which is worth it for a transient gesture affordance. The polygon is implicitly CLOSED -- the drawn path closes itself with `Z` from the
 first move -- so the closing edge, the one nobody draws and the one that decides the lights near the
 start of the sweep, is tested exactly as it is shown.
 

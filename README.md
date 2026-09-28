@@ -618,11 +618,15 @@ Everything inside the outline gets selected, and **inside means inside** &mdash;
 U around a room and a light sitting in the notch is left out, where a rectangle
 would have grabbed it.
 
-**Cross your own line as much as you like.** Doubling back into a region you have
-already circled does not punch a hole in it &mdash; the outline is filled by its
-outermost limits, so a light in the middle stays selected no matter how many times
-the path loops over itself. Genuine notches, like the open side of that U, are
+**Cross your own line as much as you like.** Scribble, spiral, double back, loop
+the other way round &mdash; anything sealed in by the outline is selected, however the
+hand got there. A light in the middle of a pocket stays selected no matter how many
+times the path crosses itself. Genuine notches, like the open side of that U, are
 still notches.
+
+The amber shading can come up short of that on a pocket you circled the opposite
+way: the selection covers it, the highlight does not. It errs the safe way &mdash; you
+always get at least what was shaded, never less.
 
 The line glows, and the region it encloses washes warm amber as you draw, so you
 can see what you are about to get before you let go.
