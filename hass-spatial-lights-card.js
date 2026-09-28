@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.49.0 (fork-maxi1134)';
+  static BUILD = 'v1.50.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4839,6 +4839,16 @@ class SpatialLightColorCard extends HTMLElement {
          where the box has least room to spare. */
       .controls-floating.tight { padding-top: 8px; padding-bottom: 8px; gap: 7px; }
       .controls-floating.visible { opacity: 1; pointer-events: auto; }
+      /* Out of the way while a selection is being drawn. AFTER .visible, because
+         both are two classes and at equal specificity source order is what
+         decides -- the same trap the selection_color override fell into.
+
+         'transition: none' on the way OUT so the panel is gone by the time the
+         hand has moved; removing the class hands it back to the base rule's
+         fade, so it returns rather than snapping. */
+      .controls-floating.selecting {
+        opacity: 0; pointer-events: none; transition: none;
+      }
       /* Placed by pixel offsets instead of by the default bottom-centre
          anchor. Two classes, one mechanism, different AUTHORITY:
          auto-placed is _placeFloatingControls tracking the selection,
@@ -8070,6 +8080,7 @@ class SpatialLightColorCard extends HTMLElement {
           if (!this._selectionBox) {
             this._selectionBox = this._createSelectionShape(
               this._selectionStart.x, this._selectionStart.y);
+            this._syncSelectingClass();
             if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
               this._selectedLights.clear();
               this.updateLights();
@@ -8184,6 +8195,7 @@ class SpatialLightColorCard extends HTMLElement {
       if (Math.hypot(dx, dy) > 5) {
         this._selectionBox = this._createSelectionShape(
           this._selectionStart.x, this._selectionStart.y);
+        this._syncSelectingClass();
         if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
           this._selectedLights.clear();
           this.updateLights();
@@ -8300,6 +8312,9 @@ class SpatialLightColorCard extends HTMLElement {
         this._selectionBox = null;
         this._lassoPoints = null;
         this._lassoTip = null;
+        // The selection is complete: the panel comes back, and by now placement
+        // has already put it beside the group you just drew.
+        this._syncSelectingClass();
       } else if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
         // A completed tap on empty canvas deselects. This lives here (not in
         // pointerdown) so a scroll the browser reclaims mid-gesture — which
@@ -8573,6 +8588,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectionBox.remove();
       this._selectionBox = null;
     }
+    this._syncSelectingClass();
     this._lassoPoints = null;
     this._lassoTip = null;
     if (this._selectionSwapTimer) {
@@ -8618,6 +8634,30 @@ class SpatialLightColorCard extends HTMLElement {
    * of them about a second one -- including the abort path, which is where
    * this card has been bitten before.
    */
+  /**
+   * The floating panel steps aside while a selection band is live.
+   *
+   * You cannot use the controls mid-drag -- the pointer is captured by the
+   * canvas -- and with a lasso you are routinely drawing straight across them,
+   * which is what this was reported for. So they go, and come back the moment
+   * the selection is complete.
+   *
+   * ONLY the floating panel. `controls_below` puts the controls in flow under
+   * the plan, where they are not in the way of anything and hiding them would
+   * collapse the card's height mid-gesture -- a far worse interruption than the
+   * one being fixed.
+   *
+   * Keyed off `_selectionBox` existing rather than off a flag of its own, so
+   * there is nothing to leave stale: the band's own lifecycle is the state.
+   * `updateLights` calls this too, which makes it self-healing -- no gesture
+   * path can strand the panel invisible, which is the one failure here that
+   * would be worse than the problem.
+   */
+  _syncSelectingClass() {
+    const el = this._els && this._els.controlsFloating;
+    if (el) el.classList.toggle('selecting', !!this._selectionBox);
+  }
+
   /**
    * The shape THIS drag is using: the configured one, or the other one when a
    * hold has swapped it.
@@ -8665,6 +8705,7 @@ class SpatialLightColorCard extends HTMLElement {
         this._pendingSelectionHit = null;
         this._selectionBox = this._createSelectionShape(
           this._selectionStart.x, this._selectionStart.y);
+        this._syncSelectingClass();
       }
     }, ms);
   }
@@ -13170,6 +13211,7 @@ class SpatialLightColorCard extends HTMLElement {
     // Show/hide floating controls if used
     if (this._els.controlsFloating) {
       this._els.controlsFloating.classList.toggle('visible', shouldShowControls);
+      this._syncSelectingClass();
     }
     // Show/hide below controls if used
     if (this._els.controlsBelow) {

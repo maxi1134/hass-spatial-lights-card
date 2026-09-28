@@ -521,6 +521,11 @@ all.
 With `controls_below: false` the controls float over the plan. Upstream shows and
 hides them; this fork makes them behave.
 
+- **They get out of your way while you select.** The panel disappears the moment
+  you start drawing a selection and comes back when you let go. You cannot use it
+  mid-drag anyway, and with a lasso you are often drawing straight across it.
+  Controls set *below* the plan are left alone &mdash; hiding those would collapse the
+  card's height under your hand.
 - **They fit the plan.** The picker is never taller than the floor plan it floats
   over, and rather than scrolling inside it, it trims its own padding first and
   then its bar height until it fits. A plan with room is left untouched. On a very

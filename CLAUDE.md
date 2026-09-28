@@ -210,6 +210,39 @@ as two unrelated lines, which is what a fixed core colour would have given.
 It colours the BOX marquee too, because the option names the band and not one of its two shapes.
 Unset, both keep exactly what they had: the rectangle its `--accent-primary` mix, the lasso its gold.
 
+**The floating panel hides while a band is live.** Reported against the lasso, where
+you routinely draw straight across the controls, and true of the rectangle too: the
+pointer is captured by the canvas, so the panel cannot be used mid-drag and is
+purely an obstacle. `_syncSelectingClass` toggles `.selecting` off `!!_selectionBox`
+-- the band's own lifecycle IS the state, so there is no second flag to leave stale.
+
+`transition: none` on the way out so it is gone by the time the hand has moved;
+removing the class hands it back to the base rule's 200ms fade. The rule sits AFTER
+`.controls-floating.visible` because both are two classes and source order is what
+decides at equal specificity -- the same trap the `selection_color` override fell
+into one release earlier.
+
+**ONLY the floating panel.** `controls_below` is in FLOW, so hiding it would collapse
+the card's height mid-gesture, which is a worse interruption than the one being
+fixed. Measured: card height 955px constant through a drag with `controls_below:
+true`, and no class applied.
+
+**`updateLights` calls it too, which is what makes a stranded panel impossible.**
+That is the one failure here that would be worse than the original complaint -- a
+card whose controls never come back is unusable in a way an obstructive panel is not
+-- so the class is reconciled on every state tick rather than only at the five band
+create/destroy sites.
+
+`.harness/lasso.html`: `panelStepsAsideBoth` (both shapes: visible -> opacity 0 and
+`pointer-events: none` mid-drag -> visible on release), `panelNeverStuck` (an
+interrupted drag restores it, and a later state tick does not resurrect the class)
+and `belowUnaffected`.
+
+**Those probes must not sample AT 200ms.** The fade back in is exactly
+`--transition-base`, so a sample on the boundary reads 0.86 or 1 depending on
+scheduling -- which is what made `panelStepsAsideBoth` and `panelNeverStuck` trade
+failures between runs while the card was correct in both. They sample at 400.
+
 **All three selection options have editor rows, under Interaction**, and each one
 DELETES its key at the default rather than writing it -- nobody's YAML should grow a
 `selection_mode: box` line for choosing what it already had. The colour writes the
