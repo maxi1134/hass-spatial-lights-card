@@ -191,11 +191,32 @@ start of the sweep, is tested exactly as it is shown.
 **The band is three paths over one `d`, because a glow is a stack and not a colour.** A warm fill
 underneath (`rgba(255,203,84,0.20)`), a 7px halo blurred by 4px, then a 1.7px near-white core with a
 gold `drop-shadow` and a marching dash. All three take the same `d` in one `querySelectorAll` write,
-so the halo cannot drift off the core. The colours are deliberately literal rather than `color-mix`
-or a theme token: this is a transient gesture affordance drawn ACROSS the selection rings, and it has
-to stay distinguishable from them on every theme. The march is disabled under
-`prefers-reduced-motion` -- the card's global rule only zeroes `--transition-fast`, and an animation
-needs saying separately.
+so the halo cannot drift off the core. The march is disabled under `prefers-reduced-motion` -- the
+card's global rule only zeroes `--transition-fast`, and an animation needs saying separately.
+
+**`selection_color` is RGB rather than a CSS colour, and that is a constraint rather than laziness.**
+The band needs the one hue at four alphas -- fill 0.20, halo 0.55, core, glow 0.95 -- so the
+components have to be separable. A named colour or an `hsl()` cannot be taken apart without a browser
+to resolve it, and `setConfig` legitimately runs before there is a rendered document to ask.
+`_normalizeSelectionColor` therefore takes `[r,g,b]`, a hex string or an `rgb()` string (via the
+existing `_parseColorToRGB`, whose NaN guard is what stops `'#gggggg'` reaching the stylesheet), and
+anything else returns null and keeps the default rather than emitting something broken.
+
+**The core is DERIVED, not a second setting.** `selectionCore` mixes the base 72% toward white, which
+for the default gold lands on rgb(255,240,207) -- within four of the `#fff4cf` that was hardcoded
+before, so the formula reproduces the look it replaces. A blue band with a warm-white core would read
+as two unrelated lines, which is what a fixed core colour would have given.
+
+It colours the BOX marquee too, because the option names the band and not one of its two shapes.
+Unset, both keep exactly what they had: the rectangle its `--accent-primary` mix, the lasso its gold.
+
+**The override block is emitted only when the option is set, and it has to come LAST.** Both halves
+are load-bearing and the second one was got wrong first: the block was anchored next to
+`--color-bar-h` near the top of `_styles()`, 400 lines ABOVE the band's own rules, so at equal
+specificity source order handed every declaration back to the defaults. Every variant measured
+identical to unset -- the setting looked completely inert while being perfectly well parsed. It now
+sits after the `prefers-reduced-motion` rule, i.e. after every base band rule there is. The lesson
+generalises: in a single-template stylesheet, an override's POSITION is its specificity.
 
 **The concave case is the only test that distinguishes a lasso from a bounding box**, so it is the one
 `.harness/lasso.html` leads with. A U drawn round a 3x3 grid, notch between x=334 and x=366, with two

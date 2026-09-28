@@ -221,6 +221,18 @@ are still notches.
 The line glows, and the region it encloses washes warm amber as you draw, so you
 can see what you are about to get before you let go.
 
+**Pick your own colour** with `selection_color`, as RGB:
+
+```yaml
+selection_color: [80, 220, 255]   # or "#50dcff", or "rgb(80, 220, 255)"
+```
+
+The whole band follows it — the fill, the halo and the glow — and the bright core
+of the line is derived from it, so it keeps looking luminous whatever hue you
+choose rather than keeping a warm-white line over a blue glow. It colours the
+plain rectangle marquee too, since it names the band and not one of its two
+shapes. Leave it out and you get the gold above.
+
 Nothing else about selecting changes. Same drag on empty canvas, same Shift/Ctrl
 to add to what you already have, same skipping of lights marked
 [not affected by group selection](#not-affected-by-group-selection), same live
@@ -637,6 +649,7 @@ editor — I only reach for YAML when I want something the editor does not expos
 | `label_mode` | string | `"smart"` | Light label style: `smart` (compact abbreviation), `full` (alias `friendly_name`), `initials`, `entity_id`, `none`. |
 | `canvas_touch_scroll` | boolean | `true` | Vertical touch swipes on the canvas scroll the page (marquee needs a sideways drag). Set `false` to reserve all canvas touches for selection. |
 | `selection_mode` | string | `"box"` | How a drag on empty canvas selects: `box` is the rubber-band rectangle, `lasso` draws a freehand outline and selects everything inside it. See [Lasso](#lasso-select-any-shape-you-like). |
+| `selection_color` | list/string | `null` | Colour of the selection band, as `[r, g, b]` (a `"#rrggbb"` or `"rgb(r,g,b)"` string works too). Applies to both the lasso and the rectangle. Unset keeps the built-in gold. |
 | `theme_mode` | string | `"auto"` | `auto` follows your HA theme (including glass themes), `dark` keeps the card's original dark palette, `light` is a fixed light palette. |
 | `theme` | map | `{}` | Fine-grained appearance overrides — see [Theming](#-theming). |
 | `label_overrides` | map | `{}` | Map entity_id → custom label. |

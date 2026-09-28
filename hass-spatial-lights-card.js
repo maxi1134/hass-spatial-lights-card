@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.46.1 (fork-maxi1134)';
+  static BUILD = 'v1.47.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -101,6 +101,27 @@ class SpatialLightColorCard extends HTMLElement {
    * dozen points, and it smooths the jitter a trackpad puts into a slow one.
    */
   static LASSO_MIN_STEP = 3;
+
+  /**
+   * The band's default colour, and the one number that turns it into a core.
+   *
+   * The luminescent look is a warm fill and halo under a near-WHITE core -- the
+   * core has to be lighter than the halo or the line reads as flat colour
+   * rather than as something glowing. So the core is the base mixed 72% toward
+   * white, which for the default gold lands on rgb(255,240,207): within four
+   * of the `#fff4cf` that was hardcoded before this was configurable, i.e. the
+   * formula reproduces the look it replaces rather than redefining it.
+   *
+   * Deriving it is what lets any hue keep the effect. A blue band with a warm
+   * white core would look like two unrelated lines.
+   */
+  static SELECTION_RGB = [255, 203, 84];
+  static SELECTION_CORE_MIX = 0.72;
+
+  static selectionCore(rgb) {
+    const k = SpatialLightColorCard.SELECTION_CORE_MIX;
+    return rgb.map(c => Math.round(c + (255 - c) * k));
+  }
 
   /**
    * Is (x, y) enclosed by the path? WINDING NUMBER, not even-odd parity, and
@@ -572,6 +593,9 @@ class SpatialLightColorCard extends HTMLElement {
       // How a drag on empty canvas selects: 'box' is the rubber-band rectangle
       // and stays the default, because it is what every existing card does.
       selection_mode: config.selection_mode === 'lasso' ? 'lasso' : 'box',
+      // Colour of the selection band, as [r, g, b]. Null keeps the built-in
+      // look, which is what makes this invisible until somebody asks for it.
+      selection_color: this._normalizeSelectionColor(config.selection_color),
       // 'auto' (default): follow the dashboard's Home Assistant theme —
       // including light themes and translucent/glass card backgrounds.
       // 'dark': the card's original fixed dark palette. 'light': a fixed
@@ -4169,7 +4193,6 @@ class SpatialLightColorCard extends HTMLElement {
       }
 
       .color-bars { --color-bar-h: ${this._config.color_bar_height}px; }
-
       .light {
         --light-size: ${this._config.light_size}px;
         --icon-scale: 1;
@@ -4602,6 +4625,32 @@ class SpatialLightColorCard extends HTMLElement {
       @media (prefers-reduced-motion: reduce) {
         .selection-lasso .lasso-core { animation: none; }
       }
+      /* The selection band's colour, when one is configured. Emitted ONLY then,
+         and AFTER the band's own rules so it outranks them by source order at
+         equal specificity -- so an unconfigured card keeps the literal values
+         above, byte for byte, and this whole block does not exist.
+
+         Written out rather than routed through a custom property because the
+         band needs the one hue at four alphas: a var would still need all four
+         declarations, and this way the values that ship are the values you can
+         read. */
+      ${(() => {
+        const sc = this._config.selection_color;
+        if (!sc) return '';
+        const rgb = sc.join(',');
+        const core = SpatialLightColorCard.selectionCore(sc).join(',');
+        return `
+      .selection-box {
+        border-color: rgba(${rgb},0.55);
+        background: rgba(${rgb},0.10);
+      }
+      .selection-lasso .lasso-fill { fill: rgba(${rgb},0.20); }
+      .selection-lasso .lasso-halo { stroke: rgba(${rgb},0.55); }
+      .selection-lasso .lasso-core {
+        stroke: rgb(${core});
+        filter: drop-shadow(0 0 4px rgba(${rgb},0.95));
+      }`;
+      })()}
 
       /* ---------- Canvas elements (links, sensors, templates) ---------- */
       .canvas-element {
@@ -8672,6 +8721,37 @@ class SpatialLightColorCard extends HTMLElement {
     const y = typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset || 0;
     return { x, y };
   }
+  /**
+   * The selection band's colour as `[r, g, b]`, or null to keep the defaults.
+   *
+   * Takes the `[r, g, b]` triplet the option is named for, and also a hex or
+   * `rgb()` string, because somebody who has just written `switch_on_color:
+   * "#ffa500"` three lines above will write a string here and be right to.
+   *
+   * RGB rather than an arbitrary CSS colour, and that is a real constraint
+   * rather than laziness: the band needs the same hue at four different alphas
+   * (fill, halo, core, glow), so the components have to be separable. A named
+   * colour or an `hsl()` cannot be taken apart without a browser to resolve
+   * it, and `setConfig` legitimately runs before there is a rendered document
+   * to ask. Anything unparseable returns null and keeps the default, rather
+   * than emitting a broken value into the stylesheet.
+   */
+  _normalizeSelectionColor(value) {
+    if (Array.isArray(value)) {
+      const rgb = value.slice(0, 3).map(Number);
+      if (rgb.length === 3
+        && rgb.every(n => Number.isFinite(n) && n >= 0 && n <= 255)) {
+        return rgb.map(n => Math.round(n));
+      }
+      return null;
+    }
+    if (typeof value === 'string') {
+      const parsed = this._parseColorToRGB(value.trim());
+      if (parsed) return [parsed.r, parsed.g, parsed.b];
+    }
+    return null;
+  }
+
   _hexToRgb(hex) {
     if (!hex) return null;
     const h = hex.replace('#', '');
@@ -13137,6 +13217,9 @@ class SpatialLightColorCard extends HTMLElement {
     yamlLines.push(`switch_single_tap: ${!!this._config.switch_single_tap}`);
     if (this._config.canvas_touch_scroll === false) yamlLines.push('canvas_touch_scroll: false');
     if (this._config.selection_mode === 'lasso') yamlLines.push('selection_mode: lasso');
+    if (this._config.selection_color) {
+      yamlLines.push(`selection_color: [${this._config.selection_color.join(', ')}]`);
+    }
     if (this._config.theme_mode && this._config.theme_mode !== 'auto') {
       yamlLines.push(`theme_mode: ${this._config.theme_mode}`);
     }
