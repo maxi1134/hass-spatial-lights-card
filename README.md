@@ -233,6 +233,29 @@ choose rather than keeping a warm-white line over a blue glow. It colours the
 plain rectangle marquee too, since it names the band and not one of its two
 shapes. Leave it out and you get the gold above.
 
+### Hold to borrow the other shape
+
+Most of the time one shape is the right one, but not always — a lasso is overkill
+for grabbing two lamps side by side, and a rectangle cannot follow an L-shaped
+room.
+
+```yaml
+selection_swap_hold: 450   # milliseconds. 0 (the default) turns it off.
+```
+
+Press on empty canvas, **hold still** that long, then drag: that one drag uses the
+other shape. On lasso you get a rectangle, on rectangle you get a lasso. Let go
+and you are back to whatever you configured — it is borrowed for the drag, not a
+mode you have to switch out of.
+
+You get a double buzz when it takes, and the band on screen changes to the shape
+you are about to draw, so you never have to guess whether the hold registered.
+
+**It is off by default**, deliberately. Press, pause, drag is a gesture a hand
+makes without meaning to, and nobody who has not asked for this should discover it
+by accident. Set a duration and it turns on; moving before the hold completes just
+gives you the normal shape.
+
 Nothing else about selecting changes. Same drag on empty canvas, same Shift/Ctrl
 to add to what you already have, same skipping of lights marked
 [not affected by group selection](#not-affected-by-group-selection), same live
@@ -650,6 +673,7 @@ editor — I only reach for YAML when I want something the editor does not expos
 | `canvas_touch_scroll` | boolean | `true` | Vertical touch swipes on the canvas scroll the page (marquee needs a sideways drag). Set `false` to reserve all canvas touches for selection. |
 | `selection_mode` | string | `"box"` | How a drag on empty canvas selects: `box` is the rubber-band rectangle, `lasso` draws a freehand outline and selects everything inside it. See [Lasso](#lasso-select-any-shape-you-like). |
 | `selection_color` | list/string | `null` | Colour of the selection band, as `[r, g, b]` (a `"#rrggbb"` or `"rgb(r,g,b)"` string works too). Applies to both the lasso and the rectangle. Unset keeps the built-in gold. |
+| `selection_swap_hold` | number | `0` | Hold still this many milliseconds on empty canvas before dragging, and that one drag uses the *other* shape. `0` disables it; anything else is clamped to 150–5000. See [Hold to borrow the other shape](#hold-to-borrow-the-other-shape). |
 | `theme_mode` | string | `"auto"` | `auto` follows your HA theme (including glass themes), `dark` keeps the card's original dark palette, `light` is a fixed light palette. |
 | `theme` | map | `{}` | Fine-grained appearance overrides — see [Theming](#-theming). |
 | `label_overrides` | map | `{}` | Map entity_id → custom label. |

@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.47.0 (fork-maxi1134)';
+  static BUILD = 'v1.48.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -301,6 +301,8 @@ class SpatialLightColorCard extends HTMLElement {
      * for deliberately vertical box drags.
      */
     this._selectionHoldTimer = null;
+    this._selectionSwapTimer = null;    // hold-to-use-the-other-shape, per gesture
+    this._selectionSwapped = false;     // is THIS drag using the other shape?
     this._selectionTouchClaim = null;
 
     /** UI state */
@@ -596,6 +598,11 @@ class SpatialLightColorCard extends HTMLElement {
       // Colour of the selection band, as [r, g, b]. Null keeps the built-in
       // look, which is what makes this invisible until somebody asks for it.
       selection_color: this._normalizeSelectionColor(config.selection_color),
+      // Hold this long on empty canvas before dragging and THAT drag uses the
+      // other shape. 0 is off, and is the default: the gesture it costs --
+      // press, pause, drag -- is one a user can make without meaning to, so a
+      // card that never asked for it must never get it.
+      selection_swap_hold: this._normalizeSwapHold(config.selection_swap_hold),
       // 'auto' (default): follow the dashboard's Home Assistant theme —
       // including light themes and translucent/glass card backgrounds.
       // 'dark': the card's original fixed dark palette. 'light': a fixed
@@ -8046,6 +8053,9 @@ class SpatialLightColorCard extends HTMLElement {
 
       // Touch: fresh gesture, no ownership decision yet.
       this._selectionTouchClaim = null;
+      // A fresh gesture uses the configured shape until a hold says otherwise.
+      this._selectionSwapped = false;
+      this._armSelectionSwap();
       // Holding still briefly claims the marquee outright — the escape hatch
       // for box drags that START straight down (which the move-direction
       // arbitration would otherwise hand to the scroller).
@@ -8143,12 +8153,22 @@ class SpatialLightColorCard extends HTMLElement {
     // A drag that starts moving before the hold completes is either a page
     // scroll (browser will cancel us) or an immediate sideways marquee —
     // either way it's no longer a hold, so disarm the hold timer.
-    if (this._selectionHoldTimer && this._selectionStart && e.pointerId === this._selectionPointerId) {
+    if ((this._selectionHoldTimer || this._selectionSwapTimer)
+        && this._selectionStart && e.pointerId === this._selectionPointerId) {
       const dxh = e.clientX - this._selectionStart.clientX;
       const dyh = e.clientY - this._selectionStart.clientY;
       if (Math.hypot(dxh, dyh) > 10) {
-        clearTimeout(this._selectionHoldTimer);
-        this._selectionHoldTimer = null;
+        if (this._selectionHoldTimer) {
+          clearTimeout(this._selectionHoldTimer);
+          this._selectionHoldTimer = null;
+        }
+        // The swap is a HOLD, so moving disarms it on the same slop the claim
+        // uses -- a drag that set off immediately asked for the shape it was
+        // configured with.
+        if (this._selectionSwapTimer) {
+          clearTimeout(this._selectionSwapTimer);
+          this._selectionSwapTimer = null;
+        }
       }
     }
 
@@ -8176,7 +8196,7 @@ class SpatialLightColorCard extends HTMLElement {
       const rect = this._els.canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      if (this._config.selection_mode === 'lasso') {
+      if (this._effectiveSelectionMode() === 'lasso') {
         // The outline is a copy, not the live array: the flush below runs a
         // frame later, by which time the real one has grown.
         this._pendingSelectionHit = { kind: 'lasso', points: this._extendLasso(x, y).slice() };
@@ -8263,6 +8283,10 @@ class SpatialLightColorCard extends HTMLElement {
         clearTimeout(this._selectionHoldTimer);
         this._selectionHoldTimer = null;
       }
+      if (this._selectionSwapTimer) {
+        clearTimeout(this._selectionSwapTimer);
+        this._selectionSwapTimer = null;
+      }
       this._selectionTouchClaim = null;
       if (this._selectionBox) {
         // Rubber-band completed. Flush any hit-test still waiting on its
@@ -8287,6 +8311,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectionPointerId = null;
       this._selectionBase = null;
       this._selectionModeAdditive = false;
+      this._selectionSwapped = false;
     }
 
     if (this._longPressTimer) {
@@ -8550,6 +8575,11 @@ class SpatialLightColorCard extends HTMLElement {
     }
     this._lassoPoints = null;
     this._lassoTip = null;
+    if (this._selectionSwapTimer) {
+      clearTimeout(this._selectionSwapTimer);
+      this._selectionSwapTimer = null;
+    }
+    this._selectionSwapped = false;
     this._selectionStart = null;
     this._selectionPointerId = null;
     this._selectionBase = null;
@@ -8588,8 +8618,59 @@ class SpatialLightColorCard extends HTMLElement {
    * of them about a second one -- including the abort path, which is where
    * this card has been bitten before.
    */
+  /**
+   * The shape THIS drag is using: the configured one, or the other one when a
+   * hold has swapped it.
+   *
+   * A getter rather than a mutated config, because the swap is per-gesture and
+   * `_config` is the user's answer, not the gesture's. Every site that cares --
+   * the shape factory and the move driver -- asks here, so there is one place
+   * the swap can be wrong.
+   */
+  _effectiveSelectionMode() {
+    const base = this._config.selection_mode === 'lasso' ? 'lasso' : 'box';
+    if (!this._selectionSwapped) return base;
+    return base === 'lasso' ? 'box' : 'lasso';
+  }
+
+  /**
+   * Arm the hold that swaps the shape for this drag, if one is configured.
+   *
+   * Armed for EVERY pointer type, unlike `_selectionHoldTimer` beside it: that
+   * one exists to settle a touch-only argument with the page scroller, while
+   * this is about which shape you want and a mouse wants it just as much.
+   *
+   * The two can both fire on touch, and the order is not fixed -- a swap hold
+   * under 300ms lands first, over it lands second. Both cases work because the
+   * swap sets a FLAG the shape factory reads, and replaces the band only if one
+   * is already on screen. Fires first: the claim materializes the swapped shape
+   * because the factory asks `_effectiveSelectionMode()`. Fires second: the
+   * band is a zero-size box or a one-point lasso that has not been drawn into
+   * yet, so exchanging it loses nothing and the change is the feedback.
+   */
+  _armSelectionSwap() {
+    const ms = this._config.selection_swap_hold;
+    if (!ms) return;
+    if (this._selectionSwapTimer) clearTimeout(this._selectionSwapTimer);
+    this._selectionSwapTimer = setTimeout(() => {
+      this._selectionSwapTimer = null;
+      if (!this._selectionStart || this._selectionPointerId == null) return;
+      this._selectionSwapped = true;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([12, 45, 12]);
+      if (this._selectionBox) {
+        this._selectionBox.remove();
+        this._lassoPoints = null;
+        this._lassoTip = null;
+        // A pending hit describes the shape that just went away.
+        this._pendingSelectionHit = null;
+        this._selectionBox = this._createSelectionShape(
+          this._selectionStart.x, this._selectionStart.y);
+      }
+    }, ms);
+  }
+
   _createSelectionShape(x, y) {
-    if (this._config.selection_mode === 'lasso') {
+    if (this._effectiveSelectionMode() === 'lasso') {
       const NS = 'http://www.w3.org/2000/svg';
       const svg = document.createElementNS(NS, 'svg');
       svg.setAttribute('class', 'selection-lasso');
@@ -8736,6 +8817,18 @@ class SpatialLightColorCard extends HTMLElement {
    * to ask. Anything unparseable returns null and keeps the default, rather
    * than emitting a broken value into the stylesheet.
    */
+  /**
+   * How long a still hold on empty canvas swaps the selection shape for, in ms.
+   * 0 disables it. Clamped to a band a hand can actually hit: under ~150ms is
+   * indistinguishable from a normal press and would fire on ordinary drags,
+   * and past a few seconds nobody waits.
+   */
+  _normalizeSwapHold(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.round(Math.min(5000, Math.max(150, n)));
+  }
+
   _normalizeSelectionColor(value) {
     if (Array.isArray(value)) {
       const rgb = value.slice(0, 3).map(Number);
@@ -13217,6 +13310,9 @@ class SpatialLightColorCard extends HTMLElement {
     yamlLines.push(`switch_single_tap: ${!!this._config.switch_single_tap}`);
     if (this._config.canvas_touch_scroll === false) yamlLines.push('canvas_touch_scroll: false');
     if (this._config.selection_mode === 'lasso') yamlLines.push('selection_mode: lasso');
+    if (this._config.selection_swap_hold) {
+      yamlLines.push(`selection_swap_hold: ${this._config.selection_swap_hold}`);
+    }
     if (this._config.selection_color) {
       yamlLines.push(`selection_color: [${this._config.selection_color.join(', ')}]`);
     }

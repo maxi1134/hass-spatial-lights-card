@@ -210,6 +210,47 @@ as two unrelated lines, which is what a fixed core colour would have given.
 It colours the BOX marquee too, because the option names the band and not one of its two shapes.
 Unset, both keep exactly what they had: the rectangle its `--accent-primary` mix, the lasso its gold.
 
+**`selection_swap_hold` borrows the other shape for one drag**, and the swap is a per-gesture FLAG
+rather than a mutated config: `_effectiveSelectionMode()` is the single place that answers "which
+shape is this drag", and both the shape factory and the move driver ask it. `_config.selection_mode`
+stays the user's answer; the gesture's answer is `_selectionSwapped`. Reset at pointerdown and in
+`_cancelActiveInteractions`, so a swap can never outlive the drag that earned it.
+
+**It is off by default (0), and that is a judgement rather than caution.** The gesture it costs --
+press, pause, drag -- is one a hand makes without meaning to, most obviously on a desktop where
+somebody presses, thinks, and then drags. Every other option added in this area defaulted to
+preserving what existing cards already did, and this one is the most invisible of them if it goes
+wrong: you would get the wrong shape occasionally and have no idea why.
+
+**Two hold timers now run on empty canvas and they can fire in either order.** `_selectionHoldTimer`
+(300ms, TOUCH only) settles an argument with the page scroller and materializes the band as its cue;
+`_selectionSwapTimer` (configurable, EVERY pointer type, because which shape you want is not a touch
+question) swaps the shape. Both orders are covered by one mechanism and both are measured:
+
+- **Swap first** (hold under 300ms): nothing is on screen yet, so the swap only sets the flag, and
+  the claim then materializes the swapped shape because the factory asks
+  `_effectiveSelectionMode()`. Measured at `selection_swap_hold: 200` on touch: the band comes up as
+  a lasso on a `box` card.
+- **Swap second** (hold over 300ms): a band exists, and it is exchanged. Nothing is lost doing so --
+  the claim fires on a STILL finger, so the band is a zero-size box or a one-point lasso that has
+  not been drawn into. Measured at 500ms: the box is replaced by a lasso mid-hold, and the exchange
+  IS the feedback, alongside a double buzz.
+
+Movement disarms both on the same 10px slop: a drag that set off immediately asked for the shape it
+was configured with. A pending hit is dropped on swap, because it describes the shape that just went
+away.
+
+**`.harness/lasso.html` pins it four ways**: `swapHold` (both directions, off-by-default,
+move-disarms, and that the next gesture is back to normal -- the "per drag" half of the promise),
+`swapVsClaim` (both firing orders), `swapClamp` (10 -> 150, 99999 -> 5000, junk and negative -> 0)
+and `swapAbort` (an interrupted hold leaves no timer to swap a later gesture).
+
+**Two paths in that harness, not one, and the reason is worth keeping**: a lasso wants a closed loop
+while a rectangle is start-corner to finish-corner, and a loop ENDS back at the start's x -- i.e. a
+box of zero width. The first version of `swapHold` used one loop for both and reported the lasso->box
+case selecting nothing, which looks exactly like a broken swap and was a broken test. Each probe now
+passes the path its EXPECTED shape is drawn with.
+
 **The override block is emitted only when the option is set, and it has to come LAST.** Both halves
 are load-bearing and the second one was got wrong first: the block was anchored next to
 `--color-bar-h` near the top of `_styles()`, 400 lines ABOVE the band's own rules, so at equal
