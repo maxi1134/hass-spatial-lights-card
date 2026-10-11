@@ -45,7 +45,7 @@ it, and an open door lets it through.
 | **[Light diffusion](#light-diffusion-light_field)** | Every light paints onto one shared surface, so overlapping pools genuinely mix instead of stacking. Red over blue gives magenta, not two circles. |
 | **[Walls and shadows](#walls-and-shadows)** | Draw walls on the plan and light stops at them, with exact shadows solved by ray-casting &mdash; it wraps around a wall's end precisely where geometry says it should. |
 | **[Doors](#doors--walls-that-open)** | A wall can be tied to a `binary_sensor`, so it blocks light only while the door is shut. |
-| **[The full-size editor](#the-full-size-editor)** | Draw walls and place lights on a near-fullscreen plan instead of a 250px preview pane. |
+| **[The full-size editor](#the-full-size-editor)** | Draw walls, and place, add and remove lights on a near-fullscreen plan instead of a 250px preview pane. |
 | **[Rotating the plan](#rotating-the-plan)** | Turn the whole layout 90/180/270&deg;: lights, zones, walls, image and emission directions together. Non-destructive &mdash; nothing you placed is rewritten. |
 | **[Colour bars](#colour-bars)** | The colour wheel is replaced by four bars: a vertical brightness bar beside colour, saturation and temperature. Easier to aim than a 128px circle. |
 | **[Only the bars that apply](#only-the-controls-a-light-actually-has)** | A bulb that only does white does not get a hue bar, and one that only switches gets an Off &#124; On control instead. |
@@ -391,6 +391,29 @@ means placing it relative to a room.
 Selecting a light in the editor's **Entities** list also highlights it on the plan
 in gold. On a plan with twenty lights, a list row tells you nothing about where it
 actually is.
+
+#### Adding and removing lights without leaving the plan
+
+Laying out a floor plan is one job, and it used to take two windows: pick the
+entity in the **Entities** list, close the editor, open it again, find the marker
+HA dropped somewhere, drag it where it belongs. The panel under the plan does both
+now.
+
+**Add a light** with the picker on the left of that panel. It lands at the centre
+of whatever you are *looking at* &mdash; zoomed in on the kitchen, the new marker
+arrives in the kitchen, not at the middle of the house &mdash; already selected and
+ready to drag. Add three in a row and they step clear of one another instead of
+stacking on the same pixel, which otherwise looks exactly like one light that
+refuses to move.
+
+**Remove one** by tapping it on the plan and pressing **Remove**. That takes its
+position and every per-entity override with it, exactly as the list's own remove
+button does &mdash; one answer to the question, so the two routes cannot leave
+different leftovers in your YAML.
+
+Both land on the ordinary undo stack, so `Ctrl`/`&#8984;` + `Z` puts a light back
+*with* its overrides. And **Cancel** still means what it says: the entity list is
+part of what gets put back.
 
 ---
 

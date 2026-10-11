@@ -1497,6 +1497,109 @@ a 287px stage.
 
 **The modal has two modes.** `_wallEditorMode` is `'walls'` or `'lights'`, arriving on the `spatial-card-wall-mode` event's `mode` field and switchable from the header. In lights mode the canvas light handles become the subject: bigger, labelled, and hit-tested by `_hitTestLightOnStage` (they are canvas drawings, not DOM markers, so hit testing is ours). Dragging writes `_config.positions` and commits on pointerup over the EXISTING `spatial-card-positions-changed` channel the editor already listens on, so no new protocol. Positions feed the field's emitter, so a drag clears `_fieldOccluders` and `_visPolyCache`.
 
+### 8c-i. Adding and removing lights in the full-size editor
+
+The modal could MOVE lights and nothing else; putting one on the plan or taking
+one off meant closing it and going back to the Entities list. Both now live in
+the Lights-mode inspector: a picker on one row, and `Remove` on the selected
+light's row.
+
+**The picker is always on screen, and that is a layout constraint rather than a
+preference.** Selecting a light happens on the POINTERDOWN of a drag, so an
+inspector that grew at that moment would shrink the stage and pull the plan out
+from under the finger -- the exact jump the panel's `min-height` exists to
+prevent. A picker that appeared only when nothing was selected would therefore
+have cost a plan-jump on every grab. Measured across no-selection -> selected ->
+deselected: inspector 85px, stage 264.6px, stage top 191.1px, all three constant.
+
+The selection row carries its own `min-height` (`.wi-lightrow`, 27px) for the
+other half of the same problem: a 12px hint line and a row of 25px buttons are
+not the same height, and the row swaps between them on exactly that pointerdown.
+
+**It costs the chrome, not necessarily the stage.** `--we-chrome` goes 194 ->
+253px with a realistic 56px `ha-entity-picker` in the row, but the stage is
+`min(95vh - chrome, 95vw / ar)` -- on a 2:1 plan in a 1313px window the WIDTH
+term binds and the stage stayed 265x529 either way. On a plan where the height
+term binds it costs the picker's height, which is the price of not jumping.
+
+**`_syncLightInspector` rebuilds only what changed, because the drag calls it
+every frame.** `_onLightStagePointerMove` re-syncs the inspector to keep the
+coordinates live, and the walls branch's `host.innerHTML =` per frame would have
+remounted the entity picker (closing its dropdown mid-choice) and re-bound the
+buttons under the pointer. The mode row is written once per MODE, the selection
+row once per ENTITY, and the coordinates are a `textContent` write. Measured over
+12 pointermoves: the input element is identical throughout, a half-typed value
+survives, and the coordinates still track (30.0%,40.0% -> 52.0%,51.0%).
+
+**A new light lands at the centre of the VIEW, not of the plan.** `_wallPointFromEvent`
+is handed the viewport's own centre, so zoom, pan and `plan_rotation` are answered
+by the one function that already knows about them. Measured at 3.2x with the view
+panned off-centre: the light landed at plan (63, 64.2), screen (279, 324), inside a
+viewport spanning 14..543 x 191..456 -- where the plan centre would have been off
+screen entirely.
+
+`_freePlanSpot` then steps it clear of what is already there, `LIGHT_ADD_GAP` (5%)
+at a time, as a bounded raster scan. Three adds in a row measured (50,50), (55,50),
+(60,50) rather than three markers on one pixel, which reads as one light that will
+not move.
+
+**The selection is static for the same reason the wall selection is.**
+`_lightEditorSelection` mirrors `_lightStageSelected`, because an add, a removal
+OR A DROP fires config-changed and HA hands back a brand-new preview card. That
+last one was already true before this change: finishing a drag emptied the
+inspector. Restored on the same path as the wall index, and validated against the
+current entity list rather than trusted.
+
+**The card says what the list IS; the EDITOR decides what removing takes with
+it.** `entities` rides `spatial-card-positions-changed` -- that event already
+means "the card edited the plan's layout" and every field on it is optional, so a
+second channel would have been a second subscribe, a second teardown and a second
+thing the hello handshake has to survive. The card removes the entity and its
+position; the editor diffs the list and prunes.
+
+`SpatialLightColorCardEditor.ENTITY_KEYED_OVERRIDES` is the one list of every map
+keyed by entity id, and it exists because THREE things have to agree about what an
+entity owns: removing one, the Cancel snapshot, and the position undo stack. The
+Entities list used to be the only one that knew, as eleven hand-written `delete`
+lines -- two of those maps were added this year, and a third added later would
+have been remembered at one site and forgotten at the other two. Verified: the
+list's own Remove still prunes label, colour and lumens overrides, and so does the
+modal's.
+
+**Cancel had to learn the entity list, or it was not a cancel.** The snapshot held
+`positions`, `canvas_elements` and `glow_walls` -- so a light added or deleted in
+the modal survived the revert. It now snapshots the entity state through the same
+helper. `undefined` for a map that does not exist is load-bearing: restoring has
+to DELETE the key rather than write `{}`, or cancelling in a config that never had
+a `positions` block leaves one behind. Measured both ways -- a full revert
+(entities, positions and all three override maps byte-identical), and a
+positions-less config where the key is gone again afterwards.
+
+**The undo stack carries the whole entity state, not just coordinates.** An undo
+that put the positions back and left the list alone would restore a light with
+nowhere to be, or strand a position for a light that is gone. It re-renders the
+EDITOR only when the list actually changed -- `Ctrl+Z` repeats, and rebuilding the
+form for a coordinate is churn. Measured: undo of an add removes the entity AND
+its position, redo restores both; undo of a removal brings the light back with its
+label and colour overrides.
+
+**The Entities list behind the modal is re-rendered explicitly**, because nothing
+else will: `_fireConfigChanged` sets `_configFromEditor`, so HA's round trip
+through `setConfig` returns early by design. Verified the new light appears as a
+list row while the modal is still open.
+
+**Report last, paint first.** `_addLightToPlan` and `_removeLightFromPlan` update
+their own card and only then emit. The editor answers synchronously and HA
+replaces the preview card inside that call, so anything scheduled after the emit
+is work queued on a card that is already gone.
+
+`.harness/light-add.html` holds all of it: `addOne`, `addSeveral`, `removeOne`,
+`cancelRestores`, `cancelDeletesInvented`, `undoAdd`, `undoRemove`, `panelStable`,
+`pickerSurvivesDrag`, `addFromZoom`, `listStillRemoves`, `addDuplicate` (adding
+something already on the plan selects it rather than doing nothing visible) and
+`wallsUntouched`. `all(only)` takes a slice, because the full set overruns a
+single browser call.
+
 **List selection highlights the plan.** The editor's `toggleExpand` broadcasts `spatial-card-highlight-entity`; the card honours it only inside the editor preview and toggles `.light.editor-highlight` (gold, deliberately not the selection colour). `_applyEditorHighlight` re-runs after every `_renderAll`, since that rebuilds the markers.
 
 **Wall inspector.** A tap on a wall in the wall editor selects it (`_selectWall`) and `_syncWallInspector` populates a panel imperatively -- NOT through `_renderAll`, which would destroy and recreate the open `<dialog>` on every selection. The tap gesture was previously wasted: a sub-threshold stroke was discarded and nothing happened, so `_wallDrawState.overWall` records what the press landed on and pointerup selects it. The selection is mirrored onto the static `_wallEditorSelection` because HA replaces the preview card after every config change -- without that, ticking "it's a door" deselected the wall before an entity could be chosen. `_mountWallEntityPicker` uses `ha-entity-picker` when HA has upgraded it (always true, since the wall editor only opens from the card editor) and falls back to a text field.

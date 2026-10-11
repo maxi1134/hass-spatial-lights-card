@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.50.1 (fork-maxi1134)';
+  static BUILD = 'v1.51.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -340,6 +340,18 @@ class SpatialLightColorCard extends HTMLElement {
    * that; the editor is a modal, so there is only ever one.
    */
   static _wallEditorSelection = null;
+  /**
+   * The light picked in the editor's Lights mode, static for the same reason:
+   * a drop, an add or a removal fires config-changed, HA rebuilds the preview
+   * card, and an instance field would go with it -- so the inspector reset
+   * itself the instant you finished dragging.
+   */
+  static _lightEditorSelection = null;
+  /**
+   * Plan-percent clearance a newly added light looks for before it settles.
+   * Several dropped on one pixel look like one light that will not move.
+   */
+  static LIGHT_ADD_GAP = 5;
 
   constructor() {
     super();
@@ -5654,6 +5666,10 @@ class SpatialLightColorCard extends HTMLElement {
       }
       .wall-inspector .wi-hint { color: rgba(255,255,255,0.45); font-size: 12px; }
       .wall-inspector .wi-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      /* Lights mode selects on the pointerdown of a drag, so this row has to
+         be the same height holding a hint as holding the Remove button --
+         otherwise grabbing a light shrinks the stage under the finger. */
+      .wall-inspector .wi-lightrow { min-height: 27px; }
       .wall-inspector .wi-title { font-weight: 700; }
       .wall-inspector .wi-coords { color: rgba(255,255,255,0.5); font-size: 12px; flex: 1; }
       .wall-inspector .wi-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -6116,7 +6132,7 @@ class SpatialLightColorCard extends HTMLElement {
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
-          ? 'Drag a light to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
+          ? 'Drag a light to move it &middot; tap to see which it is &middot; add or remove one in the panel above &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
           : 'Drag to draw &mdash; starting on a corner attaches to it exactly &middot; '
             + '<kbd>Esc</kbd> ends a run &middot; '
             + '<kbd>Shift</kbd>-drag a corner or a wall to move it &middot; '
@@ -6451,6 +6467,8 @@ class SpatialLightColorCard extends HTMLElement {
     if (!this._wallEditMode) return;
     this._wallSelectedIndex = null;
     SpatialLightColorCard._wallEditorSelection = null;
+    this._lightStageSelected = null;
+    SpatialLightColorCard._lightEditorSelection = null;
     this._wallEditMode = false;
     this._wallEditorId = null;
     this._wallChainAnchor = null;
@@ -7379,6 +7397,7 @@ class SpatialLightColorCard extends HTMLElement {
         this._wallSelectedIndex = null;
         SpatialLightColorCard._wallEditorSelection = null;
         this._lightStageSelected = null;
+        SpatialLightColorCard._lightEditorSelection = null;
         this._wallDrawState = null;
         this._draftWalls = null;
         this._wallChainAnchor = null;
@@ -7429,6 +7448,14 @@ class SpatialLightColorCard extends HTMLElement {
           && SpatialLightColorCard._wallEditorSelection != null
           && this._wallList()[SpatialLightColorCard._wallEditorSelection]) {
         this._wallSelectedIndex = SpatialLightColorCard._wallEditorSelection;
+      }
+      // Same reason, for the light: a drop, an add or a removal fires
+      // config-changed and HA hands us a brand-new card, so without this the
+      // inspector emptied itself the moment you finished the gesture.
+      if (!this._lightStageSelected
+          && SpatialLightColorCard._lightEditorSelection
+          && (this._config.entities || []).includes(SpatialLightColorCard._lightEditorSelection)) {
+        this._lightStageSelected = SpatialLightColorCard._lightEditorSelection;
       }
       this._syncWallInspector();
     }
@@ -12660,6 +12687,7 @@ class SpatialLightColorCard extends HTMLElement {
     try { this._wallSurface()?.setPointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
     const id = this._hitTestLightOnStage(pt, pt.rect);
     this._lightStageSelected = id || null;
+    SpatialLightColorCard._lightEditorSelection = this._lightStageSelected;
     this._lightStageDrag = id
       ? { id, pointerId: e.pointerId, moved: false,
           grab: { x: pt.x, y: pt.y },
@@ -12783,30 +12811,10 @@ class SpatialLightColorCard extends HTMLElement {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => this._sizeWallEditor());
 
     if (this._wallEditorMode === 'lights') {
-      const id = this._lightStageSelected;
-      if (!id) {
-        host.innerHTML = '<div class="wi-hint">Drag a light to move it &middot; tap one to identify it</div>';
-        return;
-      }
-      const pos = this._config.positions[id] || { x: 50, y: 50 };
-      const st = this._hass && this._hass.states[id];
-      const name = (st && st.attributes && st.attributes.friendly_name) || id;
-      host.innerHTML = `
-        <div class="wi-row">
-          <span class="wi-title">${this._escapeHtml(name)}</span>
-          <span class="wi-coords">${this._escapeHtml(id)} &middot; ${pos.x.toFixed(1)}%, ${pos.y.toFixed(1)}%</span>
-          <button class="wi-btn" id="wiClose">&times;</button>
-        </div>`;
-      const close = host.querySelector('#wiClose');
-      if (close) {
-        close.addEventListener('click', () => {
-          this._lightStageSelected = null;
-          this._syncWallInspector();
-          this._requestWallEditorDraw();
-        });
-      }
+      this._syncLightInspector(host);
       return;
     }
+    host.dataset.wiMode = 'walls';
 
     const walls = this._wallList();
     const idx = this._wallSelectedIndex;
@@ -12880,6 +12888,250 @@ class SpatialLightColorCard extends HTMLElement {
       });
     }
     if (isDoor) this._mountWallEntityPicker();
+  }
+
+  /**
+   * The Lights-mode inspector: a picker on top, the selection underneath, and
+   * BOTH rows always present.
+   *
+   * Always present because selecting a light happens on the pointerdown of a
+   * drag -- a panel that grew at that moment would shrink the stage and pull
+   * the plan out from under the finger, which is the jump the inspector's
+   * min-height exists to prevent (section 8c). The picker therefore cannot
+   * appear only when nothing is selected, however much tidier that reads.
+   *
+   * It also rebuilds only what actually changed. `_onLightStagePointerMove`
+   * calls this on every frame of a drag to keep the coordinates live, and an
+   * `innerHTML` write per frame would remount the entity picker (closing its
+   * dropdown mid-choice) and re-bind the buttons under the pointer.
+   */
+  _syncLightInspector(host) {
+    if (host.dataset.wiMode !== 'lights') {
+      host.dataset.wiMode = 'lights';
+      host.innerHTML = `
+        <div class="wi-row">
+          <span class="wi-title">Add a light</span>
+          <div class="wi-picker" id="wiAddSlot"></div>
+        </div>
+        <div class="wi-row wi-lightrow" id="wiLightRow"></div>`;
+      this._mountLightAddPicker();
+    }
+    const row = host.querySelector('#wiLightRow');
+    if (!row) return;
+
+    const id = this._lightStageSelected;
+    if (!id) {
+      if (row.dataset.entity !== '') {
+        row.dataset.entity = '';
+        row.innerHTML = '<span class="wi-hint">Drag a light to move it &middot; '
+          + 'tap one to identify it, or to take it off the plan</span>';
+      }
+      return;
+    }
+
+    if (row.dataset.entity !== id) {
+      row.dataset.entity = id;
+      const st = this._hass && this._hass.states[id];
+      const name = (st && st.attributes && st.attributes.friendly_name) || id;
+      row.innerHTML = `
+        <span class="wi-title">${this._escapeHtml(name)}</span>
+        <span class="wi-coords" id="wiCoords"></span>
+        <button class="wi-btn wi-danger" id="wiRemove">Remove</button>
+        <button class="wi-btn" id="wiClose">&times;</button>`;
+      const close = row.querySelector('#wiClose');
+      if (close) close.addEventListener('click', () => this._setLightStageSelection(null));
+      const rm = row.querySelector('#wiRemove');
+      if (rm) rm.addEventListener('click', () => this._removeLightFromPlan(id));
+    }
+    const pos = (this._config.positions && this._config.positions[id]) || { x: 50, y: 50 };
+    const co = row.querySelector('#wiCoords');
+    if (co) co.textContent = `${id} · ${pos.x.toFixed(1)}%, ${pos.y.toFixed(1)}%`;
+  }
+
+  /** Pick a light on the stage, mirroring it onto the static so the config
+   *  change a later edit causes cannot take the selection with the card. */
+  _setLightStageSelection(id) {
+    this._lightStageSelected = id || null;
+    SpatialLightColorCard._lightEditorSelection = this._lightStageSelected;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  /**
+   * The "add a light" picker. Same shape as the wall editor's door picker --
+   * `ha-entity-picker` where HA has upgraded it, a plain text field where it
+   * has not -- and mounted once, since the row it lives in is only rebuilt
+   * when the inspector changes mode.
+   */
+  _mountLightAddPicker() {
+    const host = this._els && this._els.wallInspector;
+    const slot = host && host.querySelector('#wiAddSlot');
+    if (!slot || slot.dataset.mounted) return;
+    const taken = new Set(this._config.entities || []);
+
+    if (typeof customElements !== 'undefined' && customElements.get('ha-entity-picker')) {
+      const picker = document.createElement('ha-entity-picker');
+      picker.hass = this._hass;
+      picker.label = 'Add a light...';
+      picker.allowCustomEntity = true;
+      // The same domains the card editor's own add picker offers: this card
+      // drives switches, scenes and input_booleans as well as lights.
+      picker.includeDomains = ['light', 'switch', 'scene', 'input_boolean', 'binary_sensor'];
+      // Something already on the plan is a dead option -- adding it only
+      // selects it -- so it is filtered out the way the editor's list does.
+      picker.excludeEntities = Array.from(taken);
+      picker.entityFilter = (e) => {
+        const id = (typeof e === 'string' ? e : (e && e.entity_id) || '');
+        return id ? !taken.has(id) : true;
+      };
+      picker.addEventListener('value-changed', (ev) => {
+        this._addLightToPlan(ev.detail && ev.detail.value);
+      });
+      slot.appendChild(picker);
+    } else {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'wi-input';
+      input.placeholder = 'light.kitchen';
+      input.addEventListener('change', () => {
+        const v = input.value;
+        input.value = '';
+        this._addLightToPlan(v);
+      });
+      slot.appendChild(input);
+    }
+    slot.dataset.mounted = '1';
+  }
+
+  /**
+   * Put an entity on the plan from inside the editor.
+   *
+   * It lands at the centre of what you are LOOKING at rather than the centre
+   * of the plan, so on a zoomed-in view the new marker arrives where the eye
+   * already is instead of somewhere off screen.
+   */
+  _addLightToPlan(entityId) {
+    const entity = String(entityId == null ? '' : entityId).trim();
+    if (!entity) return;
+    if (!Array.isArray(this._config.entities)) this._config.entities = [];
+    if (this._config.entities.includes(entity)) {
+      // Already here. Selecting it SAYS so; an inert picker would read as a
+      // broken control.
+      this._setLightStageSelection(entity);
+      return;
+    }
+    if (!this._config.positions || typeof this._config.positions !== 'object') {
+      this._config.positions = {};
+    }
+    // A position already in config is the user's own earlier placement -- an
+    // override map outliving its entity -- so only invent one when there is
+    // nothing to keep.
+    const existing = this._config.positions[entity];
+    if (!existing || !Number.isFinite(existing.x) || !Number.isFinite(existing.y)) {
+      this._config.positions[entity] = this._freePlanSpot();
+    }
+    this._config.entities.push(entity);
+    // A new emitter, and both field caches are keyed on the lights that exist.
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
+    this._lightStageSelected = entity;
+    SpatialLightColorCard._lightEditorSelection = entity;
+    // Paint first, report second. The editor answers this synchronously and
+    // HA replaces the preview card inside that call, so anything scheduled
+    // after the emit is work queued on a card that is already gone.
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+    this._requestLightFieldDraw();
+    this._emitPlanEntities();
+  }
+
+  /**
+   * Take an entity off the plan.
+   *
+   * The card removes it from its own list and position map and reports both;
+   * the EDITOR owns what else removing means, because it is the one that
+   * knows every per-entity override map -- the same helper its Entities list
+   * calls, so the two routes cannot prune different things.
+   */
+  _removeLightFromPlan(entityId) {
+    const entity = String(entityId == null ? '' : entityId).trim();
+    if (!entity || !Array.isArray(this._config.entities)) return;
+    const idx = this._config.entities.indexOf(entity);
+    if (idx < 0) return;
+    this._config.entities.splice(idx, 1);
+    if (this._config.positions) delete this._config.positions[entity];
+    this._fieldOccluders = null;
+    if (this._visPolyCache) this._visPolyCache.clear();
+    this._lightStageSelected = null;
+    SpatialLightColorCard._lightEditorSelection = null;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+    this._requestLightFieldDraw();
+    this._emitPlanEntities();
+  }
+
+  /**
+   * Report the plan's entity list and positions to the editor.
+   *
+   * It rides `spatial-card-positions-changed` rather than a channel of its
+   * own: that event already means "the card edited the plan's layout", every
+   * field on it is optional, and a second channel is a second subscribe, a
+   * second teardown and a second thing the hello handshake has to survive.
+   */
+  _emitPlanEntities() {
+    if (typeof window === 'undefined' || !this._wallEditorId) return;
+    window.dispatchEvent(new CustomEvent('spatial-card-positions-changed', {
+      detail: {
+        editorId: this._wallEditorId,
+        entities: (this._config.entities || []).slice(),
+        positions: JSON.parse(JSON.stringify(this._config.positions || {})),
+      },
+    }));
+  }
+
+  /**
+   * A plan-percent point at the centre of the visible viewport, stepped clear
+   * of whatever is already there.
+   *
+   * The walk is a bounded raster scan rather than a solver: it only has to
+   * stop two lights landing on the same pixel, and a user who fills a plan
+   * this way is going to drag them where they belong anyway.
+   */
+  _freePlanSpot() {
+    const centre = this._viewCentrePlanPoint() || { x: 50, y: 50 };
+    const GAP = SpatialLightColorCard.LIGHT_ADD_GAP;
+    const taken = [];
+    for (const id of (this._config.entities || [])) {
+      const p = this._config.positions && this._config.positions[id];
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) taken.push(p);
+    }
+    const clamp = (v) => Math.max(2, Math.min(98, v));
+    let x = clamp(centre.x);
+    let y = clamp(centre.y);
+    for (let i = 0; i < 60; i++) {
+      const clash = taken.some((p) => Math.abs(p.x - x) < GAP && Math.abs(p.y - y) < GAP);
+      if (!clash) break;
+      x += GAP;
+      if (x > 98) { x = 2; y += GAP; }
+      if (y > 98) { y = 2; }
+    }
+    return { x: Math.round(clamp(x) * 10) / 10, y: Math.round(clamp(y) * 10) / 10 };
+  }
+
+  /**
+   * The plan-space point under the middle of the editor's viewport. Measured
+   * through `_wallPointFromEvent`, which is the one function that already
+   * knows about zoom, pan and plan rotation.
+   */
+  _viewCentrePlanPoint() {
+    const vp = this._els && this._els.wallViewport;
+    if (!vp || !this._wallSurface()) return null;
+    const r = vp.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return null;
+    return this._wallPointFromEvent({
+      clientX: r.left + r.width / 2,
+      clientY: r.top + r.height / 2,
+    });
   }
 
   _selectedWall() {
@@ -13728,6 +13980,31 @@ class SpatialLightColorCard extends HTMLElement {
 
 /** ---------- Visual Card Editor ---------- */
 class SpatialLightColorCardEditor extends HTMLElement {
+  /**
+   * Every config map keyed by entity id.
+   *
+   * It exists because three things have to agree about what an entity OWNS --
+   * removing one, snapshotting the plan for Cancel, and the position undo
+   * stack -- and the Entities list used to be the only one that knew, as
+   * eleven hand-written `delete` lines. A map added later (two were this
+   * year) would have been remembered at one site and forgotten at the other
+   * two, which reads as an orphan entry in the user's YAML or a Cancel that
+   * does not quite cancel.
+   */
+  static ENTITY_KEYED_OVERRIDES = [
+    'positions',
+    'size_overrides',
+    'lumens_overrides',
+    'group_exempt_overrides',
+    'icon_only_overrides',
+    'label_overrides',
+    'color_overrides',
+    'icon_rotation_overrides',
+    'icon_mirror_overrides',
+    'glow_overrides',
+    'style_overrides',
+  ];
+
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -13761,18 +14038,40 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
   async connectedCallback() {
     this._boundPositionHandler = (e) => {
-      if (e.detail && e.detail.editorId === this._editorId) {
-        if (e.detail.positions) {
-          this._pushPositionHistory();
-          if (!this._config.positions) this._config.positions = {};
-          this._config.positions = e.detail.positions;
-        }
-        // Also handle canvas element position changes from drag
-        if (e.detail.canvas_elements && Array.isArray(e.detail.canvas_elements)) {
-          this._config.canvas_elements = e.detail.canvas_elements;
-        }
-        this._fireConfigChanged();
+      if (!e.detail || e.detail.editorId !== this._editorId) return;
+      const d = e.detail;
+      // The full-size editor can now add and remove lights, and it reports
+      // the list on this channel rather than one of its own: this event
+      // already means "the card edited the plan's layout", and every field on
+      // it is optional.
+      const listed = Array.isArray(d.entities) ? d.entities : null;
+      const entitiesChanged = !!listed
+        && JSON.stringify(listed) !== JSON.stringify(this._config.entities || []);
+      // Before anything is written, so an undo lands on the state the user
+      // was looking at.
+      if (d.positions || entitiesChanged) this._pushPositionHistory();
+      if (d.positions) {
+        if (!this._config.positions) this._config.positions = {};
+        this._config.positions = d.positions;
       }
+      // Also handle canvas element position changes from drag
+      if (d.canvas_elements && Array.isArray(d.canvas_elements)) {
+        this._config.canvas_elements = d.canvas_elements;
+      }
+      if (entitiesChanged) {
+        // The card says what the list IS; the editor decides what dropping an
+        // entity from it takes with it, because it is the side that knows
+        // every per-entity override map. Positions are applied first, above,
+        // so the prune has the last word on the one it owns.
+        const gone = (this._config.entities || []).filter((id) => !listed.includes(id));
+        this._config.entities = listed.slice();
+        gone.forEach((id) => this._pruneEntityKeys(id));
+      }
+      this._fireConfigChanged();
+      // The Entities list behind the modal is now stale, and nothing else
+      // will rebuild it: _fireConfigChanged sets _configFromEditor, so HA's
+      // round trip through setConfig returns early by design.
+      if (entitiesChanged) this._render();
     };
     window.addEventListener('spatial-card-positions-changed', this._boundPositionHandler);
 
@@ -13812,7 +14111,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       this._wallEditorSnapshot = null;
       this._wallDrawActive = false;
       if (snap) {
-        this._config.positions = snap.positions;
+        this._applyEntityStateSnapshot(snap);
         this._config.canvas_elements = snap.canvas_elements;
         this._config.glow_walls = snap.glow_walls;
         // Both stacks hold states from the session being thrown away; an undo
@@ -14160,8 +14459,49 @@ class SpatialLightColorCardEditor extends HTMLElement {
     this._setDOMValues();
   }
 
+  /** Forget everything an entity owns. The single answer to "what does
+   *  removing a light take with it", called by the Entities list and by the
+   *  full-size editor's own Remove. */
+  _pruneEntityKeys(entity) {
+    if (!entity) return;
+    for (const key of SpatialLightColorCardEditor.ENTITY_KEYED_OVERRIDES) {
+      const map = this._config[key];
+      if (map && typeof map === 'object') delete map[entity];
+    }
+    if (this._expandedEntity === entity) this._expandedEntity = null;
+  }
+
+  /** The entity list and every map keyed off it, deep-cloned. `undefined` for
+   *  a map that does not exist is deliberate: restoring it has to DELETE the
+   *  key rather than write an empty object, or a Cancel leaves `positions: {}`
+   *  in a config that never had one. */
+  _entityStateSnapshot() {
+    const snap = {
+      entities: JSON.parse(JSON.stringify(this._config.entities || [])),
+      maps: {},
+    };
+    for (const key of SpatialLightColorCardEditor.ENTITY_KEYED_OVERRIDES) {
+      snap.maps[key] = this._config[key] === undefined
+        ? undefined
+        : JSON.parse(JSON.stringify(this._config[key]));
+    }
+    return snap;
+  }
+
+  _applyEntityStateSnapshot(snap) {
+    if (!snap) return;
+    this._config.entities = snap.entities;
+    for (const key of SpatialLightColorCardEditor.ENTITY_KEYED_OVERRIDES) {
+      if (snap.maps[key] === undefined) delete this._config[key];
+      else this._config[key] = snap.maps[key];
+    }
+  }
+
   _pushPositionHistory() {
-    const snapshot = JSON.parse(JSON.stringify(this._config.positions || {}));
+    // The whole entity state, not just positions: the full-size editor can
+    // add and remove lights now, so an undo that put the coordinates back and
+    // left the list alone would restore a light with nowhere to be.
+    const snapshot = this._entityStateSnapshot();
     // Avoid duplicate consecutive snapshots
     const last = this._positionHistory[this._positionHistory.length - 1];
     if (last && JSON.stringify(last) === JSON.stringify(snapshot)) return;
@@ -14414,19 +14754,32 @@ class SpatialLightColorCardEditor extends HTMLElement {
   _undoPositions() {
     if (this._positionHistory.length === 0) return;
     // Push current state to redo stack
-    this._positionRedoStack.push(JSON.parse(JSON.stringify(this._config.positions || {})));
-    this._config.positions = this._positionHistory.pop();
+    const before = this._entityStateSnapshot();
+    this._positionRedoStack.push(before);
+    const snap = this._positionHistory.pop();
+    this._applyEntityStateSnapshot(snap);
     this._fireConfigChanged();
+    // Only a change to the LIST needs the form rebuilt. Ctrl+Z repeats, and
+    // re-rendering the whole editor for a coordinate is churn nobody asked
+    // for -- the preview card is rebuilt by HA either way.
+    if (this._entityListChanged(before, snap)) this._render();
     this._updateUndoRedoButtons();
   }
 
   _redoPositions() {
     if (this._positionRedoStack.length === 0) return;
     // Push current state to undo stack
-    this._positionHistory.push(JSON.parse(JSON.stringify(this._config.positions || {})));
-    this._config.positions = this._positionRedoStack.pop();
+    const before = this._entityStateSnapshot();
+    this._positionHistory.push(before);
+    const snap = this._positionRedoStack.pop();
+    this._applyEntityStateSnapshot(snap);
     this._fireConfigChanged();
+    if (this._entityListChanged(before, snap)) this._render();
     this._updateUndoRedoButtons();
+  }
+
+  _entityListChanged(a, b) {
+    return JSON.stringify(a.entities || []) !== JSON.stringify(b.entities || []);
   }
 
   _updateUndoRedoButtons() {
@@ -16739,18 +17092,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         const idx = parseInt(btn.dataset.index, 10);
         const entity = this._config.entities[idx];
         this._config.entities.splice(idx, 1);
-        if (this._config.positions) delete this._config.positions[entity];
-        if (this._config.size_overrides) delete this._config.size_overrides[entity];
-        if (this._config.lumens_overrides) delete this._config.lumens_overrides[entity];
-        if (this._config.group_exempt_overrides) delete this._config.group_exempt_overrides[entity];
-        if (this._config.icon_only_overrides) delete this._config.icon_only_overrides[entity];
-        if (this._config.label_overrides) delete this._config.label_overrides[entity];
-        if (this._config.color_overrides) delete this._config.color_overrides[entity];
-        if (this._config.icon_rotation_overrides) delete this._config.icon_rotation_overrides[entity];
-        if (this._config.icon_mirror_overrides) delete this._config.icon_mirror_overrides[entity];
-        if (this._config.glow_overrides) delete this._config.glow_overrides[entity];
-        if (this._config.style_overrides) delete this._config.style_overrides[entity];
-        if (this._expandedEntity === entity) this._expandedEntity = null;
+        this._pruneEntityKeys(entity);
         this._fireConfigChanged();
         this._render();
       });
@@ -17736,13 +18078,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._wallViewState = null;
         if (this._wallDrawActive) {
         // Everything the modal can change, as it stands right now. Wall
-        // strokes and light drops commit to config as they happen, so Cancel
-        // has nothing to undo unless the state it started from was kept.
-        this._wallEditorSnapshot = {
-          positions: JSON.parse(JSON.stringify(this._config.positions || {})),
+        // strokes, light drops, adds and removals all commit to config as
+        // they happen, so Cancel has nothing to undo unless the state it
+        // started from was kept -- the entity list and its override maps
+        // included, or a light removed in there would survive the revert.
+        this._wallEditorSnapshot = Object.assign(this._entityStateSnapshot(), {
           canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
           glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
-        };
+        });
         }
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: this._wallDrawActive, mode: 'walls' },
@@ -17769,13 +18112,14 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._wallDrawMode = 'lights';
         this._wallViewState = null;
         // Everything the modal can change, as it stands right now. Wall
-        // strokes and light drops commit to config as they happen, so Cancel
-        // has nothing to undo unless the state it started from was kept.
-        this._wallEditorSnapshot = {
-          positions: JSON.parse(JSON.stringify(this._config.positions || {})),
+        // strokes, light drops, adds and removals all commit to config as
+        // they happen, so Cancel has nothing to undo unless the state it
+        // started from was kept -- the entity list and its override maps
+        // included, or a light removed in there would survive the revert.
+        this._wallEditorSnapshot = Object.assign(this._entityStateSnapshot(), {
           canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
           glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
-        };
+        });
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: true, mode: 'lights' },
         }));
