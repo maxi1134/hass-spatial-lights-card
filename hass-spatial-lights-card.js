@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.51.0 (fork-maxi1134)';
+  static BUILD = 'v1.51.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -645,7 +645,15 @@ class SpatialLightColorCard extends HTMLElement {
     }
 
     this._config = {
-      entities: config.entities,
+      // COPIED, not referenced. Home Assistant deep-freezes the Lovelace
+      // config before handing it to setConfig, and this was the one field
+      // that reached _config as the caller's own object rather than as
+      // something this method built -- every other key here is normalized
+      // into a fresh value. Nothing wrote to it for the card's whole life,
+      // so the sharing was invisible until the full-size editor learned to
+      // add and remove lights and a splice threw "Cannot assign to read only
+      // property" on a real dashboard.
+      entities: config.entities.slice(),
       positions: normalizedPositions,
       title: config.title || '',
       // Used when there is no plan image to take a ratio from, when the image
@@ -13030,7 +13038,9 @@ class SpatialLightColorCard extends HTMLElement {
     if (!existing || !Number.isFinite(existing.x) || !Number.isFinite(existing.y)) {
       this._config.positions[entity] = this._freePlanSpot();
     }
-    this._config.entities.push(entity);
+    // A new array rather than a push, so this is correct whatever _config
+    // was built from.
+    this._config.entities = [...this._config.entities, entity];
     // A new emitter, and both field caches are keyed on the lights that exist.
     this._fieldOccluders = null;
     if (this._visPolyCache) this._visPolyCache.clear();
@@ -13056,9 +13066,8 @@ class SpatialLightColorCard extends HTMLElement {
   _removeLightFromPlan(entityId) {
     const entity = String(entityId == null ? '' : entityId).trim();
     if (!entity || !Array.isArray(this._config.entities)) return;
-    const idx = this._config.entities.indexOf(entity);
-    if (idx < 0) return;
-    this._config.entities.splice(idx, 1);
+    if (!this._config.entities.includes(entity)) return;
+    this._config.entities = this._config.entities.filter((e) => e !== entity);
     if (this._config.positions) delete this._config.positions[entity];
     this._fieldOccluders = null;
     if (this._visPolyCache) this._visPolyCache.clear();

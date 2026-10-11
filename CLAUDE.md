@@ -1593,6 +1593,35 @@ their own card and only then emit. The editor answers synchronously and HA
 replaces the preview card inside that call, so anything scheduled after the emit
 is work queued on a card that is already gone.
 
+**HOME ASSISTANT DEEP-FREEZES THE CONFIG, and `entities` was the one field the
+card held BY REFERENCE.** v1.51.0 shipped with `this._config.entities.splice()`
+and it threw `Cannot assign to read only property '8'` on the first Remove on a
+real dashboard, while all thirteen probes passed.
+
+Every other key in `setConfig`'s `this._config = {...}` is normalized into a
+fresh value -- `positions` is rebuilt entry by entry, which is exactly why
+dragging a light had always worked -- and `entities: config.entities` was the
+single line that handed the caller's own object straight through. Nothing in the
+card had ever written to it in its whole life, so the sharing was invisible until
+this feature. Audited the rest afterwards: every other in-place write to a
+`_config` collection is in the EDITOR class, whose `_config` is a
+`JSON.parse(JSON.stringify(config))` deep clone, so the card had no other
+exposure.
+
+Fixed in BOTH places, deliberately. `setConfig` now `.slice()`s, which protects
+the whole card rather than two methods; and the two writers build a new array
+(spread, `filter`) instead of mutating, so they are correct whatever `_config`
+was built from. Either alone would have fixed the report.
+
+**The harness was the real failure, and it is fixed at the boundary.** It passed
+`JSON.parse(JSON.stringify(CONFIG))`, which is a faithful copy of the SHAPE and
+not of the CONTRACT -- HA calls `deepFreeze` before `setConfig`. `light-add.html`
+now freezes what it hands both the card and the editor, and `configIsFrozen`
+asserts the card received a frozen object, that its own array is a different one,
+and that the copy is writable. Remove the `.slice()` and `cardOwnsItsArray`
+flips. The general lesson: a harness that clones where the host freezes is
+testing what a clone permits, not what the host does.
+
 `.harness/light-add.html` holds all of it: `addOne`, `addSeveral`, `removeOne`,
 `cancelRestores`, `cancelDeletesInvented`, `undoAdd`, `undoRemove`, `panelStable`,
 `pickerSurvivesDrag`, `addFromZoom`, `listStillRemoves`, `addDuplicate` (adding

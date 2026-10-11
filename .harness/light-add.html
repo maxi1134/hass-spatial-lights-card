@@ -35,16 +35,28 @@ let card, editor;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const frame=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
 
+// Home Assistant DEEP-FREEZES the Lovelace config before handing it to
+// setConfig. A plain JSON clone does not, which is exactly how v1.51.0 shipped
+// a splice on a frozen array: every probe passed, and a real dashboard threw
+// "Cannot assign to read only property" on the first Remove.
+function deepFreeze(o){
+  if(o && typeof o==='object' && !Object.isFrozen(o)){
+    Object.freeze(o); Object.values(o).forEach(deepFreeze);
+  }
+  return o;
+}
 function mountCard(){
   const pv=document.getElementById('pv'); pv.innerHTML='';
   card=document.createElement('spatial-light-color-card');
-  card.setConfig(JSON.parse(JSON.stringify(CONFIG))); card.hass=hass;
+  // Kept so a probe can assert the card really was handed a frozen object.
+  window.LAST_SET=deepFreeze(JSON.parse(JSON.stringify(CONFIG)));
+  card.setConfig(window.LAST_SET); card.hass=hass;
   pv.appendChild(card); window.card=card;
 }
 function mountEditor(){
   const col=document.getElementById('edcol'); col.innerHTML='';
   editor=document.createElement('spatial-light-color-card-editor');
-  editor.hass=hass; editor.setConfig(JSON.parse(JSON.stringify(CONFIG)));
+  editor.hass=hass; editor.setConfig(deepFreeze(JSON.parse(JSON.stringify(CONFIG))));
   col.appendChild(editor); window.editor=editor;
   editor.addEventListener('config-changed',(e)=>{ CONFIG=e.detail.config; mountCard(); });
 }
@@ -322,7 +334,22 @@ window.wallsUntouched=async function(){
     title: C().shadowRoot.querySelector('.wall-editor-title').textContent};
 };
 
-const PROBES=['addOne','addSeveral','removeOne','cancelRestores','cancelDeletesInvented',
+/** The config really is frozen, so the probes above are testing what HA does
+ *  rather than what a JSON clone permits. */
+window.configIsFrozen=async function(){
+  await reset(); await openLights();
+  const c=C();
+  let pushThrew=false;
+  try { c._config.entities.push('light.z'); } catch(e){ pushThrew=true; }
+  return {handedFrozen: Object.isFrozen(window.LAST_SET),
+    handedArrayFrozen: Object.isFrozen(window.LAST_SET.entities),
+    // the CARD's own copy must NOT be the one it was handed -- that is the fix
+    cardOwnsItsArray: c._config.entities!==window.LAST_SET.entities,
+    cardArrayWritable: pushThrew===false,
+    positionsWritable: !Object.isFrozen(c._config.positions)};
+};
+
+const PROBES=['configIsFrozen','addOne','addSeveral','removeOne','cancelRestores','cancelDeletesInvented',
   'undoAdd','undoRemove','panelStable','pickerSurvivesDrag','addFromZoom',
   'listStillRemoves','addDuplicate','wallsUntouched'];
 window.probes=()=>PROBES;
