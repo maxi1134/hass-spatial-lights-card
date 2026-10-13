@@ -75,12 +75,64 @@ const C=()=>window.card;
 const insp=()=>C().shadowRoot.getElementById('wallInspector');
 const addField=()=>C().shadowRoot.querySelector('#wiAddSlot input');
 
+function stageRect(){ return C().shadowRoot.getElementById('wallEditorStage').getBoundingClientRect(); }
+/** altKey defaults TRUE so a probe lands exactly where it aimed; the grid is
+ *  asserted on its own, by a probe that leaves it off. */
+function stageEv(fx,fy,o){
+  const r=stageRect();
+  return Object.assign({clientX:r.left+r.width*fx, clientY:r.top+r.height*fy,
+    pointerId:11, button:0, pointerType:'mouse', preventDefault(){}, altKey:true}, o||{});
+}
+
 /** Type into the add field and commit, the way the fallback control works
- *  when HA has not upgraded ha-entity-picker (which it has not, here). */
-async function addLight(id){
+ *  when HA has not upgraded ha-entity-picker (which it has not, here). This
+ *  ARMS a placement now -- it does not add anything. */
+async function pickLight(id){
   const f=addField(); if(!f) return 'no add field';
   f.value=id; f.dispatchEvent(new Event('change',{bubbles:true}));
-  await sleep(500); return null;
+  await frame(); return null;
+}
+function viewportEv(vfx,vfy,o){
+  const vr=C().shadowRoot.getElementById('wallEditorViewport').getBoundingClientRect();
+  return Object.assign({clientX:vr.left+vr.width*vfx, clientY:vr.top+vr.height*vfy,
+    pointerId:12, button:0, pointerType:'mouse', preventDefault(){}, altKey:true}, o||{});
+}
+async function clickViewport(vfx,vfy,o){
+  const c=C();
+  c._onLightStagePointerDown(viewportEv(vfx,vfy,o));
+  c._onLightStagePointerUp(viewportEv(vfx,vfy,o));
+  await sleep(500);
+}
+async function hoverPlan(fx,fy,o){ C()._onLightStagePointerMove(stageEv(fx,fy,o)); await frame(); }
+async function clickPlan(fx,fy,o){
+  const c=C();
+  c._onLightStagePointerDown(stageEv(fx,fy,o));
+  c._onLightStagePointerUp(stageEv(fx,fy,o));
+  await sleep(500);
+}
+async function addLight(id,fx,fy,o){
+  const err=await pickLight(id); if(err) return err;
+  if(!C()._isPlacingLight()) return 'did not arm';
+  await clickPlan(fx===undefined?0.5:fx, fy===undefined?0.5:fy, o);
+  return null;
+}
+/** Sum every channel over a box of the editor canvas, so "did the ghost
+ *  paint" is a measurement rather than a guess about one pixel -- the ring is
+ *  hollow and the crosshair has a gap in the middle. */
+function regionSum(fx,fy,halfPx){
+  const c=C();
+  const cv=c.shadowRoot.getElementById('wallEditorCanvas');
+  const vr=c.shadowRoot.getElementById('wallEditorViewport').getBoundingClientRect();
+  const r=stageRect();
+  const dpr=cv.width/vr.width;
+  const sx=(r.left+r.width*fx-vr.left)*dpr, sy=(r.top+r.height*fy-vr.top)*dpr;
+  const h=(halfPx||22)*dpr;
+  const x=Math.max(0,Math.round(sx-h)), y=Math.max(0,Math.round(sy-h));
+  const w=Math.min(cv.width-x,Math.round(h*2)), hh=Math.min(cv.height-y,Math.round(h*2));
+  if(w<=0||hh<=0) return 0;
+  const d=cv.getContext('2d').getImageData(x,y,w,hh).data;
+  let t=0; for(let i=0;i<d.length;i++) t+=d[i];
+  return t;
 }
 /** Tap a light on the stage: pointerdown + pointerup with no movement, which
  *  selects without committing a drag. */
@@ -102,11 +154,13 @@ function dist(a,b){ return Math.round(Math.hypot(a.x-b.x,a.y-b.y)*10)/10; }
 window.addOne=async function(){
   await reset(); await openLights();
   const before={entities:CONFIG.entities.slice(), n:CONFIG.entities.length};
-  const err=await addLight('light.c');
+  const err=await addLight('light.c', 0.22, 0.78);
   const pos=(CONFIG.positions||{})['light.c'];
   return {err, before, after:CONFIG.entities.slice(),
     added: CONFIG.entities.includes('light.c'),
     position: pos ? {x:pos.x,y:pos.y} : null,
+    // It has to land where it was CLICKED -- the whole point of the change.
+    landedWhereClicked: !!pos && Math.abs(pos.x-22)<0.6 && Math.abs(pos.y-78)<0.6,
     onPlan: !!pos && pos.x>0 && pos.x<100 && pos.y>0 && pos.y<100,
     // The card HA just rebuilt has to come up with the new light selected,
     // or adding one looks like nothing happened.
@@ -121,18 +175,19 @@ window.addOne=async function(){
 
 window.addSeveral=async function(){
   await reset(); await openLights();
-  await addLight('light.c'); await addLight('light.d'); await addLight('light.e');
+  const want=[['light.c',0.15,0.20],['light.d',0.55,0.35],['light.e',0.85,0.70]];
+  for(const [id,fx,fy] of want) await addLight(id,fx,fy);
   const p=planPositions();
-  const added=['light.c','light.d','light.e'].filter(id=>CONFIG.entities.includes(id));
+  const added=want.map(w=>w[0]).filter(id=>CONFIG.entities.includes(id));
+  const placed=want.map(([id,fx,fy])=>({id, want:{x:fx*100,y:fy*100}, got:p[id],
+    ok: !!p[id] && Math.abs(p[id].x-fx*100)<0.6 && Math.abs(p[id].y-fy*100)<0.6}));
   const pairs=[];
   for(let i=0;i<added.length;i++) for(let j=i+1;j<added.length;j++){
     pairs.push({a:added[i],b:added[j],d:dist(p[added[i]],p[added[j]])});
   }
-  const GAP=window.card.constructor.LIGHT_ADD_GAP;
-  return {added, positions:added.map(id=>({id,x:p[id].x,y:p[id].y})), pairs, GAP,
+  return {added, placed, pairs,
+    allWhereClicked: placed.every(q=>q.ok),
     allDistinct: pairs.every(q=>q.d>0),
-    // Stacked lights read as one light that will not move.
-    allClear: pairs.every(q=>q.d>=GAP),
     entities:CONFIG.entities.slice()};
 };
 
@@ -160,7 +215,7 @@ window.removeOne=async function(){
 
 window.cancelRestores=async function(){
   await reset(); await openLights();
-  await addLight('light.c');
+  await addLight('light.c', 0.4, 0.3);
   await tapLight('light.b');
   const rm=C().shadowRoot.getElementById('wiRemove'); if(rm){rm.click(); await sleep(500);}
   const mid={entities:CONFIG.entities.slice()};
@@ -181,7 +236,7 @@ window.cancelDeletesInvented=async function(){
     aspect_ratio:'2:1', background_image:{url:'floorplan.svg'}});
   const hadPositions='positions' in CONFIG;
   await openLights();
-  await addLight('light.c');
+  await addLight('light.c', 0.6, 0.45);
   const mid={entities:CONFIG.entities.slice(), positions:Object.keys(CONFIG.positions||{})};
   C().shadowRoot.getElementById('wallEditorCancel').click(); await sleep(700);
   return {hadPositions, mid,
@@ -192,7 +247,7 @@ window.cancelDeletesInvented=async function(){
 
 window.undoAdd=async function(){
   await reset(); await openLights();
-  await addLight('light.c');
+  await addLight('light.c', 0.33, 0.66);
   const mid=CONFIG.entities.slice();
   window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}));
   await sleep(500);
@@ -281,16 +336,137 @@ window.addFromZoom=async function(){
   if(typeof c._clampWallPan==='function') c._clampWallPan();
   c._applyWallZoom(); await frame(); await frame();
   const vp=c.shadowRoot.getElementById('wallEditorViewport').getBoundingClientRect();
-  await addLight('light.c');
+  // Aim at a point you can actually SEE, a third across the window.
+  const aim={x:vp.left+vp.width*0.33, y:vp.top+vp.height*0.4};
+  await pickLight('light.c');
+  await clickViewport(0.33, 0.40);
   const c2=C(), st=c2.shadowRoot.getElementById('wallEditorStage').getBoundingClientRect();
   const p=CONFIG.positions['light.c'];
   const sp=c2._toScreenPct(p.x,p.y);
   const sx=st.left+st.width*sp.x/100, sy=st.top+st.height*sp.y/100;
   return {zoom:c._weZoom, pos:{x:p.x,y:p.y},
+    aim:{x:Math.round(aim.x),y:Math.round(aim.y)},
     screen:{x:Math.round(sx),y:Math.round(sy)},
     viewport:{l:Math.round(vp.left),r:Math.round(vp.right),t:Math.round(vp.top),b:Math.round(vp.bottom)},
+    // Zoom, pan and the plan's own scale all have to be unwound correctly for
+    // the marker to come back to the pixel that was clicked.
+    landedUnderPointer: Math.abs(sx-aim.x)<3 && Math.abs(sy-aim.y)<3,
     insideView: sx>=vp.left-2 && sx<=vp.right+2 && sy>=vp.top-2 && sy<=vp.bottom+2,
     notPlanCentre: Math.abs(p.x-50)>3 || Math.abs(p.y-50)>3};
+};
+
+/** The core of the reported flow: pick, and NOTHING is added until a click. */
+window.armThenPlace=async function(){
+  await reset(); await openLights();
+  const before=CONFIG.entities.slice();
+  const stageCursor=()=>getComputedStyle(C().shadowRoot.getElementById('wallEditorStage')).cursor;
+  // The viewport is crosshair at ALL times, so an absolute cursor reading is
+  // not evidence of anything -- only a DIFFERENCE between armed and idle is.
+  const idleCursor=stageCursor();
+  await pickLight('light.c');
+  const armed={isPlacing:C()._isPlacingLight(),
+    pending:C().constructor._pendingLightAdd,
+    entitiesUnchanged: JSON.stringify(CONFIG.entities)===JSON.stringify(before),
+    noPosition: !(CONFIG.positions||{})['light.c'],
+    hasPlacingClass: C().shadowRoot.getElementById('wallEditorStage').classList.contains('placing'),
+    cursor: stageCursor(),
+    rowSays:(C().shadowRoot.getElementById('wiLightRow').textContent||'').replace(/\s+/g,' ').trim().slice(0,46),
+    hasCancel: !!C().shadowRoot.getElementById('wiPlaceCancel')};
+  await clickPlan(0.7, 0.25);
+  const p=(CONFIG.positions||{})['light.c'];
+  const after=stageCursor();
+  return {armed, idleCursor, cursorAfter:after,
+    addedOnlyAfterClick: armed.entitiesUnchanged && CONFIG.entities.includes('light.c'),
+    position: p?{x:p.x,y:p.y}:null,
+    whereClicked: !!p && Math.abs(p.x-70)<0.6 && Math.abs(p.y-25)<0.6,
+    disarmed: !C()._isPlacingLight(),
+    selected: C()._lightStageSelected,
+    cursorSaysArmed: armed.cursor!==idleCursor,
+    cursorBackAfterwards: after===idleCursor,
+    rowMentionsIt: armed.rowSays.includes('Placing')};
+};
+
+/** The ghost has to be DRAWN where it will land, or "click somewhere" is a
+ *  promise the user cannot check before committing. */
+window.ghostFollows=async function(){
+  await reset(); await openLights(); await sleep(400);
+  const quiet=regionSum(0.78, 0.18);
+  await pickLight('light.c');
+  await hoverPlan(0.78, 0.18); await sleep(350);
+  const painted=regionSum(0.78, 0.18);
+  const at1=C()._pendingLightAt;
+  await hoverPlan(0.30, 0.70); await sleep(350);
+  const at2=C()._pendingLightAt;
+  const movedAway=regionSum(0.78, 0.18);
+  const movedTo=regionSum(0.30, 0.70);
+  // Snapping has to apply to the PREVIEW too: two points inside one grid cell
+  // must preview identically, or the ghost lies about where the drop goes.
+  await hoverPlan(0.50, 0.50, {altKey:false}); const g1=C()._pendingLightAt;
+  await hoverPlan(0.502, 0.502, {altKey:false}); const g2=C()._pendingLightAt;
+  C()._cancelLightPlacement(); await sleep(350);
+  const gone=regionSum(0.30, 0.70);
+  return {quiet, painted, movedAway, movedTo, gone,
+    at1, at2, g1, g2,
+    ghostPaints: painted!==quiet,
+    ghostTracks: JSON.stringify(at1)!==JSON.stringify(at2) && movedTo!==quiet,
+    ghostLeavesNothingBehind: movedAway===quiet,
+    previewSnaps: JSON.stringify(g1)===JSON.stringify(g2),
+    cancelClearsIt: gone===regionSum(0.30,0.70) && !C()._isPlacingLight()};
+};
+
+/** Two ways out, and neither may add anything. */
+window.placeCancel=async function(){
+  await reset(); await openLights();
+  const before=CONFIG.entities.slice();
+  await pickLight('light.c');
+  C().shadowRoot.getElementById('wiPlaceCancel').click(); await frame();
+  const afterBtn={placing:C()._isPlacingLight(), entities:CONFIG.entities.slice(),
+    placingClass:C().shadowRoot.getElementById('wallEditorStage').classList.contains('placing')};
+  // Escape: the dialog's own cancel event, which must be swallowed rather
+  // than closing the editor out from under a half-finished action.
+  await pickLight('light.d');
+  const ov=C().shadowRoot.getElementById('wallEditorOverlay');
+  ov.dispatchEvent(new Event('cancel',{cancelable:true}));
+  await sleep(300);
+  return {before, afterBtn,
+    buttonCancelled: afterBtn.placing===false
+      && JSON.stringify(afterBtn.entities)===JSON.stringify(before),
+    escapeCancelled: !C()._isPlacingLight(),
+    escapeKeptModalOpen: !!C().shadowRoot.getElementById('wallEditorStage'),
+    entities: CONFIG.entities.slice(),
+    nothingAdded: JSON.stringify(CONFIG.entities)===JSON.stringify(before)};
+};
+
+/** The keyboard's way in: everything else needs a pointer on the plan. */
+window.placeCentre=async function(){
+  await reset(); await openLights();
+  await pickLight('light.c');
+  C().shadowRoot.getElementById('wiPlaceCentre').click(); await sleep(500);
+  const p=(CONFIG.positions||{})['light.c'];
+  return {added: CONFIG.entities.includes('light.c'),
+    position: p?{x:p.x,y:p.y}:null,
+    nearCentre: !!p && Math.abs(p.x-50)<8 && Math.abs(p.y-50)<8,
+    disarmed: !C()._isPlacingLight(),
+    selected: C()._lightStageSelected};
+};
+
+/** A drop lands on the same lattice a drag snaps to, and Alt still frees it. */
+window.snapsToGrid=async function(){
+  await reset(); await openLights();
+  const g=C()._gridSize||25;
+  const r=stageRect();
+  await addLight('light.c', 0.413, 0.277, {altKey:false});
+  const snapped=CONFIG.positions['light.c'];
+  await addLight('light.d', 0.413, 0.277, {altKey:true});
+  const free=CONFIG.positions['light.d'];
+  const px=(p)=>({x:p.x/100*r.width, y:p.y/100*r.height});
+  const sp=px(snapped), fp=px(free);
+  const offLattice=(v)=>Math.abs(v-Math.round(v/g)*g);
+  return {grid:g, snapped, free,
+    snappedPx:{x:Math.round(sp.x*10)/10,y:Math.round(sp.y*10)/10},
+    onLattice: offLattice(sp.x)<1 && offLattice(sp.y)<1,
+    altIsExact: Math.abs(free.x-41.3)<0.6 && Math.abs(free.y-27.7)<0.6,
+    theyDiffer: JSON.stringify(snapped)!==JSON.stringify(free)};
 };
 
 /** The Entities list's own Remove was rewritten to call the shared prune. */
@@ -313,9 +489,12 @@ window.listStillRemoves=async function(){
  *  visible, and never duplicates the entry. */
 window.addDuplicate=async function(){
   await reset(); await openLights();
-  await addLight('light.a');
+  await pickLight('light.a'); await frame();
   return {entities:CONFIG.entities.slice(),
     noDuplicate: CONFIG.entities.filter(e=>e==='light.a').length===1,
+    // It must SELECT rather than arm -- arming would promise a second copy
+    // the add would then refuse to make.
+    didNotArm: !C()._isPlacingLight(),
     selected: C()._lightStageSelected,
     positionUntouched: JSON.stringify(CONFIG.positions['light.a'])==='{"x":30,"y":40}'};
 };
@@ -349,7 +528,8 @@ window.configIsFrozen=async function(){
     positionsWritable: !Object.isFrozen(c._config.positions)};
 };
 
-const PROBES=['configIsFrozen','addOne','addSeveral','removeOne','cancelRestores','cancelDeletesInvented',
+const PROBES=['configIsFrozen','armThenPlace','ghostFollows','placeCancel','placeCentre',
+  'snapsToGrid','addOne','addSeveral','removeOne','cancelRestores','cancelDeletesInvented',
   'undoAdd','undoRemove','panelStable','pickerSurvivesDrag','addFromZoom',
   'listStillRemoves','addDuplicate','wallsUntouched'];
 window.probes=()=>PROBES;

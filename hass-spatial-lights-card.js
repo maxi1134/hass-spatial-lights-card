@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.51.1 (fork-maxi1134)';
+  static BUILD = 'v1.52.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -347,6 +347,13 @@ class SpatialLightColorCard extends HTMLElement {
    * itself the instant you finished dragging.
    */
   static _lightEditorSelection = null;
+  /**
+   * The entity picked in the editor but not yet placed. Static like the
+   * selection, because arming is a user intention that has to survive a
+   * preview-card rebuild -- an unrelated config change between picking and
+   * clicking would otherwise silently drop the pick.
+   */
+  static _pendingLightAdd = null;
   /**
    * Plan-percent clearance a newly added light looks for before it settles.
    * Several dropped on one pixel look like one light that will not move.
@@ -5699,6 +5706,12 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-inspector .wi-btn:hover { background: rgba(255,255,255,0.18); }
       .wall-inspector .wi-danger { border-color: rgba(255,120,120,0.5); color: #ffb4b4; }
 
+      /* Armed with an entity and waiting to be told where it goes. NOT
+         crosshair: the viewport already wears one at all times, so that would
+         have been a state with no outward sign at all -- measured, after
+         shipping the rule and finding the armed and idle cursors identical. */
+      .wall-editor-stage.placing { cursor: copy; }
+
       .wall-editor-hint {
         font-size: 11px; color: rgba(255,255,255,0.55); text-align: center;
         max-width: 900px; line-height: 1.6;
@@ -6140,7 +6153,7 @@ class SpatialLightColorCard extends HTMLElement {
         </div>
         <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
-          ? 'Drag a light to move it &middot; tap to see which it is &middot; add or remove one in the panel above &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
+          ? 'Pick a light below, then click the plan to place it &middot; drag one to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
           : 'Drag to draw &mdash; starting on a corner attaches to it exactly &middot; '
             + '<kbd>Esc</kbd> ends a run &middot; '
             + '<kbd>Shift</kbd>-drag a corner or a wall to move it &middot; '
@@ -6454,6 +6467,46 @@ class SpatialLightColorCard extends HTMLElement {
         ctx.fillText(text, cx, ly);
       }
     }
+
+    // The light that has been picked but not yet placed, drawn where it would
+    // land. It is dashed and hollow so it cannot be mistaken for a marker that
+    // is already on the plan, and it is drawn from the SNAPPED point, so the
+    // preview and the drop are the same arithmetic rather than two guesses.
+    if (lightsMode && SpatialLightColorCard._pendingLightAdd && this._pendingLightAt) {
+      const gid = SpatialLightColorCard._pendingLightAdd;
+      const gp = this._toScreenPct(this._pendingLightAt.x, this._pendingLightAt.y);
+      const gx = gp.x / 100 * rect.width;
+      const gy = gp.y / 100 * rect.height;
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath();
+      ctx.arc(gx, gy, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // A crosshair, because a ring alone does not say which pixel is meant.
+      ctx.beginPath();
+      ctx.moveTo(gx - radius - 6, gy); ctx.lineTo(gx - 3, gy);
+      ctx.moveTo(gx + 3, gy); ctx.lineTo(gx + radius + 6, gy);
+      ctx.moveTo(gx, gy - radius - 6); ctx.lineTo(gx, gy - 3);
+      ctx.moveTo(gx, gy + 3); ctx.lineTo(gx, gy + radius + 6);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.stroke();
+      const gst = this._hass && this._hass.states[gid];
+      const gname = String((gst && gst.attributes && gst.attributes.friendly_name) || gid);
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const gw = ctx.measureText(gname).width;
+      const gly = gy + radius + 5;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(gx - gw / 2 - 4, gly - 2, gw + 8, 15);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(gname, gx, gly);
+      ctx.restore();
+    }
     ctx.restore();
 
     if (this._els.wallCount) {
@@ -6477,6 +6530,8 @@ class SpatialLightColorCard extends HTMLElement {
     SpatialLightColorCard._wallEditorSelection = null;
     this._lightStageSelected = null;
     SpatialLightColorCard._lightEditorSelection = null;
+    SpatialLightColorCard._pendingLightAdd = null;
+    this._pendingLightAt = null;
     this._wallEditMode = false;
     this._wallEditorId = null;
     this._wallChainAnchor = null;
@@ -7376,6 +7431,13 @@ class SpatialLightColorCard extends HTMLElement {
         // Escape reaches the dialog before the card's key handler. The first
         // one should end the run in progress, not close the editor.
         overlay.addEventListener('cancel', (ev) => {
+          // A pick waiting for a click is the innermost thing Escape can mean,
+          // so it goes first -- before ending a wall run, before closing.
+          if (this._isPlacingLight()) {
+            ev.preventDefault();
+            this._cancelLightPlacement();
+            return;
+          }
           if (this._wallChainAnchor || this._wallDrawState) {
             ev.preventDefault();
             this._wallChainAnchor = null;
@@ -7406,6 +7468,8 @@ class SpatialLightColorCard extends HTMLElement {
         SpatialLightColorCard._wallEditorSelection = null;
         this._lightStageSelected = null;
         SpatialLightColorCard._lightEditorSelection = null;
+        SpatialLightColorCard._pendingLightAdd = null;
+        this._pendingLightAt = null;
         this._wallDrawState = null;
         this._draftWalls = null;
         this._wallChainAnchor = null;
@@ -12688,10 +12752,90 @@ class SpatialLightColorCard extends HTMLElement {
     return best;
   }
 
+  /**
+   * A plan point snapped to the placement grid and clamped onto the plan.
+   *
+   * The same arithmetic the in-card drag snaps to, so a light dropped here
+   * lands where it would there -- and one function, because the drag and the
+   * click-to-place have to agree about where the lattice is.
+   */
+  _snapPlanPoint(x, y, rect, free) {
+    let px = x;
+    let py = y;
+    const g = this._gridSize || 25;
+    if (!free && g > 0 && rect && rect.width > 0 && rect.height > 0) {
+      px = Math.round(px / 100 * rect.width / g) * g / rect.width * 100;
+      py = Math.round(py / 100 * rect.height / g) * g / rect.height * 100;
+    }
+    return {
+      x: Math.max(0, Math.min(100, px)),
+      y: Math.max(0, Math.min(100, py)),
+    };
+  }
+
+  /** Is a picked entity waiting for a click to say where it goes? */
+  _isPlacingLight() {
+    return this._wallEditorMode === 'lights'
+      && !!SpatialLightColorCard._pendingLightAdd;
+  }
+
+  /**
+   * Pick now, place on the next click.
+   *
+   * The old flow dropped the light at the centre of the view and selected it,
+   * which was reported as "it appears somewhere on the map and we gotta look
+   * for it" -- true the moment the centre is already occupied, since the free
+   * spot walks away from it, and true on any plan you have not zoomed into.
+   * Arming costs one extra click and removes the hunt entirely.
+   */
+  _armLightPlacement(entityId) {
+    const entity = String(entityId == null ? '' : entityId).trim();
+    if (!entity) return;
+    if ((this._config.entities || []).includes(entity)) {
+      // Already on the plan. Selecting it SAYS so; arming would promise a
+      // second copy that _addLightToPlan would then refuse to make.
+      this._setLightStageSelection(entity);
+      return;
+    }
+    SpatialLightColorCard._pendingLightAdd = entity;
+    this._pendingLightAt = null;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  _cancelLightPlacement() {
+    if (!SpatialLightColorCard._pendingLightAdd) return;
+    SpatialLightColorCard._pendingLightAdd = null;
+    this._pendingLightAt = null;
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  /** Crosshair while armed. Driven from `_syncLightInspector` rather than
+   *  from the arm site alone, so a rebuilt card comes up wearing it. */
+  _syncPlacingClass() {
+    const stage = this._els && this._els.wallStage;
+    if (!stage) return;
+    stage.classList.toggle('placing', this._isPlacingLight());
+  }
+
   _onLightStagePointerDown(e) {
     const pt = this._wallPointFromEvent(e);
     if (!pt) return;
     e.preventDefault();
+    if (this._isPlacingLight()) {
+      // A non-left mouse button while armed is the natural "never mind" --
+      // the gesture that cancels everywhere else on this stage.
+      if (e.pointerType === 'mouse' && e.button !== 0) {
+        this._cancelLightPlacement();
+        return;
+      }
+      try { this._wallSurface()?.setPointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
+      this._placePointerId = e.pointerId;
+      this._pendingLightAt = this._snapPlanPoint(pt.x, pt.y, pt.rect, e.altKey);
+      this._requestWallEditorDraw();
+      return;
+    }
     try { this._wallSurface()?.setPointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
     const id = this._hitTestLightOnStage(pt, pt.rect);
     this._lightStageSelected = id || null;
@@ -12706,27 +12850,26 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _onLightStagePointerMove(e) {
+    if (this._isPlacingLight()) {
+      // The ghost follows the pointer whether or not it is down: on a mouse
+      // that is the hover preview, and on touch it is a slide-to-adjust
+      // between the press and the lift.
+      const at = this._wallPointFromEvent(e);
+      if (!at) return;
+      e.preventDefault();
+      this._pendingLightAt = this._snapPlanPoint(at.x, at.y, at.rect, e.altKey);
+      this._requestWallEditorDraw();
+      return;
+    }
     const st = this._lightStageDrag;
     if (!st || e.pointerId !== st.pointerId) return;
     const pt = this._wallPointFromEvent(e);
     if (!pt) return;
     e.preventDefault();
     st.moved = true;
-    let x = st.orig.x + (pt.x - st.grab.x);
-    let y = st.orig.y + (pt.y - st.grab.y);
-    if (!e.altKey) {
-      // The same pixel grid the in-card drag snaps to, so a light placed here
-      // lands where it would there.
-      const g = this._gridSize || 25;
-      if (g > 0) {
-        x = Math.round(x / 100 * pt.rect.width / g) * g / pt.rect.width * 100;
-        y = Math.round(y / 100 * pt.rect.height / g) * g / pt.rect.height * 100;
-      }
-    }
-    this._config.positions[st.id] = {
-      x: Math.max(0, Math.min(100, x)),
-      y: Math.max(0, Math.min(100, y)),
-    };
+    const x = st.orig.x + (pt.x - st.grab.x);
+    const y = st.orig.y + (pt.y - st.grab.y);
+    this._config.positions[st.id] = this._snapPlanPoint(x, y, pt.rect, e.altKey);
     // Positions feed the field's emitter, so its caches are stale.
     this._fieldOccluders = null;
     if (this._visPolyCache) this._visPolyCache.clear();
@@ -12736,6 +12879,24 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   _onLightStagePointerUp(e) {
+    if (this._isPlacingLight()) {
+      try { this._wallSurface()?.releasePointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
+      // Only the pointer that pressed on the stage commits. A lift with no
+      // press -- a stray pointerup from somewhere else -- must not drop a
+      // light at wherever the ghost happens to be.
+      if (this._placePointerId !== e.pointerId) return;
+      this._placePointerId = null;
+      e.preventDefault();
+      const pt = this._wallPointFromEvent(e);
+      const at = pt
+        ? this._snapPlanPoint(pt.x, pt.y, pt.rect, e.altKey)
+        : this._pendingLightAt;
+      const entity = SpatialLightColorCard._pendingLightAdd;
+      SpatialLightColorCard._pendingLightAdd = null;
+      this._pendingLightAt = null;
+      this._addLightToPlan(entity, at);
+      return;
+    }
     const st = this._lightStageDrag;
     this._lightStageDrag = null;
     try { this._wallSurface()?.releasePointerCapture?.(e.pointerId); } catch (_) { /* gone */ }
@@ -12924,21 +13085,53 @@ class SpatialLightColorCard extends HTMLElement {
         <div class="wi-row wi-lightrow" id="wiLightRow"></div>`;
       this._mountLightAddPicker();
     }
+    this._syncPlacingClass();
     const row = host.querySelector('#wiLightRow');
     if (!row) return;
 
-    const id = this._lightStageSelected;
-    if (!id) {
-      if (row.dataset.entity !== '') {
-        row.dataset.entity = '';
-        row.innerHTML = '<span class="wi-hint">Drag a light to move it &middot; '
-          + 'tap one to identify it, or to take it off the plan</span>';
+    // Three states in one row, keyed so a drag's per-frame re-sync rewrites
+    // nothing: armed for placement, a light selected, or neither.
+    const pending = this._isPlacingLight() ? SpatialLightColorCard._pendingLightAdd : null;
+    if (pending) {
+      if (row.dataset.state !== `place:${pending}`) {
+        row.dataset.state = `place:${pending}`;
+        const pst = this._hass && this._hass.states[pending];
+        const pname = (pst && pst.attributes && pst.attributes.friendly_name) || pending;
+        row.innerHTML = `
+          <span class="wi-title">Placing ${this._escapeHtml(pname)}</span>
+          <span class="wi-coords">Click the plan to put it there</span>
+          <button class="wi-btn" id="wiPlaceCentre"
+                  title="Drop it in the middle of the view instead">Centre</button>
+          <button class="wi-btn" id="wiPlaceCancel">Cancel</button>`;
+        const mid = row.querySelector('#wiPlaceCentre');
+        // The keyboard's way in: everything else here needs a pointer on the
+        // plan, and Tab reaches this.
+        if (mid) {
+          mid.addEventListener('click', () => {
+            const entity = SpatialLightColorCard._pendingLightAdd;
+            SpatialLightColorCard._pendingLightAdd = null;
+            this._pendingLightAt = null;
+            this._addLightToPlan(entity);
+          });
+        }
+        const no = row.querySelector('#wiPlaceCancel');
+        if (no) no.addEventListener('click', () => this._cancelLightPlacement());
       }
       return;
     }
 
-    if (row.dataset.entity !== id) {
-      row.dataset.entity = id;
+    const id = this._lightStageSelected;
+    if (!id) {
+      if (row.dataset.state !== 'idle') {
+        row.dataset.state = 'idle';
+        row.innerHTML = '<span class="wi-hint">Pick a light above, then click the plan '
+          + 'to place it &middot; drag one to move it &middot; tap one to take it off</span>';
+      }
+      return;
+    }
+
+    if (row.dataset.state !== `sel:${id}`) {
+      row.dataset.state = `sel:${id}`;
       const st = this._hass && this._hass.states[id];
       const name = (st && st.attributes && st.attributes.friendly_name) || id;
       row.innerHTML = `
@@ -12993,7 +13186,7 @@ class SpatialLightColorCard extends HTMLElement {
         return id ? !taken.has(id) : true;
       };
       picker.addEventListener('value-changed', (ev) => {
-        this._addLightToPlan(ev.detail && ev.detail.value);
+        this._armLightPlacement(ev.detail && ev.detail.value);
       });
       slot.appendChild(picker);
     } else {
@@ -13004,7 +13197,7 @@ class SpatialLightColorCard extends HTMLElement {
       input.addEventListener('change', () => {
         const v = input.value;
         input.value = '';
-        this._addLightToPlan(v);
+        this._armLightPlacement(v);
       });
       slot.appendChild(input);
     }
@@ -13018,7 +13211,7 @@ class SpatialLightColorCard extends HTMLElement {
    * of the plan, so on a zoomed-in view the new marker arrives where the eye
    * already is instead of somewhere off screen.
    */
-  _addLightToPlan(entityId) {
+  _addLightToPlan(entityId, at) {
     const entity = String(entityId == null ? '' : entityId).trim();
     if (!entity) return;
     if (!Array.isArray(this._config.entities)) this._config.entities = [];
@@ -13031,12 +13224,21 @@ class SpatialLightColorCard extends HTMLElement {
     if (!this._config.positions || typeof this._config.positions !== 'object') {
       this._config.positions = {};
     }
-    // A position already in config is the user's own earlier placement -- an
-    // override map outliving its entity -- so only invent one when there is
-    // nothing to keep.
-    const existing = this._config.positions[entity];
-    if (!existing || !Number.isFinite(existing.x) || !Number.isFinite(existing.y)) {
-      this._config.positions[entity] = this._freePlanSpot();
+    // Where the user clicked wins over everything: they said THERE, and a
+    // stale coordinate in an orphaned override map is not an argument.
+    if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) {
+      this._config.positions[entity] = {
+        x: Math.round(Math.max(0, Math.min(100, at.x)) * 10) / 10,
+        y: Math.round(Math.max(0, Math.min(100, at.y)) * 10) / 10,
+      };
+    } else {
+      // No point given -- the "place it in the middle" button, or a caller
+      // with nothing to say. A position already in config is the user's own
+      // earlier placement, so only invent one when there is nothing to keep.
+      const existing = this._config.positions[entity];
+      if (!existing || !Number.isFinite(existing.x) || !Number.isFinite(existing.y)) {
+        this._config.positions[entity] = this._freePlanSpot();
+      }
     }
     // A new array rather than a push, so this is correct whatever _config
     // was built from.

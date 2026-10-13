@@ -399,12 +399,17 @@ entity in the **Entities** list, close the editor, open it again, find the marke
 HA dropped somewhere, drag it where it belongs. The panel under the plan does both
 now.
 
-**Add a light** with the picker on the left of that panel. It lands at the centre
-of whatever you are *looking at* &mdash; zoomed in on the kitchen, the new marker
-arrives in the kitchen, not at the middle of the house &mdash; already selected and
-ready to drag. Add three in a row and they step clear of one another instead of
-stacking on the same pixel, which otherwise looks exactly like one light that
-refuses to move.
+**Add a light** by picking it in the panel and then **clicking where you want it**.
+A dashed ghost follows the pointer while you choose, snapped to the same grid a drag
+snaps to, so you can see exactly where it will land before you commit &mdash; `Alt`
+ignores the grid, `Esc` or **Cancel** calls the whole thing off, and **Centre** drops
+it in the middle of the view if you would rather not aim.
+
+I built it the other way first: pick it, and the card put it in the middle of the
+view for you to drag into place. That is one click fewer and it is worse, because
+"the middle of the view" is a guess, and when something is already there the new
+marker shuffles off somewhere else. You end up hunting for the light you just added.
+One extra click buys you never doing that again.
 
 **Remove one** by tapping it on the plan and pressing **Remove**. That takes its
 position and every per-entity override with it, exactly as the list's own remove

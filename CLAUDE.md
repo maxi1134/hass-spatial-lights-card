@@ -1531,17 +1531,55 @@ row once per ENTITY, and the coordinates are a `textContent` write. Measured ove
 12 pointermoves: the input element is identical throughout, a half-typed value
 survives, and the coordinates still track (30.0%,40.0% -> 52.0%,51.0%).
 
-**A new light lands at the centre of the VIEW, not of the plan.** `_wallPointFromEvent`
-is handed the viewport's own centre, so zoom, pan and `plan_rotation` are answered
-by the one function that already knows about them. Measured at 3.2x with the view
-panned off-centre: the light landed at plan (63, 64.2), screen (279, 324), inside a
-viewport spanning 14..543 x 191..456 -- where the plan centre would have been off
-screen entirely.
+**PICK, THEN CLICK WHERE IT GOES.** The first version dropped the new light at the
+centre of the view and selected it, and that was reported as *"it appears somewhere
+on the map and we gotta look for it"*. The report is right in a way the measurement
+missed: the centre is a guess, `_freePlanSpot` walks AWAY from it the moment it is
+occupied, and nothing on screen says in advance where the marker is going to be.
 
-`_freePlanSpot` then steps it clear of what is already there, `LIGHT_ADD_GAP` (5%)
-at a time, as a bounded raster scan. Three adds in a row measured (50,50), (55,50),
-(60,50) rather than three markers on one pixel, which reads as one light that will
-not move.
+Picking an entity now ARMS a placement (`_pendingLightAdd`) and the next click on
+the plan is what adds it. Nothing is written to config in between -- measured: the
+entity list and the position map are byte-identical from the pick until the click.
+
+**The arm is static, for the same reason the selection is.** It is a user intention
+that has to outlive a preview-card rebuild; an unrelated config change between
+picking and clicking would otherwise drop the pick with no explanation.
+
+**The commit is on pointerUP, not pointerdown**, which is what makes it work on
+touch: press, see the ghost, slide to adjust, lift to drop. On a mouse the hover
+already previews and a click is a press and a lift in the same place. Only the
+pointer that pressed on the stage commits (`_placePointerId`), so a stray lift from
+somewhere else cannot drop a light wherever the ghost happens to be.
+
+**The ghost is drawn from the SNAPPED point**, so the preview and the drop are one
+piece of arithmetic rather than two guesses -- dashed and hollow so it cannot be
+mistaken for a marker that is already there, with a crosshair because a ring alone
+does not say which pixel is meant. Measured by summing a 44px box of the editor
+canvas: 0 before arming, 827806 with the ghost on it, 0 again where it left, and 0
+after Cancel. Two hover points inside one grid cell preview identically.
+
+**`_snapPlanPoint` is one function because the drag and the drop have to agree
+about where the lattice is.** The drag's inline snap was lifted into it rather than
+copied. Measured on both paths at the same click: 225px, 75px on a 25px grid, and
+`Alt` gives the exact point on both.
+
+**Not crosshair for the armed cursor.** The viewport already wears one at all
+times, so the first rule shipped a state with no outward sign whatever -- found by
+measuring the armed and idle cursors and getting the same answer. It is `copy` now,
+and the probe asserts the DIFFERENCE rather than the value.
+
+Escape cancels the pending pick before it ends a wall run or closes the modal: it
+is the innermost thing the key can mean. A non-left mouse button on the stage
+cancels too, matching what every other button does on that surface.
+
+`_freePlanSpot` survives as the **Centre** button -- the keyboard's way in, since
+everything else here needs a pointer on the plan. It still steps clear of what is
+already there, `LIGHT_ADD_GAP` (5%) at a time, as a bounded raster scan.
+
+Measured at 3.2x with the view panned off-centre: a click at screen (189, 299) put
+the marker back at exactly screen (189, 299), i.e. zoom, pan and the plan's own
+scale all unwind correctly -- `_wallPointFromEvent` is the one function that knows
+about them, and the placement goes through it like every other gesture here.
 
 **The selection is static for the same reason the wall selection is.**
 `_lightEditorSelection` mirrors `_lightStageSelected`, because an add, a removal
@@ -1622,7 +1660,10 @@ and that the copy is writable. Remove the `.slice()` and `cardOwnsItsArray`
 flips. The general lesson: a harness that clones where the host freezes is
 testing what a clone permits, not what the host does.
 
-`.harness/light-add.html` holds all of it: `addOne`, `addSeveral`, `removeOne`,
+`.harness/light-add.html` holds all of it: `armThenPlace` (nothing added until
+the click, and it lands there), `ghostFollows`, `placeCancel` (the button and
+Escape, neither adding anything), `placeCentre`, `snapsToGrid`, `addOne`,
+`addSeveral` (three clicks, three places), `removeOne`,
 `cancelRestores`, `cancelDeletesInvented`, `undoAdd`, `undoRemove`, `panelStable`,
 `pickerSurvivesDrag`, `addFromZoom`, `listStillRemoves`, `addDuplicate` (adding
 something already on the plan selects it rather than doing nothing visible) and
