@@ -407,6 +407,159 @@ their own floor plan, and a badge on two or three markers per room is clutter in
 information the editor already states per entity. `.harness/group-exempt.html` pins all of it,
 including that a card with no exemptions configured behaves exactly as before.
 
+### 4a. Room tap (`room_tap`)
+
+**A tap on a room's floor selects the room; a hold adds it.** Opt-in (`room_tap: true`, absent
+otherwise -- the editor switch DELETES the key when off, so a card that never turned it on keeps a
+byte-identical config and renders no room layer, no caption element and no room CSS at all).
+
+**Rooms are computed, never configured.** The static model sits after `pointInPolygon`:
+`roomGeometry(walls, dividers, aspect, opts)` rasterises the SAVED walls -- `_config.glow_walls`,
+never `_wallList()`, which hands back the draft mid-edit -- onto a `ROOM_GRID` = 768 cells on the
+plan's long side, as capsules of radius 0.75 cell, and labels the free cells 4-connected; anything
+touching the border is OUTSIDE. In PLAN percent, so a quarter turn changes nothing. Three repairs
+make a hand-traced plan behave, all measured on the reporter's own 59-wall plan against an
+independent Python analysis (`scratchpad/impl/model.test.js`, 46 checks, identical membership):
+
+- **Near-miss bridges.** Wall ends within `EPS = 0.006 x long side` of another wall are joined, or a
+  corner traced 3px short leaks a room into the next.
+- **Implied doorways.** A dangling end facing another end within 10 deg, forward gap <= 15% of the
+  long side, lateral offset <= max(2 EPS, 0.1 t), nothing crossing, and the gap <= 0.5 sqrt(area of
+  the smaller side) -- iterated up to 5x. A doorway left open while tracing must not merge two
+  rooms; `room_auto_doorways: false` turns it off (7 rooms instead of 10 on the reference plan).
+- **Pocket adoption.** A light-less space is not a room, but one with less than a third of its ring
+  touching OUTSIDE is adopted by its lit neighbour (the Salon's furniture box), so tapping it taps
+  the room around it and its walls do not punch a hole in the outline.
+
+**Doors always count as closed.** A room that changed membership when a door opened would make the
+same tap do two different things; `_door` is ignored here, by design.
+
+`room_dividers` are walls for rooms only: normalized by `_normalizeGlowWalls` (so every wall form
+works), never drawn, never occlude. The reference plan needs one, `{x1: 82.57, y1: 19.23, x2: 82.57,
+y2: 32.14}`, to split Hallway | Entrance (11 rooms).
+
+`roomMembership` snaps each light off its wall (lights sit ON walls constantly -- a sconce, a
+strip) by searching 4 cells for a labelled one, and returns `{rooms: [{id, labels, members,
+selectable, exempt}], roomOfLabel, dead}`. `selectable` excludes `_isSelectableEntity` failures AND
+`_isGroupExempt`, the same filter the band uses: a room tap is the most implicit selection there is.
+`roomOutline` traces each room via closing (2 grow + 2 shrink, so a light-sized notch does not
+crenellate the edge), edge following and Douglas-Peucker on the OPEN loop -- simplifying the closed
+one collapsed every outline to nothing, because its first and last points coincide. Restricted to the
+room's bounding box: 70ms -> 15-26ms for the whole plan.
+
+**Caching is two-layered** (`_roomModel`): geometry keyed on the walls/dividers arrays' IDENTITY,
+the aspect rounded to 0.01 and the doorway flag (setConfig re-normalizes, so a config change always
+rebuilds); membership keyed on a positions + selectability string, re-checked from `updateLights` via
+`_syncRooms`. Hit tests between ticks reuse the last settled model. Outlines are traced lazily per
+model and the SVG rebuilt only when the model or the rotation changes (`_ensureRoomPaths`).
+
+**The gesture is DECIDE AT RELEASE.** Nothing touches the selection until the hand decides, by
+lifting or by moving `ROOM_SLOP` (12px). The hold changes what the decision MEANS, never whether it
+happens -- "quick replaces, held adds":
+
+| | before H | after H |
+|---|---|---|
+| lift on a room | select it (re-tap within 350ms: no-op; tap on a room that IS the selection: clear) | ADD it (never removes) |
+| move >= 12px | the configured shape, replacing | the swapped shape (if a swap hold is set), ADDING |
+| lift outside every room | clear, as always | clear, as always |
+
+H is `selection_swap_hold` when set (floored at `ROOM_HOLD_MIN` = 250 while room taps are on, in
+`_armSelectionSwap` too, so the swap and the room hold are ONE moment), else the light long-press
+timings (500 touch / 650 mouse). Shift/Ctrl/Meta on a quick tap toggles the room, as Shift-click
+toggles a light. `rp.additive` is captured at DOWN rather than read from `_selectionModeAdditive`,
+because the held band rewrites that flag to make itself additive.
+
+**The PHASE the press showed decides, never the clock.** `_commitRoomPress` branches on
+`rp.phase` ('tap' / 'armed' / null), so a timer that runs a few ms late cannot turn the add the user
+was shown into a replace. Repeat-ness is judged at DOWN for the same reason: what the press shows is
+what the lift does.
+
+Edge cases, each pinned in `.harness/rooms.html`:
+- **Multi-touch does nothing.** A second pointer anywhere marks the press `multi`; whichever finger
+  lifts, the commit is a no-op.
+- **Escape during a press** cancels the press and leaves the selection alone (it returns before the
+  general Escape branch, which would clear it).
+- **pointercancel on an ARMED, still, single finger commits as a lift.** Android can end a long
+  still touch that way; the hold had already shown the add. Any other cancel is a cancel. The hold
+  also claims the touch (`_selectionTouchClaim = 'select'`), so a drag after it cannot be handed to
+  the page scroller -- whose pointercancel would otherwise read as that lift.
+- **The 300ms touch claim only claims.** It used to materialize the band AND clear the selection as
+  its cue; with room taps on, a still finger may yet lift as a room tap, so it does neither (and does
+  not buzz -- the room hold says its own piece).
+- The band materializes at 12px rather than 5 while room taps are on: one slop for everything a
+  press can turn into.
+
+**Coverage is derived, never stored** (`_coveredRooms`), and it answers two questions KEPT APART:
+which rooms are wholly selected (any size), and is that worth drawing. Outlines draw only if the
+selection is EXACTLY a union of wholly selected rooms (their exempt members allowed): one stray light
+and nothing is outlined, because the outline would claim more than is true. So Ctrl+A and a lasso
+that happens to take whole rooms get outlines too. The one-light rule applies only to the drawing:
+a selection that is a single one-light room is a light, not a room -- unless that room was just
+tapped and the selection is still the one the tap made (`_lastRoomTap.key`). Folding that rule into
+the first question made a one-light room count as a STRAY and switch every other outline off, so the
+same two rooms drew or did not depending on tap order (review finding). `ROOM_MANY` (4) thins them to
+a fine edge, and a thinned room's flash animates the thin core only -- the full look flashing in and
+snapping away read as a glitch.
+
+**"The selection is this room" is one predicate**, `_selectionIsRoom`: all its selectable lights and
+nothing else but its own exempt ones. Both the clear-on-tap and the "lift to clear" caption use it,
+because the OUTLINE already counted a long-pressed UV lamp as part of the room -- comparing sizes
+instead turned a re-tap on an outlined room into a silent replace.
+
+**`roomLabelAt` ranks interior labels above the outside, then by REAL distance from the point.** A
+sconce centred on an exterior wall is half outdoors by geometry; integer cell distance tied
+constantly and the scan order resolved ties top-left, which on a west or north wall is outdoors. That
+dropped the light out of its room.
+
+**`_planAspect` returns null rather than guessing.** A detached first render (no box) used to cut the
+rooms at 1.6 and cache it; nothing re-cut them when the card attached. `_roomModel` keeps the last
+real shape (or has no model yet), and the canvas `ResizeObserver` and `_onCanvasGeometryChanged` both
+call `_syncRooms`, so the first real box and a late plan image re-cut them. A press re-checks the
+model before its hit test.
+
+**A second pointer never takes over a live floor gesture** while room taps are on: the floor branch
+returns if `_selectionStart` belongs to another pointer. Taking it over reset a HELD band's additive
+base -- dropping what the hold promised to keep -- and armed a room press nothing would clear, whose
+hold timer then drew an armed add with no finger down. A gesture whose capture element has LOST the
+capture is treated as dead, or one lift that never arrived would leave the floor dead. Belt and
+braces: the band's lift clears any room press, the hold timer bails unless its pointer still owns the
+gesture, an Escaped press draws no band when it then moves, and `disconnectedCallback` ends a press
+(only the floor gesture -- `_cancelActiveInteractions` would also commit sliders and grip drags). The
+5px band threshold is HEAD's strict `> 5` again when no room press is live, so a card without the
+option is unchanged to the pixel.
+
+**Visuals.** Two SVGs after the light field, z-index 0, `pointer-events: none`, viewBox 0..100 with
+`preserveAspectRatio="none"` and `vector-effect: non-scaling-stroke`, paths in SCREEN percent via
+`_toScreenPct` -- a resize costs nothing. The halo is its own SVG because a CSS blur on an SVG
+ELEMENT is not dependable across engines while one on the svg box is. Every stroke is clipped to the
+room's own inside (per-instance clipPath ids), so it never recolours the wall line. States are
+classes toggled by `_syncRoomVisuals`: `covered`, `many`, `armed` (dashed core, fill 0.20 -> 0.12, no
+halo -- the halo means SELECTED), `press` (0.08 tint after `ROOM_TINT_MS` = 120, or after the claim on a
+touch-scroll card), `press-clear`, `hover` (mouse, after an 80ms rest), and paired `flash-a/b`,
+`reflash-a/b`, `pulse-a/b` -- two names per animation, alternated by `_roomFlashParity`, because
+re-adding a class does not replay an animation. Pending lights get `.room-pending` (a dashed ring
+OUTSIDE the marker, lifted out of the has-selection dim; the `.off` variant needs its own selector to
+out-specify the dim's). The canvas gets `room-armed` (`copy` cursor) and `room-hover` (pointer).
+
+**No names on the plan.** The name lives only in the floating panel's grip row (`.cf-room`, absolute,
+`aria-hidden`; the announcer says it instead). From HA areas: `hass.entities[id].area_id`, else the
+device's; the commonest, plus a second when it holds a third or more ("server + Workstation"). Names
+never decide membership.
+
+`_roomStyles()` is emitted only when `room_tap` is on and sits AFTER the selection-colour override,
+so source order cannot hand its rules back to anything earlier.
+
+`.harness/rooms.html` (local only, NOT committed: it carries the owner's real plan image, entity list and areas in `rooms-data.js` / `rooms-plan.png`) runs on that real config, deep-frozen, with their HA areas: `model`
+(11 rooms, unique clip ids, names), tap / re-tap within 350ms / re-tap to clear (and the
+"lift to clear" caption mid-press) / tap another / tap outside, `holdAdds` (armed class, 3 pending
+rings, `+ Hotbox · 3`, selection unchanged until the lift), `holdAlreadySelected`, `heldDragAdds`
+(swapped shape, additive), `quickLassoReplaces`, `smallWiggleStillTaps` (9px is still a tap),
+`shiftToggles`, `multiTouchNothing`, `escapeCancels`, `cancelArmedCommits`, `touchTap`, `hover`,
+`selectAllThin`, `strayLightNoOutline`, `rotated` (90 deg), `disabled` (no layer, tap clears as
+before), `noAutoDoorways`, `editorSwitch` (deletes the key when off) and `yaml` -- plus one probe per adversarial-review finding: `secondFingerDuringBand`, `escapeThenMove`, `oneLightRoomKeepsOutlines`, `exemptRetapClears`, `exteriorWallLight` (all four walls, aspects 1/1.6/4.15), `noRoomTapFivePx`, `shiftAddPulse`, `detachMidPress` and `manyFlashStaysThin`. Run its suites with rAF shimmed to a 16ms timer when the pane is hidden. Its `frame()` is a
+30ms timer, not rAF: with the pane hidden rAF runs at ~1Hz, which turned a double tap into two taps
+a second apart. And Escape must be dispatched on DOCUMENT, which is where the card listens.
+
 **Cancellation:** `_cancelActiveInteractions()` is the single sink for "abort everything." It releases capture, clears `_dragState`, all timers, magnifier state, color-wheel gesture, and commits any pending slider value. It's called from `_onPointerCancel`, `disconnectedCallback`-equivalent (via `_cancelActiveInteractions`), `visibilitychange` (when `document.hidden`), `window.blur`, and at the top of `_renderAll`.
 
 ---

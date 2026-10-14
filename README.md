@@ -49,6 +49,7 @@ it, and an open door lets it through.
 | **[Rotating the plan](#rotating-the-plan)** | Turn the whole layout 90/180/270&deg;: lights, zones, walls, image and emission directions together. Non-destructive &mdash; nothing you placed is rewritten. |
 | **[Colour bars](#colour-bars)** | The colour wheel is replaced by four bars: a vertical brightness bar beside colour, saturation and temperature. Easier to aim than a 128px circle. |
 | **[Only the bars that apply](#only-the-controls-a-light-actually-has)** | A bulb that only does white does not get a hue bar, and one that only switches gets an Off &#124; On control instead. |
+| **[Tap a room](#tap-a-room-to-select-it)** | Tap the floor of a room to select every light in it, hold to add a second room. Rooms come from the walls you already drew. |
 | **[Lasso selection](#lasso-draw-any-shape-you-like)** | Draw a freehand outline instead of a rectangle, and hold to borrow the other shape for one drag. |
 | **[Draggable controls](#overlaid-controls-that-get-out-of-the-way)** | Overlaid controls can be dragged anywhere on the plan, follow the group you select, and shrink to fit the plan rather than scrolling. |
 | **[Script buttons](#script-buttons)** | Run any script, scene or service against the lights you have selected, from a button in the controls. |
@@ -688,6 +689,83 @@ Values are clamped to 150&ndash;5000 ms.
 In the editor it is **Interaction &rarr; Hold to Swap Shape**; leave the field empty to
 keep it off.
 
+### Tap a room to select it
+
+Most of the time I don't want *some* lights, I want the kitchen. Drawing a lasso
+around a room I already drew walls for is busywork, so now I just tap its floor.
+
+```yaml
+room_tap: true
+```
+
+**Tap the floor of a room** &mdash; anywhere between its walls, not on a light &mdash; and
+every light in it is selected, replacing what you had. The room gets a soft fill
+and an outline just inside its walls, in your [band colour](#the-colour-of-the-band),
+and its name shows up in the controls' grip row. Nothing is written on the plan
+itself.
+
+**Tap it again to clear.** A quick double tap does nothing extra, so a tap you were
+not sure registered is safe to repeat; it is the next deliberate tap that clears.
+While your finger is down on an already-selected room, the grip row says
+"lift to clear", so it never surprises you.
+
+**Hold a room's floor to ADD it.** After the hold (your
+[swap time](#hold-to-borrow-the-other-shape) if you set one, half a second
+otherwise) the room gets a dashed edge, the lights it would add get dashed rings,
+and the grip row reads `+ Hotbox · 3`. Nothing has changed yet; lift and it is
+added. Like the long press on a light, it only ever adds, so repeating it is safe.
+On a desktop, Shift-click a room to add it, and Shift-click again to take it back
+out.
+
+The rule that ties it all together: **quick replaces, held adds.**
+
+| | Quick | Held first |
+|---|---|---|
+| **Lift on a room** | selects that room | adds that room |
+| **Drag** | your lasso (or rectangle), replacing | the other shape, adding |
+| **Lift outside every room** | clears, as always | clears, as always |
+
+So a held drag is how you add a few loose lights to rooms you already have: hold,
+then draw a rectangle round them. Voila!
+
+**Where do rooms come from?** Your walls. The card floods the floor between them,
+so it needs no extra setup if you already traced the plan in the
+[full-size editor](#drawing-walls):
+
+- **Doors always count as closed.** A room is the same room whether its door is
+  open or not.
+- **Small gaps are bridged.** Two wall ends facing each other across a doorway-sized
+  gap are joined, so a doorway you left open while drawing does not merge two
+  rooms. Turn that off with `room_auto_doorways: false` if it guesses wrong.
+- **A space with no lights is not a room.** Tapping a closet does what tapping
+  empty floor always did. A small walled pocket inside a room (a fireplace, a
+  cupboard) taps as the room around it.
+- **Lights that are [not affected by group selection](#not-affected-by-group-selection)
+  stay out**, exactly like a drag-select.
+- **Names come from Home Assistant areas**, the most common area among the room's
+  lights. They are only ever a label; the walls decide what is in the room.
+
+**An open-plan space you think of as two rooms?** Split it with a divider. It is a
+wall that only exists for rooms: it casts no shadow and is never drawn.
+
+```yaml
+room_dividers:
+  - {x1: 82.57, y1: 19.23, x2: 82.57, y2: 32.14}   # Hallway | Entrance
+```
+
+Same coordinates as `glow_walls`, in plan percent.
+
+The overlaid controls sit on part of the plan, so a room underneath them cannot be
+tapped until they move &mdash; they follow the selection, so picking another room
+usually clears the way, and you can always [drag them](#overlaid-controls-that-get-out-of-the-way).
+
+Selecting a whole room any other way, with a lasso or Ctrl+A, gets the outline
+too. Select a stray light on top and the outlines go, because the outline would
+claim more than is true. With four or more rooms selected they thin down to a fine
+edge, so selecting everything does not paint the whole house.
+
+Turn it on in the editor under **Interaction &rarr; Tap a Room to Select It**.
+
 ### The colour of the band
 
 ```yaml
@@ -840,6 +918,9 @@ Everything else is upstream's and
 | `selection_mode` | string | `"box"` | How a drag on empty canvas selects: `box` is the rubber-band rectangle, `lasso` draws a freehand outline. See [Lasso](#lasso-draw-any-shape-you-like). |
 | `selection_color` | list/string | `null` | Colour of the selection band, as `[r, g, b]` (a `"#rrggbb"` or `"rgb(r,g,b)"` string works too). Applies to both shapes. |
 | `selection_swap_hold` | number | `0` | Hold still this many milliseconds on empty canvas before dragging, and that one drag uses the *other* shape. `0` disables it; anything else is clamped to 150&ndash;5000. |
+| `room_tap` | bool | `false` | Tap the floor of a room to select its lights; hold it to add the room. See [Tap a room](#tap-a-room-to-select-it). |
+| `room_dividers` | list | `[]` | Walls that only exist for rooms, to split an open-plan space. Same forms as `glow_walls`; they cast no shadow and are never drawn. |
+| `room_auto_doorways` | bool | `true` | Bridge doorway-sized gaps between facing wall ends when working out rooms. |
 
 And these extend options the original card already had:
 

@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.52.0 (fork-maxi1134)';
+  static BUILD = 'v1.53.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -232,6 +232,486 @@ class SpatialLightColorCard extends HTMLElement {
       } else if (b[1] <= y && isLeft < 0) wind--;    // downward crossing, point right
     }
     return wind !== 0;
+  }
+
+  /**
+   * Cells across the LONG side of the plan when rooms are worked out from the
+   * walls. 768 resolves every gap on a real plan (the narrowest deliberate
+   * doorway measured was 2.2% of the width, the widest drafting slop 0.1%) and
+   * gave identical rooms to 512 and 1024 on it, so it is enough with margin
+   * either side. NOT the lasso's 128x128: that grid is anisotropic on a wide
+   * plan and puts lights on wall cells.
+   */
+  static ROOM_GRID = 768;
+  /** Travel, in px, after which a press on the floor is a DRAG. One number
+   *  for the tap, the hold, the lasso and the rectangle, so they cannot
+   *  disagree about what the hand did. */
+  static ROOM_SLOP = 12;
+  /** The press tint appears this long after the finger lands. */
+  static ROOM_TINT_MS = 120;
+  /** A second tap on the same room inside this window is a no-op re-flash. */
+  static ROOM_REPEAT_MS = 350;
+  /** Floor for the hold that adds a room (and swaps the band's shape). */
+  static ROOM_HOLD_MIN = 250;
+  /** From this many covered rooms on, outlines thin out instead of painting
+   *  the house -- what Ctrl+A or a big lasso would otherwise do. */
+  static ROOM_MANY = 4;
+
+  /**
+   * The rooms a floor plan's walls make, worked out once and cached.
+   *
+   * Pure and DOM-free, so `.harness/rooms.test.js` drives it in node. Every
+   * coordinate in and out is PLAN percent; `aspect` is the plan's width over
+   * its height, which is what makes the grid's cells square in real space and
+   * the answer the same on every device.
+   *
+   * The steps, each of which earns its place on a real plan:
+   *  1. Every wall is a barrier, and doors count as CLOSED whatever their
+   *     state -- a room that changed shape when a contact sensor flipped would
+   *     be a room nobody could predict.
+   *  2. Near-miss joins are bridged: two walls drawn to "the same" corner
+   *     routinely miss each other by a fraction of a percent.
+   *  3. IMPLIED DOORWAYS: an open doorway is drawn as two wall ends that stop
+   *     facing each other across a gap. Left open, it merges the two rooms into
+   *     one (measured on a real plan: four rooms into a single 32-light blob).
+   *     A dangling end whose wall points straight at another wall end, across
+   *     a gap that is small next to the rooms on either side, is closed -- for
+   *     ROOMS only. Light still passes; nothing is drawn on the dashboard.
+   *  4. Rasterise on a square grid, flood the free cells, and everything that
+   *     touches the edge of the plan is OUTSIDE.
+   *
+   * Returns the labelled grid; `roomMembership` turns it into rooms.
+   */
+  static roomGeometry(walls, dividers, aspect, opts = {}) {
+    const ar = Number.isFinite(aspect) && aspect > 0 ? aspect : 1.6;
+    const PW = ar, PH = 1;
+    const LONG = Math.max(PW, PH);
+    const EPS = 0.006 * LONG;
+    const RAY_MAX = 0.15 * LONG;
+    const LAT_MAX = 2 * EPS;
+    const COS_FACE = Math.cos(10 * Math.PI / 180);
+    const N = opts.grid || SpatialLightColorCard.ROOM_GRID;
+    const W = PW >= PH ? N : Math.max(8, Math.round(N * PW / PH));
+    const H = PW >= PH ? Math.max(8, Math.round(N * PH / PW)) : N;
+    const cw = PW / W, ch = PH / H;
+    const cell = Math.max(cw, ch);
+    const R = 0.75 * cell;
+
+    // Segments in physical units. Zero-length ones are noise from editing.
+    const segs = [];
+    const take = (list, divider) => {
+      for (const w of (list || [])) {
+        if (!w) continue;
+        const a = [w.x1 / 100 * PW, w.y1 / 100 * PH];
+        const b = [w.x2 / 100 * PW, w.y2 / 100 * PH];
+        if (![a[0], a[1], b[0], b[1]].every(Number.isFinite)) continue;
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) continue;
+        segs.push({ i: segs.length, a, b, divider });
+      }
+    };
+    take(walls, false);
+    take(dividers, true);
+
+    const sub = (p, q) => [p[0] - q[0], p[1] - q[1]];
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1];
+    const cross = (p, q) => p[0] * q[1] - p[1] * q[0];
+    const segDist = (p, a, b) => {
+      const d = sub(b, a);
+      const L2 = dot(d, d);
+      const t = L2 === 0 ? 0 : Math.max(0, Math.min(1, dot(sub(p, a), d) / L2));
+      const q = [a[0] + t * d[0], a[1] + t * d[1]];
+      return { d: Math.hypot(p[0] - q[0], p[1] - q[1]), q };
+    };
+    const crosses = (p1, p2, p3, p4) => {
+      const d1 = sub(p2, p1), d2 = sub(p4, p3);
+      const den = cross(d1, d2);
+      if (Math.abs(den) < 1e-12) return false;
+      const t = cross(sub(p3, p1), d2) / den;
+      const u = cross(sub(p3, p1), d1) / den;
+      return t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6;
+    };
+
+    // 2. Near-miss bridges, and the ends that dangle.
+    const bridges = [];
+    const dangling = [];
+    const ends = [];
+    for (const s of segs) {
+      for (const [end, other] of [[s.a, s.b], [s.b, s.a]]) {
+        const dv = sub(end, other);
+        const L = Math.hypot(dv[0], dv[1]);
+        const dir = [dv[0] / L, dv[1] / L];
+        ends.push({ w: s.i, p: end, d: dir });
+        let best = null;
+        for (const v of segs) {
+          if (v === s) continue;
+          const r = segDist(end, v.a, v.b);
+          if (!best || r.d < best.d) best = r;
+        }
+        if (best && best.d <= EPS) {
+          if (best.d > 1e-9) bridges.push([end, best.q]);
+        } else {
+          dangling.push({ w: s.i, p: end, d: dir });
+        }
+      }
+    }
+
+    // 3. Candidate doorways: a dangling end whose own wall points at another
+    // wall end that points back, nothing in between.
+    let candidates = [];
+    const seen = new Set();
+    if (opts.autoDoorways !== false) {
+      for (const A of dangling) {
+        let best = null;
+        for (const B of ends) {
+          if (B.w === A.w) continue;
+          if (dot(A.d, B.d) > -COS_FACE) continue;
+          const v = sub(B.p, A.p);
+          const t = dot(v, A.d);
+          if (t <= EPS || t > RAY_MAX) continue;
+          const lat = Math.abs(cross(A.d, v));
+          if (lat > Math.max(LAT_MAX, 0.1 * t)) continue;
+          if (segs.some((s) => s.i !== A.w && s.i !== B.w && crosses(A.p, B.p, s.a, s.b))) continue;
+          if (!best || t < best.t) best = { t, B };
+        }
+        if (!best) continue;
+        const k = [A.p, best.B.p].map((p) => p[0].toFixed(3) + ',' + p[1].toFixed(3)).sort().join('|');
+        if (seen.has(k)) continue;
+        seen.add(k);
+        candidates.push({ a: A.p, b: best.B.p, gap: best.t });
+      }
+    }
+
+    // 4. Raster: capsules of radius R around every barrier.
+    const stamp = (mask, a, b) => {
+      const c0 = Math.max(0, Math.floor((Math.min(a[0], b[0]) - R) / cw) - 1);
+      const c1 = Math.min(W, Math.floor((Math.max(a[0], b[0]) + R) / cw) + 2);
+      const r0 = Math.max(0, Math.floor((Math.min(a[1], b[1]) - R) / ch) - 1);
+      const r1 = Math.min(H, Math.floor((Math.max(a[1], b[1]) + R) / ch) + 2);
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const L2 = dx * dx + dy * dy;
+      const R2 = R * R;
+      for (let r = r0; r < r1; r++) {
+        const Y = (r + 0.5) * ch;
+        for (let c = c0; c < c1; c++) {
+          const X = (c + 0.5) * cw;
+          const t = L2 === 0 ? 0 : Math.max(0, Math.min(1, ((X - a[0]) * dx + (Y - a[1]) * dy) / L2));
+          const ex = X - a[0] - t * dx, ey = Y - a[1] - t * dy;
+          if (ex * ex + ey * ey <= R2) mask[r * W + c] = 1;
+        }
+      }
+    };
+    const build = (auto) => {
+      const wall = new Uint8Array(W * H);
+      for (const s of segs) stamp(wall, s.a, s.b);
+      for (const br of bridges) stamp(wall, br[0], br[1]);
+      for (const c of auto) stamp(wall, c.a, c.b);
+      const lab = new Int32Array(W * H);
+      const area = [0];
+      const stack = new Int32Array(W * H);
+      let n = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (wall[i] || lab[i]) continue;
+        n++;
+        let sp = 0, count = 0;
+        stack[sp++] = i;
+        lab[i] = n;
+        while (sp) {
+          const j = stack[--sp];
+          count++;
+          const r = (j / W) | 0, c = j - r * W;
+          if (c > 0 && !wall[j - 1] && !lab[j - 1]) { lab[j - 1] = n; stack[sp++] = j - 1; }
+          if (c < W - 1 && !wall[j + 1] && !lab[j + 1]) { lab[j + 1] = n; stack[sp++] = j + 1; }
+          if (r > 0 && !wall[j - W] && !lab[j - W]) { lab[j - W] = n; stack[sp++] = j - W; }
+          if (r < H - 1 && !wall[j + W] && !lab[j + W]) { lab[j + W] = n; stack[sp++] = j + W; }
+        }
+        area.push(count);
+      }
+      const edge = new Set();
+      for (let c = 0; c < W; c++) { if (lab[c]) edge.add(lab[c]); if (lab[(H - 1) * W + c]) edge.add(lab[(H - 1) * W + c]); }
+      for (let r = 0; r < H; r++) { if (lab[r * W]) edge.add(lab[r * W]); if (lab[r * W + W - 1]) edge.add(lab[r * W + W - 1]); }
+      return { wall, lab, n, edge, area };
+    };
+    const cellOf = (x, y) => {
+      const r = Math.min(H - 1, Math.max(0, Math.floor(y / ch)));
+      const c = Math.min(W - 1, Math.max(0, Math.floor(x / cw)));
+      return r * W + c;
+    };
+
+    // A doorway is kept only if it really separates two spaces and its gap is
+    // small next to the smaller of them; the outside counts as infinite. Repeat
+    // until nothing changes, because dropping one can merge what another split.
+    let auto = candidates;
+    let g = build(auto);
+    for (let pass = 0; pass < 5 && auto.length; pass++) {
+      const keep = auto.filter((c) => {
+        const mx = (c.a[0] + c.b[0]) / 2, my = (c.a[1] + c.b[1]) / 2;
+        const dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1];
+        const L = Math.hypot(dx, dy) || 1;
+        const nx = -dy / L, ny = dx / L;
+        const off = R + 2.5 * cell;
+        const la = g.lab[cellOf(mx + nx * off, my + ny * off)];
+        const lb = g.lab[cellOf(mx - nx * off, my - ny * off)];
+        if (!la || !lb || la === lb) return false;
+        const aa = g.edge.has(la) ? Infinity : g.area[la] * cw * ch;
+        const ab = g.edge.has(lb) ? Infinity : g.area[lb] * cw * ch;
+        const lim = Math.min(aa, ab) === Infinity ? Infinity : 0.5 * Math.sqrt(Math.min(aa, ab));
+        return c.gap <= lim;
+      });
+      if (keep.length === auto.length) break;
+      auto = keep;
+      g = build(auto);
+    }
+
+    const toPct = (p) => [p[0] / PW * 100, p[1] / PH * 100];
+    return {
+      W, H, PW, PH, cw, ch, R,
+      wall: g.wall, lab: g.lab, n: g.n, edge: g.edge, area: g.area,
+      doorways: auto.map((c) => ({ a: toPct(c.a), b: toPct(c.b) })),
+      dividers: segs.filter((s) => s.divider).map((s) => ({ a: toPct(s.a), b: toPct(s.b) })),
+    };
+  }
+
+  /** The grid cell under a plan-percent point, or -1 off the plan. */
+  static roomCellAt(geom, x, y) {
+    if (!geom || !Number.isFinite(x) || !Number.isFinite(y)) return -1;
+    const c = Math.floor(x / 100 * geom.W);
+    const r = Math.floor(y / 100 * geom.H);
+    if (c < 0 || r < 0 || c >= geom.W || r >= geom.H) return -1;
+    return r * geom.W + c;
+  }
+
+  /**
+   * The free-space label under a plan-percent point. A point ON a wall stroke
+   * snaps to the nearest free cell within `snap` cells -- a light centred on a
+   * wall line, or a tap that lands on one, belongs to the room it is mostly in.
+   * 0 means "a wall, nowhere near free floor".
+   */
+  static roomLabelAt(geom, x, y, snap = 4) {
+    const i = SpatialLightColorCard.roomCellAt(geom, x, y);
+    if (i < 0) return 0;
+    if (geom.lab[i]) return geom.lab[i];
+    const W = geom.W, H = geom.H;
+    const r0 = (i / W) | 0, c0 = i - r0 * W;
+    // Ranked: any interior label beats the outside (a sconce centred on an
+    // exterior wall is half outdoors by geometry and wholly indoors by
+    // intent), then the nearest by REAL distance from the point, not from its
+    // cell -- integer cell distance ties constantly, and the scan order then
+    // decided, always toward the top-left.
+    const fy = y / 100 * H - 0.5, fx = x / 100 * W - 0.5;
+    let best = 0, bestOut = true, bestD = Infinity;
+    for (let dr = -snap; dr <= snap; dr++) {
+      const r = r0 + dr;
+      if (r < 0 || r >= H) continue;
+      for (let dc = -snap; dc <= snap; dc++) {
+        const c = c0 + dc;
+        if (c < 0 || c >= W) continue;
+        if (dr * dr + dc * dc > snap * snap) continue;
+        const k = geom.lab[r * W + c];
+        if (!k) continue;
+        const out = !!(geom.edge && geom.edge.has(k));
+        const d = (r - fy) * (r - fy) + (c - fx) * (c - fx);
+        if (out && !bestOut) continue;
+        if (out === bestOut && d >= bestD) continue;
+        best = k; bestOut = out; bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Which lights live in which room.
+   *
+   * `lights` is `[{id, x, y, selectable}]` in plan percent, where `selectable`
+   * means a room tap may sweep it in (not a binary_sensor, not group-exempt).
+   * A space with no selectable light is not a room, but a light-less POCKET
+   * that is clearly inside the house -- a walled cupboard in a living room --
+   * is adopted by the lit room around it, so tapping it does what the eye
+   * expects. A pocket that mostly borders the outside stays dead: a tap there
+   * clears, as a tap on empty floor always has.
+   *
+   * Returns `{rooms, roomOfLabel, dead}`; a room is `{id, labels, members,
+   * selectable, exempt}`, with `id` its own label number.
+   */
+  static roomMembership(geom, lights) {
+    const { W, H, lab, wall, edge, area } = geom;
+    const members = new Map();
+    const selectable = new Map();
+    const lightRoomLabel = new Map();
+    for (const l of lights) {
+      let k = SpatialLightColorCard.roomLabelAt(geom, l.x, l.y, 4);
+      if (!k || edge.has(k)) k = 0;
+      lightRoomLabel.set(l.id, k);
+      if (!k) continue;
+      if (!members.has(k)) members.set(k, []);
+      members.get(k).push(l.id);
+      if (l.selectable) {
+        if (!selectable.has(k)) selectable.set(k, []);
+        selectable.get(k).push(l.id);
+      }
+    }
+    const interior = [];
+    for (let k = 1; k <= geom.n; k++) if (!edge.has(k) && area[k] > 4) interior.push(k);
+
+    // Adoption: look at the ring of floor just outside each light-less pocket.
+    const ringK = Math.ceil(geom.R / Math.max(geom.cw, geom.ch)) + 3;
+    const adopt = new Map();
+    const dist = new Int16Array(W * H);
+    for (const k of interior) {
+      if (selectable.has(k)) continue;
+      dist.fill(-1);
+      const queue = [];
+      for (let i = 0; i < W * H; i++) if (lab[i] === k) { dist[i] = 0; queue.push(i); }
+      const counts = new Map();
+      for (let qi = 0; qi < queue.length; qi++) {
+        const j = queue[qi];
+        const d = dist[j];
+        if (d >= ringK) continue;
+        const r = (j / W) | 0, c = j - r * W;
+        const nb = [];
+        if (c > 0) nb.push(j - 1);
+        if (c < W - 1) nb.push(j + 1);
+        if (r > 0) nb.push(j - W);
+        if (r < H - 1) nb.push(j + W);
+        for (const m of nb) {
+          if (dist[m] !== -1) continue;
+          dist[m] = d + 1;
+          queue.push(m);
+          if (!wall[m] && lab[m] !== k) {
+            const key = edge.has(lab[m]) ? 'OUT' : lab[m];
+            counts.set(key, (counts.get(key) || 0) + 1);
+          }
+        }
+      }
+      let total = 0;
+      counts.forEach((v) => { total += v; });
+      const outFrac = total ? (counts.get('OUT') || 0) / total : 1;
+      let bestLit = 0, bestCount = 0;
+      counts.forEach((v, key) => {
+        if (key !== 'OUT' && selectable.has(key) && v > bestCount) { bestLit = key; bestCount = v; }
+      });
+      if (bestLit && outFrac < 1 / 3) adopt.set(k, bestLit);
+    }
+
+    const rooms = [];
+    const roomOfLabel = new Map();
+    for (const k of interior) {
+      if (!selectable.has(k)) continue;
+      const labels = [k];
+      adopt.forEach((to, from) => { if (to === k) labels.push(from); });
+      const all = [];
+      for (const l of labels) for (const id of (members.get(l) || [])) if (!all.includes(id)) all.push(id);
+      const sel = selectable.get(k).filter((id, i, a) => a.indexOf(id) === i);
+      rooms.push({ id: k, labels, members: all, selectable: sel, exempt: all.filter((id) => !sel.includes(id)) });
+      for (const l of labels) roomOfLabel.set(l, k);
+    }
+    const dead = interior.filter((k) => !roomOfLabel.has(k));
+    return { rooms, roomOfLabel, dead, lightRoomLabel };
+  }
+
+  /**
+   * The outline of a set of labels as polygon loops in plan percent, for
+   * drawing. A small CLOSING (grow 2 cells, shrink 2) first, which erases the
+   * walls between a room and a pocket it adopted, so the room reads as ONE
+   * shape. Loops are traced along cell edges and simplified to within a cell;
+   * a hole comes out as a loop of its own and `fill-rule: evenodd` does the
+   * rest.
+   */
+  static roomOutline(geom, labels) {
+    const GW = geom.W, GH = geom.H, glab = geom.lab;
+    const want = new Set(labels);
+    // Work in the room's own bounding box (plus the closing margin), not the
+    // whole plan: the grid is ~140k cells and a room is a few thousand, so
+    // this is the difference between ~70 ms and ~7 ms for a whole plan.
+    let r0 = GH, r1 = -1, c0 = GW, c1 = -1;
+    for (let i = 0; i < GW * GH; i++) {
+      if (!want.has(glab[i])) continue;
+      const r = (i / GW) | 0, c = i - r * GW;
+      if (r < r0) r0 = r; if (r > r1) r1 = r; if (c < c0) c0 = c; if (c > c1) c1 = c;
+    }
+    if (r1 < 0) return [];
+    const PAD = 3;
+    const ox = c0 - PAD, oy = r0 - PAD;
+    const W = c1 - c0 + 1 + 2 * PAD, H = r1 - r0 + 1 + 2 * PAD;
+    let m = new Uint8Array(W * H);
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) if (want.has(glab[r * GW + c])) m[(r - oy) * W + (c - ox)] = 1;
+    }
+    const base = m;
+    const step = (src, grow) => {
+      const out = new Uint8Array(W * H);
+      for (let r = 0; r < H; r++) {
+        for (let c = 0; c < W; c++) {
+          const i = r * W + c;
+          const n4 = [c > 0 ? src[i - 1] : 0, c < W - 1 ? src[i + 1] : 0, r > 0 ? src[i - W] : 0, r < H - 1 ? src[i + W] : 0];
+          out[i] = grow ? (src[i] || n4.some(Boolean) ? 1 : 0) : (src[i] && n4.every(Boolean) ? 1 : 0);
+        }
+      }
+      return out;
+    };
+    m = step(step(step(step(m, true), true), false), false);
+    for (let i = 0; i < W * H; i++) if (base[i]) m[i] = 1;
+
+    // Directed boundary edges, clockwise on screen, keyed by start vertex.
+    const VW = W + 1;
+    const next = new Map();
+    const add = (x0, y0, x1, y1) => {
+      const k = y0 * VW + x0;
+      if (!next.has(k)) next.set(k, []);
+      next.get(k).push(y1 * VW + x1);
+    };
+    const inM = (r, c) => r >= 0 && c >= 0 && r < H && c < W && m[r * W + c] === 1;
+    for (let r = 0; r < H; r++) {
+      for (let c = 0; c < W; c++) {
+        if (!m[r * W + c]) continue;
+        if (!inM(r - 1, c)) add(c, r, c + 1, r);
+        if (!inM(r, c + 1)) add(c + 1, r, c + 1, r + 1);
+        if (!inM(r + 1, c)) add(c + 1, r + 1, c, r + 1);
+        if (!inM(r, c - 1)) add(c, r + 1, c, r);
+      }
+    }
+    const loops = [];
+    for (const [start, outs] of next) {
+      while (outs.length) {
+        const loop = [start];
+        let cur = outs.pop();
+        let guard = 0;
+        while (cur !== start && guard++ < 200000) {
+          loop.push(cur);
+          const o = next.get(cur);
+          if (!o || !o.length) break;
+          cur = o.pop();
+        }
+        if (loop.length >= 4) loops.push(loop.map((v) => [v % VW, (v / VW) | 0]));
+      }
+    }
+    // Drop collinear vertices, then Douglas-Peucker to within ~a cell.
+    const simplify = (pts, tol) => {
+      if (pts.length < 4) return pts;
+      const keep = new Uint8Array(pts.length);
+      keep[0] = 1; keep[pts.length - 1] = 1;
+      const st = [[0, pts.length - 1]];
+      while (st.length) {
+        const [s, e] = st.pop();
+        const [ax, ay] = pts[s], [bx, by] = pts[e];
+        const dx = bx - ax, dy = by - ay;
+        const L = Math.hypot(dx, dy) || 1;
+        let idx = -1, md = tol;
+        for (let i = s + 1; i < e; i++) {
+          const d = Math.abs((pts[i][0] - ax) * dy - (pts[i][1] - ay) * dx) / L;
+          if (d > md) { md = d; idx = i; }
+        }
+        if (idx >= 0) { keep[idx] = 1; st.push([s, idx], [idx, e]); }
+      }
+      return pts.filter((_, i) => keep[i]);
+    };
+    // Simplified as an OPEN run from the first vertex to the last: closing it
+    // first makes the two ends the same point, every distance to that chord
+    // zero, and the whole loop collapses to nothing. The closing edge is the
+    // path's own `Z`.
+    return loops
+      .map((loop) => simplify(loop, 0.9))
+      .filter((loop) => loop.length >= 3)
+      .map((loop) => loop.map(([c, r]) => [(c + ox) / GW * 100, (r + oy) / GH * 100]));
   }
 
   /**
@@ -706,6 +1186,19 @@ class SpatialLightColorCard extends HTMLElement {
       // press, pause, drag -- is one a user can make without meaning to, so a
       // card that never asked for it must never get it.
       selection_swap_hold: this._normalizeSwapHold(config.selection_swap_hold),
+      // Tap the bare floor of a room to select that room's lights; hold it to
+      // ADD the room. Off unless asked for, because it changes what a tap on
+      // empty floor does -- on every card that never turned it on, a tap
+      // there still only clears.
+      room_tap: config.room_tap === true,
+      // Extra room boundaries that never block light: a line that says "these
+      // are two rooms" where the walls leave the space open. Same shapes
+      // glow_walls accepts.
+      room_dividers: this._normalizeGlowWalls(config.room_dividers),
+      // Close the open doorways the walls imply (two wall ends facing each
+      // other across a gap), for rooms only. On by default; false keeps every
+      // gap open.
+      room_auto_doorways: config.room_auto_doorways !== false,
       // 'auto' (default): follow the dashboard's Home Assistant theme —
       // including light themes and translucent/glass card backgrounds.
       // 'dark': the card's original fixed dark palette. 'light': a fixed
@@ -2597,6 +3090,8 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._visPolyCache) this._visPolyCache.clear();
     this._requestLightFieldDraw();
     this._requestWallEditorDraw();
+    // Rooms are cut in the plan's own shape, which can arrive only now.
+    this._syncRooms();
   }
 
   /** The plan's quarter turn: 0, 90, 180 or 270. */
@@ -3917,6 +4412,7 @@ class SpatialLightColorCard extends HTMLElement {
           <div class="canvas${(this._config.canvas_touch_scroll && this._lockPositions && !this._editPositionsMode && !this._wallEditMode) ? ' touch-scroll' : ''}${this._planRotationClass()}" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasInlineStyle()}">
             <div class="grid"></div>
             ${this._fieldCanvasNeeded ? '<canvas class="light-field" id="lightField" aria-hidden="true"></canvas>' : ''}
+            ${this._config.room_tap ? '<svg class="room-halo-layer" id="roomHalo" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg><svg class="room-layer" id="roomLayer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>' : ''}
             ${this._config.entities.length === 0 ? this._renderEmptyState() : this._renderLightsHTML()}
             ${this._renderCanvasElementsHTML()}
             ${controlsPosition === 'floating' ? this._renderControlsFloating(showControls, controlContext) : ''}
@@ -3932,6 +4428,9 @@ class SpatialLightColorCard extends HTMLElement {
     // Cache refs once
     this._els.canvas = this.shadowRoot.getElementById('canvas');
     this._els.lightField = this.shadowRoot.getElementById('lightField');
+    this._els.roomLayer = this.shadowRoot.getElementById('roomLayer');
+    this._els.roomHalo = this.shadowRoot.getElementById('roomHalo');
+    this._els.cfRoom = this.shadowRoot.getElementById('cfRoom');
     // A render means this card is alive, so any teardown latch from a previous
     // disconnect is stale; leaving it set would suppress a genuine user close.
     this._wallEditorTeardown = false;
@@ -4068,6 +4567,9 @@ class SpatialLightColorCard extends HTMLElement {
       // changes miss every mask cache, so intermediate frames coalesce
       // into one trailing recompute at the settled size.
       const now = Date.now();
+      // Rooms are cut in the canvas' shape when nothing else gives one, and
+      // this is the one place a detached first render gets its real box.
+      this._syncRooms();
       if (!this._glowResizeLast || now - this._glowResizeLast > 250) {
         this._glowResizeLast = now;
         this._updateAllGlows();
@@ -4761,6 +5263,7 @@ class SpatialLightColorCard extends HTMLElement {
         filter: drop-shadow(0 0 4px rgba(${rgb},0.95));
       }`;
       })()}
+      ${this._roomStyles()}
 
       /* ---------- Canvas elements (links, sensors, templates) ---------- */
       .canvas-element {
@@ -6057,6 +6560,7 @@ class SpatialLightColorCard extends HTMLElement {
         <div class="cf-grip" id="cfGrip" role="button" tabindex="0"
              aria-label="Move controls (kept until a different group is selected; double-tap to follow the selection now)"
              title="Drag to move — kept until you select a different group"></div>
+        ${this._config.room_tap ? '<div class="cf-room" id="cfRoom" aria-hidden="true" hidden></div>' : ''}
         ${this._colorBarsHTML(avgState, tempRange)}
         ${this._renderSwitchOnly()}
         <div class="presets-row${presetsHtml ? ' has-presets' : ''}">
@@ -7240,6 +7744,23 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectionHoldTimer = null;
     }
     this._selectionTouchClaim = null;
+    // A room press cannot survive a move: pointer capture goes with the old
+    // box, so its lift may never arrive, and the hold timer would then arm an
+    // add with no finger down. Only the floor gesture is ended here -- the
+    // full _cancelActiveInteractions also commits sliders and grip drags,
+    // which a detach must not.
+    if (this._roomPress || this._roomTintTimer || this._roomHoldTimer) {
+      this._roomPress = null;
+      this._clearRoomTimers();
+      this._selectionStart = null;
+      this._selectionPointerId = null;
+      this._selectionBase = null;
+      this._selectionModeAdditive = false;
+      if (this._selectionSwapTimer) { clearTimeout(this._selectionSwapTimer); this._selectionSwapTimer = null; }
+    }
+    if (this._roomHoverTimer) { clearTimeout(this._roomHoverTimer); this._roomHoverTimer = null; }
+    this._roomHover = null;
+    this._roomHoverPending = null;
     if (this._boundIconsetAdded && typeof window !== 'undefined') {
       window.removeEventListener('iron-iconset-added', this._boundIconsetAdded);
       this._boundIconsetAdded = null;
@@ -7383,6 +7904,7 @@ class SpatialLightColorCard extends HTMLElement {
       this._els.canvas.addEventListener('pointermove', (e) => this._onPointerMove(e));
       this._els.canvas.addEventListener('pointerup', (e) => this._onPointerUp(e));
       this._els.canvas.addEventListener('pointercancel', (e) => this._onPointerCancel(e));
+      this._els.canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this._clearRoomHover(); });
       // Non-passive on purpose: the first cancelable touchmove is the one
       // chance to claim the gesture before the browser starts scrolling.
       this._els.canvas.addEventListener('touchmove', (e) => this._handleCanvasTouchMove(e), { passive: false });
@@ -7893,6 +8415,13 @@ class SpatialLightColorCard extends HTMLElement {
       e.preventDefault();
       this._redo();
     }
+    // Escape while a room press is still down: the press does nothing, and
+    // the selection is left alone -- the hand has not decided anything yet.
+    if (e.key === 'Escape' && this._roomPress && !this._selectionBox && !this._roomPress.cancelled) {
+      e.preventDefault();
+      this._cancelRoomPress();
+      return;
+    }
     // Escape → deselect and close panels
     if (e.key === 'Escape') {
       // Only intercept Escape if there's something for us to close/clear,
@@ -8056,6 +8585,14 @@ class SpatialLightColorCard extends HTMLElement {
     // no light dragging, no long-press more-info.
     if (this._wallEditMode && this._onWallPointerDown(e)) return;
     try { e.target.setPointerCapture?.(e.pointerId); } catch (_) { /* pointer may already be gone */ }
+    // A second finger anywhere turns a room press into a pinch or a fumble:
+    // it will do nothing, whichever finger lifts first. Only while that press
+    // is genuinely live, though -- `_selectionStart` is its own lifecycle -- or
+    // one lift that never reached us would mark every later tap a pinch.
+    if (this._roomPress && e.pointerId !== this._roomPress.pointerId) {
+      if (this._selectionStart) this._roomPressGoesMulti();
+      else { this._roomPress = null; this._clearRoomTimers(); }
+    }
 
     const targetLight = e.target.closest('.light');
     if (targetLight) {
@@ -8225,7 +8762,25 @@ class SpatialLightColorCard extends HTMLElement {
     // touch the browser reclaims for scrolling (pointercancel) or a stray
     // brush on empty canvas no longer destroys a multi-selection outright.
     if (e.target.id === 'canvas' || e.target.classList.contains('grid')) {
+      // With room taps on, a second pointer on the floor while another one
+      // owns a floor gesture -- a press, or a band already being drawn -- is a
+      // pinch or a fumble, and it must not take that gesture over: doing so
+      // reset a HELD band's additive base (dropping what the hold promised to
+      // keep) and armed a room press nothing would ever clear.
+      // Unless that gesture is provably dead: the element that captured its
+      // pointer has lost the capture, i.e. its lift happened and never reached
+      // us. Without that check one lost lift would leave the floor dead.
+      if (this._roomTapActive() && this._selectionStart && this._selectionPointerId != null
+        && e.pointerId !== this._selectionPointerId) {
+        const capEl = this._selectionCaptureEl;
+        let stale = false;
+        try { stale = !!capEl && !capEl.hasPointerCapture(this._selectionPointerId); } catch (_) { stale = false; }
+        if (!stale) return;
+      }
       const rect = this._els.canvas.getBoundingClientRect();
+      let captured = false;
+      try { captured = !!e.target.hasPointerCapture?.(e.pointerId); } catch (_) { /* no capture API */ }
+      this._selectionCaptureEl = captured ? e.target : null;
       this._selectionStart = {
         x: e.clientX - rect.left,
         y: e.clientY - rect.top,
@@ -8241,6 +8796,14 @@ class SpatialLightColorCard extends HTMLElement {
       // A fresh gesture uses the configured shape until a hold says otherwise.
       this._selectionSwapped = false;
       this._armSelectionSwap();
+      // Room taps: nothing changes until the hand decides (see _armRoomPress).
+      const roomTap = this._roomTapActive();
+      if (roomTap) {
+        this._armRoomPress(e);
+      } else if (this._roomPress) {
+        this._roomPress = null;
+        this._clearRoomTimers();
+      }
       // Holding still briefly claims the marquee outright — the escape hatch
       // for box drags that START straight down (which the move-direction
       // arbitration would otherwise hand to the scroller).
@@ -8250,6 +8813,10 @@ class SpatialLightColorCard extends HTMLElement {
           this._selectionHoldTimer = null;
           if (!this._selectionStart || this._selectionPointerId == null) return;
           this._selectionTouchClaim = 'select';
+          // With room taps on, the claim only CLAIMS. A still finger may yet
+          // lift as a room tap, so no band, no buzz and above all no clearing
+          // the selection -- the room hold says its own piece at its own time.
+          if (roomTap) { this._roomPressClaimed(); return; }
           if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15);
           // Materialize the band right away as the "selection mode" cue.
           if (!this._selectionBox) {
@@ -8271,6 +8838,10 @@ class SpatialLightColorCard extends HTMLElement {
       if (this._wallDrawState) { if (this._onWallPointerMove(e)) return; }
       else this._trackWallHover(e);
     }
+    if (e.pointerType === 'mouse' && !this._selectionStart && !this._dragState && this._roomTapActive()) {
+      this._trackRoomHover(e);
+    }
+    if (this._roomPress && this._selectionStart) this._trackRoomPressMove(e);
     if (this._pendingTap && e.pointerId === this._pendingTap.pointerId) {
       const dx = e.clientX - this._pendingTap.startX;
       const dy = e.clientY - this._pendingTap.startY;
@@ -8343,7 +8914,8 @@ class SpatialLightColorCard extends HTMLElement {
         && this._selectionStart && e.pointerId === this._selectionPointerId) {
       const dxh = e.clientX - this._selectionStart.clientX;
       const dyh = e.clientY - this._selectionStart.clientY;
-      if (Math.hypot(dxh, dyh) > 10) {
+      // Room taps use ONE slop for everything a press can turn into.
+      if (Math.hypot(dxh, dyh) > (this._roomPress ? SpatialLightColorCard.ROOM_SLOP : 10)) {
         if (this._selectionHoldTimer) {
           clearTimeout(this._selectionHoldTimer);
           this._selectionHoldTimer = null;
@@ -8367,7 +8939,23 @@ class SpatialLightColorCard extends HTMLElement {
         && (e.pointerType !== 'touch' || this._selectionTouchClaim === 'select')) {
       const dx = e.clientX - this._selectionStart.clientX;
       const dy = e.clientY - this._selectionStart.clientY;
-      if (Math.hypot(dx, dy) > 5) {
+      const rpm = this._roomPress;
+      const travel = Math.hypot(dx, dy);
+      if (rpm && (rpm.multi || rpm.cancelled)) {
+        // A pinch, or a press Escape called off, draws nothing.
+      } else if (rpm ? travel >= SpatialLightColorCard.ROOM_SLOP : travel > 5) {
+        // Quick replaces, held adds: a band drawn after the room hold ADDS to
+        // what you have, exactly as a held lift on a room does.
+        if (rpm && rpm.held && !this._selectionModeAdditive) {
+          this._selectionModeAdditive = true;
+          this._selectionBase = new Set(this._selectedLights);
+        }
+        if (rpm) {
+          this._roomPress = null;
+          this._clearRoomTimers();
+          this._lastRoomTap = null;
+          this._syncRoomVisuals();
+        }
         this._selectionBox = this._createSelectionShape(
           this._selectionStart.x, this._selectionStart.y);
         this._syncSelectingClass();
@@ -8490,6 +9078,17 @@ class SpatialLightColorCard extends HTMLElement {
         // The selection is complete: the panel comes back, and by now placement
         // has already put it beside the group you just drew.
         this._syncSelectingClass();
+        if (this._roomPress) {
+          this._roomPress = null;
+          this._clearRoomTimers();
+          this._syncRoomVisuals();
+        }
+      } else if (this._roomPress && this._roomPress.pointerId === e.pointerId) {
+        // Room taps on: the lift decides, by what the press was SHOWING.
+        const rp = this._roomPress;
+        this._roomPress = null;
+        this._clearRoomTimers();
+        this._commitRoomPress(rp);
       } else if (!this._selectionModeAdditive && this._selectedLights.size > 0) {
         // A completed tap on empty canvas deselects. This lives here (not in
         // pointerdown) so a scroll the browser reclaims mid-gesture — which
@@ -8590,7 +9189,20 @@ class SpatialLightColorCard extends HTMLElement {
     this._elementLongPressTriggered = false;
   }
 
-  _onPointerCancel() {
+  _onPointerCancel(e) {
+    // Android can end a long, STILL touch with pointercancel. If the hold had
+    // already armed an add and shown it, that cancel is the lift: the hand
+    // did nothing different from a press that ended in pointerup. Anything
+    // else -- a scroll the browser took, a pinch -- is a real cancel.
+    const rp = this._roomPress;
+    if (rp && e && e.pointerId === rp.pointerId && rp.phase === 'armed' && !rp.multi
+      && !rp.cancelled && !this._selectionBox) {
+      this._roomPress = null;
+      this._clearRoomTimers();
+      this._cancelActiveInteractions();
+      this._commitRoomPress(rp);
+      return;
+    }
     this._cancelActiveInteractions();
   }
 
@@ -8686,6 +9298,11 @@ class SpatialLightColorCard extends HTMLElement {
     // An armed hold-to-select marquee owns the gesture: Android fires
     // contextmenu from the same long-press (~500ms) that armed us at 300ms.
     if (this._selectionTouchClaim === 'select') {
+      e.preventDefault();
+      return;
+    }
+    // A room press is a hold on bare floor; the menu would end it mid-hold.
+    if (this._roomPress && !e.target.closest('.light')) {
       e.preventDefault();
       return;
     }
@@ -8785,6 +9402,11 @@ class SpatialLightColorCard extends HTMLElement {
       this._selectionHoldTimer = null;
     }
     this._selectionTouchClaim = null;
+    if (this._roomPress || this._roomTintTimer || this._roomHoldTimer) {
+      this._roomPress = null;
+      this._clearRoomTimers();
+      this._syncRoomVisuals();
+    }
     if (this._longPressTimer) {
       clearTimeout(this._longPressTimer);
       this._longPressTimer = null;
@@ -8848,6 +9470,665 @@ class SpatialLightColorCard extends HTMLElement {
     return base === 'lasso' ? 'box' : 'lasso';
   }
 
+  /** ---------- Rooms: tap the floor of a room to select it ---------- */
+
+  /** An order-free key for a selection set. */
+  static _selKey(set) {
+    return [...set].sort().join('|');
+  }
+
+  /** Room taps are live: the option is on and nothing else owns the canvas. */
+  _roomTapActive() {
+    return !!(this._config && this._config.room_tap && this._lockPositions
+      && !this._editPositionsMode && !this._wallEditMode);
+  }
+
+  /**
+   * The plan's own width over its height, UNROTATED -- rooms are worked out in
+   * plan space, so a quarter turn must not change them. The configured ratio
+   * first, then the measured plan image, then the live canvas turned back.
+   */
+  _planAspect() {
+    const ar = this._config && this._config.aspect_ratio;
+    if (ar && ar.w > 0 && ar.h > 0) return ar.w / ar.h;
+    const bg = this._config && this._config.background_image;
+    if (bg && bg.url) {
+      const dims = SpatialLightColorCard._imageSizeCache.get(bg.url);
+      if (dims && typeof dims.then !== 'function' && dims.w > 0 && dims.h > 0) return dims.w / dims.h;
+    }
+    const rect = this._els && this._els.canvas && this._els.canvas.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      return this._planRotationSwapsAxes() ? rect.height / rect.width : rect.width / rect.height;
+    }
+    // No box yet (HA renders detached) or none at all (display: none). A guess
+    // would be cached as if it were the plan; null says "ask again later".
+    return null;
+  }
+
+  /**
+   * The rooms, from the SAVED walls -- never `_wallList()`, which hands back
+   * the draft mid-edit -- and cached in two layers: the geometry rebuilds when
+   * the walls, dividers or plan shape change, the membership when a light
+   * moves, joins or leaves. `refresh` re-checks the membership key; hit tests
+   * between ticks reuse whatever `updateLights` last settled.
+   */
+  _roomModel(refresh = false) {
+    if (!this._config || !this._config.room_tap) return null;
+    const c = this._roomCache || (this._roomCache = {});
+    if (!refresh && c.model) return c.model;
+    const measured = this._planAspect();
+    // Unmeasurable right now: keep the shape we last cut rooms in, or have
+    // none yet -- every caller already treats a null model as "no rooms".
+    if (measured == null && !c.geom) return null;
+    const aspect = measured == null ? c.aspect : Math.round(measured * 100) / 100;
+    const walls = this._config.glow_walls || [];
+    const dividers = this._config.room_dividers || [];
+    const auto = this._config.room_auto_doorways !== false;
+    if (!c.geom || c.walls !== walls || c.dividers !== dividers || c.aspect !== aspect || c.auto !== auto) {
+      c.geom = SpatialLightColorCard.roomGeometry(walls, dividers, aspect, { autoDoorways: auto });
+      c.walls = walls; c.dividers = dividers; c.aspect = aspect; c.auto = auto;
+      c.memberKey = null;
+    }
+    const lights = [];
+    const parts = [];
+    for (const id of (this._config.entities || [])) {
+      const p = this._config.positions && this._config.positions[id];
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const selectable = this._isSelectableEntity(id) && !this._isGroupExempt(id);
+      lights.push({ id, x: p.x, y: p.y, selectable });
+      parts.push(id + ':' + p.x.toFixed(2) + ',' + p.y.toFixed(2) + (selectable ? '' : '!'));
+    }
+    const mkey = parts.join('|');
+    if (c.memberKey !== mkey || !c.model) {
+      const members = SpatialLightColorCard.roomMembership(c.geom, lights);
+      c.memberKey = mkey;
+      c.model = {
+        geom: c.geom,
+        rooms: members.rooms,
+        roomOfLabel: members.roomOfLabel,
+        dead: members.dead,
+        byId: new Map(members.rooms.map((r) => [r.id, r])),
+        outlines: null,
+      };
+    }
+    return c.model;
+  }
+
+  /** Room outlines in plan percent, traced once per model. */
+  _roomOutlines(model) {
+    if (!model.outlines) {
+      model.outlines = new Map(model.rooms.map((r) => [r.id, SpatialLightColorCard.roomOutline(model.geom, r.labels)]));
+    }
+    return model.outlines;
+  }
+
+  /** The room under a client point, or null. Plan space, so a turned plan
+   *  answers the same as an unturned one. */
+  _roomAtClient(clientX, clientY) {
+    const model = this._roomModel();
+    if (!model || !this._els || !this._els.canvas) return null;
+    const rect = this._els.canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const p = this._toPlanPct((clientX - rect.left) / rect.width * 100, (clientY - rect.top) / rect.height * 100);
+    const k = SpatialLightColorCard.roomLabelAt(model.geom, p.x, p.y, 4);
+    const id = model.roomOfLabel.get(k);
+    return id ? model.byId.get(id) || null : null;
+  }
+
+  /** A light's Home Assistant area name: its own area, else its device's. */
+  _entityAreaName(id) {
+    const h = this._hass;
+    if (!h) return null;
+    const ent = h.entities && h.entities[id];
+    let areaId = ent && ent.area_id;
+    if (!areaId && ent && ent.device_id && h.devices && h.devices[ent.device_id]) areaId = h.devices[ent.device_id].area_id;
+    const area = areaId && h.areas && h.areas[areaId];
+    return area && area.name ? area.name : null;
+  }
+
+  /**
+   * A room's name, from the Home Assistant areas of its lights: the commonest,
+   * with a second one joined on when it holds a third or more ("server +
+   * Workstation"). Names never decide membership -- the walls do.
+   */
+  _roomName(room) {
+    const counts = new Map();
+    for (const id of room.selectable) {
+      const a = this._entityAreaName(id);
+      if (a) counts.set(a, (counts.get(a) || 0) + 1);
+    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (!ranked.length) return 'Room';
+    const total = ranked.reduce((t, e) => t + e[1], 0);
+    if (ranked.length > 1 && ranked[1][1] * 3 >= total) return `${ranked[0][0]} + ${ranked[1][0]}`;
+    return ranked[0][0];
+  }
+
+  /**
+   * Which rooms the CURRENT selection covers, derived and never stored -- so
+   * a lasso or Ctrl+A that happens to take a whole room gets its outline too.
+   * A room is covered when every light a room tap would take is selected and
+   * it has two or more (one light alone is a light, not a room, unless that
+   * room was the one just tapped). Outlines show only if the selection is
+   * exactly a union of covered rooms: one stray light anywhere and no room is
+   * drawn, because the outline would claim more than is true.
+   */
+  _coveredRooms(model, sel = this._selectedLights) {
+    const none = { rooms: [], many: false };
+    if (!model || !sel.size) return none;
+    // Two questions, kept apart: which rooms are WHOLLY selected (any size),
+    // and is that worth drawing. Folding the one-light rule into the first
+    // made a selected one-light room count as a stray and switch off every
+    // other outline -- so the same two rooms drew or did not by tap order.
+    const full = model.rooms.filter((r) => r.selectable.length && r.selectable.every((id) => sel.has(id)));
+    if (!full.length) return none;
+    const rest = new Set(sel);
+    for (const r of full) {
+      r.selectable.forEach((id) => rest.delete(id));
+      r.exempt.forEach((id) => rest.delete(id));
+    }
+    if (rest.size) return none;
+    // One light alone is a light, not a room -- unless that room is the one
+    // just tapped, and only while the selection is still the one that tap
+    // made (a lasso that later lands on the same light is a light).
+    if (full.length === 1 && full[0].selectable.length === 1) {
+      const lastKey = this._lastRoomTap && this._lastRoomTap.key;
+      if (!(this._lastRoomTap && this._lastRoomTap.id === full[0].id && lastKey === SpatialLightColorCard._selKey(sel))) return none;
+    }
+    return { rooms: full, many: full.length >= SpatialLightColorCard.ROOM_MANY };
+  }
+
+  /**
+   * "The selection is this room": all of its lights, and nothing outside it
+   * but its own exempt ones (a UV lamp you long-pressed in). The SAME test the
+   * outline draws from, so a room shown as the selection clears on a tap.
+   */
+  _selectionIsRoom(room, sel = this._selectedLights) {
+    if (!room || !sel.size || !room.selectable.every((id) => sel.has(id))) return false;
+    for (const id of sel) if (!room.selectable.includes(id) && !room.exempt.includes(id)) return false;
+    return true;
+  }
+
+  /** The hold, in ms: your swap time when one is set (the two are one moment),
+   *  else the light long-press timings. */
+  _roomHoldMs(pointerType) {
+    const swap = this._config.selection_swap_hold;
+    if (swap) return Math.max(SpatialLightColorCard.ROOM_HOLD_MIN, swap);
+    return pointerType === 'mouse' ? 650 : 500;
+  }
+
+  _clearRoomTimers() {
+    if (this._roomTintTimer) { clearTimeout(this._roomTintTimer); this._roomTintTimer = null; }
+    if (this._roomHoldTimer) { clearTimeout(this._roomHoldTimer); this._roomHoldTimer = null; }
+  }
+
+  /**
+   * A press on bare floor with room taps on. Nothing touches the selection
+   * until the hand decides -- by lifting, or by moving `ROOM_SLOP` px -- and
+   * the hold only changes what that decision MEANS: before it, a lift selects
+   * the room and a move draws your lasso; after it, a lift ADDS the room and a
+   * move draws your rectangle, which adds too. Quick replaces, held adds.
+   */
+  _armRoomPress(e) {
+    this._clearRoomTimers();
+    // Settle the model first: the hit test between ticks trusts the cached
+    // one, and a press is the moment it has to be current (a plan image that
+    // measured itself since the last tick changes the shape rooms are cut in).
+    this._ensureRoomPaths(this._roomModel(true));
+    const room = this._roomAtClient(e.clientX, e.clientY);
+    const now = Date.now();
+    const rp = {
+      pointerId: e.pointerId, pointerType: e.pointerType || 'mouse', room,
+      phase: room ? 'tap' : null,
+      additive: !!(e.shiftKey || e.ctrlKey || e.metaKey),
+      // Judged at DOWN, so what the press shows is what the lift will do.
+      repeat: !!(room && this._lastRoomTap && this._lastRoomTap.id === room.id
+        && now - this._lastRoomTap.t < SpatialLightColorCard.ROOM_REPEAT_MS),
+      held: false, multi: false, travel: 0, tint: false, armedAdd: 0,
+    };
+    this._roomPress = rp;
+    if (this._roomHoverTimer) { clearTimeout(this._roomHoverTimer); this._roomHoverTimer = null; }
+    this._roomHoverPending = null;
+    this._roomHover = null;
+    if (room) {
+      this._roomTintTimer = setTimeout(() => {
+        this._roomTintTimer = null;
+        if (this._roomPress !== rp || rp.phase !== 'tap' || rp.multi) return;
+        // On a card whose canvas also scrolls the page, a finger shows nothing
+        // until the gesture is known to be ours.
+        if (rp.pointerType === 'touch' && this._config.canvas_touch_scroll
+          && this._selectionTouchClaim !== 'select') return;
+        rp.tint = true;
+        this._syncRoomVisuals();
+      }, SpatialLightColorCard.ROOM_TINT_MS);
+    }
+    this._roomHoldTimer = setTimeout(() => {
+      this._roomHoldTimer = null;
+      if (this._roomPress !== rp || rp.multi || rp.travel >= SpatialLightColorCard.ROOM_SLOP) return;
+      if (!this._selectionStart || this._selectionPointerId !== rp.pointerId) return;
+      if (this._selectionTouchClaim === 'scroll') return;
+      // The hold OWNS the touch from here: without the claim a drag that
+      // followed it could still be handed to the page scroller, and the
+      // pointercancel that ends a scroll would read as a lift.
+      if (rp.pointerType !== 'mouse') this._selectionTouchClaim = 'select';
+      rp.held = true;
+      rp.tint = false;
+      if (rp.phase === 'tap') rp.phase = 'armed';
+      // A configured swap buzzes at this same moment; without one the hold
+      // has to say so itself.
+      if (!this._config.selection_swap_hold && rp.pointerType !== 'mouse'
+        && typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+      if (rp.phase === 'armed') {
+        rp.armedAdd = rp.room.selectable.filter((id) => !this._selectedLights.has(id)).length;
+        if (!rp.armedAdd) this._flashRoom(rp.room.id, 're');
+      }
+      this._syncRoomVisuals();
+    }, this._roomHoldMs(rp.pointerType));
+  }
+
+  /** The 300 ms touch claim landed: on a card whose canvas also scrolls the
+   *  page, that is the first moment the press may show itself. */
+  _roomPressClaimed() {
+    const rp = this._roomPress;
+    if (!rp || rp.phase !== 'tap' || rp.multi || rp.tint || this._roomTintTimer) return;
+    rp.tint = true;
+    this._syncRoomVisuals();
+  }
+
+  /** Escape while a finger or button is still down: the press does nothing. */
+  _cancelRoomPress() {
+    const rp = this._roomPress;
+    if (!rp) return false;
+    rp.cancelled = true;
+    rp.phase = null;
+    rp.tint = false;
+    this._clearRoomTimers();
+    this._syncRoomVisuals();
+    return true;
+  }
+
+  /** The pointer moved: past the slop the hand chose to draw, and the room
+   *  gesture is over (the band takes it from here). */
+  _trackRoomPressMove(e) {
+    const rp = this._roomPress;
+    if (!rp || e.pointerId !== rp.pointerId || !this._selectionStart) return;
+    rp.travel = Math.max(rp.travel, Math.hypot(e.clientX - this._selectionStart.clientX, e.clientY - this._selectionStart.clientY));
+    if (rp.travel >= SpatialLightColorCard.ROOM_SLOP && (rp.phase || rp.tint)) {
+      rp.phase = null;
+      rp.tint = false;
+      this._clearRoomTimers();
+      this._syncRoomVisuals();
+    }
+  }
+
+  /** A second pointer anywhere on the canvas: this press will do nothing. */
+  _roomPressGoesMulti() {
+    const rp = this._roomPress;
+    if (!rp || rp.multi) return;
+    rp.multi = true;
+    rp.phase = null;
+    rp.tint = false;
+    this._clearRoomTimers();
+    this._syncRoomVisuals();
+  }
+
+  _roomTick(rp) {
+    if (rp && rp.pointerType !== 'mouse' && typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(12);
+  }
+
+  /** Remember a room animation; `_syncRoomVisuals` turns it into a class. Two
+   *  names per animation, alternated, because re-adding the same class does
+   *  not replay a CSS animation. */
+  _flashRoom(id, kind) {
+    this._roomFlashParity = this._roomFlashParity === 'a' ? 'b' : 'a';
+    this._roomFlash = { id, kind, parity: this._roomFlashParity };
+    if (this._roomFlashTimer) clearTimeout(this._roomFlashTimer);
+    this._roomFlashTimer = setTimeout(() => { this._roomFlashTimer = null; this._roomFlash = null; }, 450);
+  }
+
+  /**
+   * The lift. The PHASE the press was showing decides, never the clock -- a
+   * timer that runs a few ms late must not turn the add you were shown into a
+   * replace.
+   */
+  _commitRoomPress(rp) {
+    if (rp.multi || rp.cancelled) { this._syncRoomVisuals(); return; }
+    const sel = this._selectedLights;
+    const now = Date.now();
+    const room = rp.room;
+    const announce = (msg) => { if (typeof this._announce === 'function') this._announce(msg); };
+    if (room && rp.phase === 'armed') {
+      const name = this._roomName(room);
+      const next = new Set(sel);
+      room.selectable.forEach((id) => next.add(id));
+      this._lastRoomTap = { id: room.id, t: now, key: SpatialLightColorCard._selKey(next) };
+      this._lastTap = null;
+      this._roomTick(rp);
+      if (next.size === sel.size) {
+        this._flashRoom(room.id, 're');
+        announce(`${name} already selected`);
+        this._syncRoomVisuals();
+        return;
+      }
+      const sk = room.exempt.length;
+      // Outline if the result is whole rooms, a one-shot pulse if a stray
+      // light keeps the outlines off -- either way the add is confirmed.
+      const whole = this._coveredRooms(this._roomModel(), next).rooms.some((r) => r.id === room.id);
+      this._flashRoom(room.id, whole ? 'in' : 'pulse');
+      this._commitSelection(next);
+      announce(`${name} added, ${next.size} lights selected${sk ? `, ${sk} skipped` : ''}`);
+      return;
+    }
+    if (room && rp.phase === 'tap') {
+      const name = this._roomName(room);
+      this._lastTap = null;
+      if (rp.additive) {
+        // Shift / Ctrl / Meta toggles the room, as Shift-click toggles a light.
+        const next = new Set(sel);
+        const all = room.selectable.every((id) => next.has(id));
+        if (all) room.selectable.forEach((id) => next.delete(id));
+        else room.selectable.forEach((id) => next.add(id));
+        this._lastRoomTap = { id: room.id, t: now, key: SpatialLightColorCard._selKey(next) };
+        if (!all) {
+          const whole = this._coveredRooms(this._roomModel(), next).rooms.some((r) => r.id === room.id);
+          this._flashRoom(room.id, whole ? 'in' : 'pulse');
+        }
+        this._commitSelection(next);
+        announce(all ? `${name} removed` : `${name} added, ${next.size} lights selected`);
+        return;
+      }
+      if (rp.repeat) {
+        this._lastRoomTap = { id: room.id, t: now, key: SpatialLightColorCard._selKey(sel) };
+        this._flashRoom(room.id, 're');
+        this._syncRoomVisuals();
+        return;
+      }
+      if (this._selectionIsRoom(room, sel)) {
+        this._lastRoomTap = null;
+        this._roomTick(rp);
+        this._commitSelection(new Set());
+        announce('Selection cleared');
+        return;
+      }
+      const next = new Set(room.selectable);
+      this._lastRoomTap = { id: room.id, t: now, key: SpatialLightColorCard._selKey(next) };
+      this._flashRoom(room.id, 'in');
+      this._roomTick(rp);
+      this._commitSelection(next);
+      const sk = room.exempt.length;
+      const n = room.selectable.length;
+      announce(`${name} selected, ${n} light${n === 1 ? '' : 's'}${sk ? `, ${sk} skipped` : ''}`);
+      return;
+    }
+    // Outside every room, in a space with no lights, or a held lift there:
+    // exactly what a tap on empty floor has always done.
+    if (!rp.additive && sel.size > 0) {
+      this._selectedLights.clear();
+      this.updateLights();
+    } else {
+      this._syncRoomVisuals();
+    }
+  }
+
+  /** Mouse hover over bare floor previews the room after a short rest; the
+   *  instant the pointer reaches a marker, an element or the panel, it goes. */
+  _trackRoomHover(e) {
+    const t = e.target;
+    const onFloor = t && (t.id === 'canvas' || (t.classList && t.classList.contains('grid')));
+    if (!onFloor) {
+      if (this._roomHoverTimer) { clearTimeout(this._roomHoverTimer); this._roomHoverTimer = null; }
+      this._roomHoverPending = null;
+      if (this._roomHover) { this._roomHover = null; this._roomHoverInstant = true; this._syncRoomVisuals(); }
+      return;
+    }
+    const room = this._roomAtClient(e.clientX, e.clientY);
+    const id = room ? room.id : null;
+    if (id === this._roomHoverPending) return;
+    this._roomHoverPending = id;
+    if (this._roomHoverTimer) { clearTimeout(this._roomHoverTimer); this._roomHoverTimer = null; }
+    if (!id) {
+      if (this._roomHover) { this._roomHover = null; this._roomHoverInstant = false; this._syncRoomVisuals(); }
+      return;
+    }
+    this._roomHoverTimer = setTimeout(() => {
+      this._roomHoverTimer = null;
+      this._roomHover = id;
+      this._roomHoverInstant = false;
+      this._syncRoomVisuals();
+    }, 80);
+  }
+
+  _clearRoomHover() {
+    if (this._roomHoverTimer) { clearTimeout(this._roomHoverTimer); this._roomHoverTimer = null; }
+    this._roomHoverPending = null;
+    if (this._roomHover) { this._roomHover = null; this._roomHoverInstant = false; this._syncRoomVisuals(); }
+  }
+
+  /**
+   * Build the room paths: one group per room in the fill/stroke layer and one
+   * halo in the blurred layer, every stroke clipped to the INSIDE of its room
+   * so it never recolours the wall line. Drawn in screen percent under a
+   * 0..100 viewBox with non-scaling strokes, so a resize costs nothing and only
+   * a new model or a turn of the plan rebuilds.
+   */
+  _ensureRoomPaths(model) {
+    const layer = this._els && this._els.roomLayer;
+    const halo = this._els && this._els.roomHalo;
+    if (!layer || !halo || !model) return;
+    const rot = this._planRotation();
+    if (layer._roomModel === model && layer._roomRot === rot) return;
+    layer._roomModel = model;
+    layer._roomRot = rot;
+    const NS = 'http://www.w3.org/2000/svg';
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
+    while (halo.firstChild) halo.removeChild(halo.firstChild);
+    const defs = document.createElementNS(NS, 'defs');
+    layer.appendChild(defs);
+    const uid = this._roomUid || (this._roomUid = 'slr' + Math.random().toString(36).slice(2, 8));
+    const outlines = this._roomOutlines(model);
+    const mk = (tag, attrs) => {
+      const el = document.createElementNS(NS, tag);
+      Object.keys(attrs).forEach((k) => el.setAttribute(k, attrs[k]));
+      return el;
+    };
+    for (const room of model.rooms) {
+      const loops = outlines.get(room.id) || [];
+      if (!loops.length) continue;
+      const d = loops.map((loop) => 'M' + loop.map(([x, y]) => {
+        const s = this._toScreenPct(x, y);
+        return s.x.toFixed(2) + ' ' + s.y.toFixed(2);
+      }).join(' L') + ' Z').join(' ');
+      const clipId = `${uid}-r${room.id}`;
+      const clip = mk('clipPath', { id: clipId });
+      clip.appendChild(mk('path', { d, 'clip-rule': 'evenodd' }));
+      defs.appendChild(clip);
+      const g = mk('g', { class: 'room', 'data-room': String(room.id) });
+      g.appendChild(mk('path', { class: 'room-fill', d, 'fill-rule': 'evenodd' }));
+      g.appendChild(mk('path', { class: 'room-under', d, 'clip-path': `url(#${clipId})` }));
+      g.appendChild(mk('path', { class: 'room-core', d, 'clip-path': `url(#${clipId})` }));
+      g.appendChild(mk('path', { class: 'room-dash', d, 'clip-path': `url(#${clipId})` }));
+      layer.appendChild(g);
+      halo.appendChild(mk('path', { class: 'room-halo', 'data-room': String(room.id), d, 'clip-path': `url(#${clipId})` }));
+    }
+  }
+
+  /** Rebuild if needed, then sync every room visual. Called from updateLights. */
+  _syncRooms() {
+    if (!this._config || !this._config.room_tap || !this._els || !this._els.roomLayer) return;
+    const model = this._roomModel(true);
+    this._ensureRoomPaths(model);
+    this._syncRoomVisuals();
+  }
+
+  /**
+   * Classes on the room paths, the pending rings on the lights a hold would
+   * add, the canvas cursor, and the name in the floating panel's grip row --
+   * the ONLY place a room's name appears.
+   */
+  _syncRoomVisuals() {
+    const layer = this._els && this._els.roomLayer;
+    const canvas = this._els && this._els.canvas;
+    if (!layer || !canvas || !this._config || !this._config.room_tap) return;
+    const model = this._roomModel();
+    if (!model) return;
+    const cov = this._coveredRooms(model);
+    const covered = new Set(cov.rooms.map((r) => r.id));
+    const rp = this._roomPress;
+    const sel = this._selectedLights;
+    const armed = rp && rp.phase === 'armed' && rp.room ? rp.room : null;
+    const armedId = armed && rp.armedAdd > 0 ? armed.id : null;
+    const pressId = rp && rp.phase === 'tap' && rp.tint && rp.room ? rp.room.id : null;
+    const pressClear = !!pressId && !rp.repeat && !rp.additive && this._selectionIsRoom(rp.room, sel);
+    const hoverId = !rp ? this._roomHover : null;
+    const fl = this._roomFlash;
+    const FLASH = ['flash-a', 'flash-b', 'reflash-a', 'reflash-b', 'pulse-a', 'pulse-b'];
+    layer.querySelectorAll('g.room').forEach((g) => {
+      const id = Number(g.getAttribute('data-room'));
+      const isCov = covered.has(id) && id !== armedId;
+      g.classList.toggle('covered', isCov);
+      g.classList.toggle('many', isCov && cov.many);
+      g.classList.toggle('armed', id === armedId);
+      g.classList.toggle('press', id === pressId && !covered.has(id));
+      g.classList.toggle('press-clear', id === pressId && isCov && pressClear);
+      g.classList.toggle('hover', id === hoverId && !covered.has(id) && id !== armedId);
+      g.classList.toggle('instant', !!this._roomHoverInstant);
+      const want = fl && fl.id === id ? (fl.kind === 'in' ? 'flash-' : fl.kind === 're' ? 'reflash-' : 'pulse-') + fl.parity : null;
+      FLASH.forEach((c) => g.classList.toggle(c, c === want));
+    });
+    const halo = this._els.roomHalo;
+    if (halo) {
+      halo.querySelectorAll('.room-halo').forEach((p) => {
+        const id = Number(p.getAttribute('data-room'));
+        const isCov = covered.has(id) && id !== armedId;
+        p.classList.toggle('covered', isCov);
+        p.classList.toggle('many', isCov && cov.many);
+      });
+    }
+    // The lights a lift would add get a dashed ring, and are lifted out of the
+    // has-selection dim so you can see exactly what you are about to add.
+    const pending = new Set(armedId ? armed.selectable.filter((id) => !sel.has(id)) : []);
+    this.shadowRoot.querySelectorAll('.light').forEach((el) => {
+      el.classList.toggle('room-pending', pending.has(el.dataset.entity));
+    });
+    canvas.classList.toggle('room-armed', !!armedId);
+    canvas.classList.toggle('room-hover', !!hoverId && !armedId);
+    const cap = this._els.cfRoom;
+    if (cap) {
+      let text = '';
+      if (armed && armedId) text = `+ ${this._roomName(armed)} · ${rp.armedAdd}`;
+      else if (armed) text = `${this._roomName(armed)} · already selected`;
+      else if (pressClear) text = `${this._roomName(rp.room)} · lift to clear`;
+      else if (cov.rooms.length) {
+        const n = cov.rooms.reduce((t, r) => t + r.selectable.length, 0);
+        const lights = `${n} light${n === 1 ? '' : 's'}`;
+        text = cov.rooms.length >= 3
+          ? `${cov.rooms.length} rooms · ${lights}`
+          : `${cov.rooms.map((r) => this._roomName(r)).join(' + ')} · ${lights}`;
+      }
+      if (cap.textContent !== text) cap.textContent = text;
+      cap.hidden = !text;
+    }
+  }
+
+  /**
+   * The room CSS, emitted only when room taps are on and placed AFTER the
+   * selection band's rules, so an unconfigured card carries none of it and
+   * source order cannot hand these back to anything earlier.
+   */
+  _roomStyles() {
+    if (!this._config || !this._config.room_tap) return '';
+    const rgb = (this._config.selection_color || SpatialLightColorCard.SELECTION_RGB).join(',');
+    return `
+      /* Rooms. Two SVG layers over the light field and under the markers: the
+         blurred halo on its own, because a CSS blur on an SVG ELEMENT is not
+         dependable across engines while one on the svg box is. */
+      .room-layer, .room-halo-layer {
+        position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+        pointer-events: none; z-index: 0; overflow: visible;
+      }
+      .room-halo-layer { filter: blur(3px); }
+      .room-layer path, .room-halo-layer path { vector-effect: non-scaling-stroke; fill: none; stroke: none; }
+      .room .room-fill { fill: rgb(${rgb}); fill-opacity: 0; transition: fill-opacity 160ms ease-in; }
+      .room .room-under { stroke: rgba(0,0,0,0.30); stroke-width: 7px; stroke-linejoin: round; opacity: 0; transition: opacity 160ms ease-in; }
+      .room .room-core { stroke: rgb(${rgb}); stroke-width: 4px; stroke-linejoin: round; stroke-linecap: round; opacity: 0; transition: opacity 160ms ease-in; }
+      .room .room-dash { stroke: rgba(${rgb},0.9); stroke-width: 3px; stroke-dasharray: 5 4; opacity: 0; transition: opacity 100ms ease-out; }
+      .room-halo-layer .room-halo { stroke: rgba(${rgb},0.45); stroke-width: 12px; stroke-linejoin: round; opacity: 0; transition: opacity 160ms ease-in; }
+      .room.covered .room-fill { fill-opacity: 0.14; }
+      .room.covered .room-under, .room.covered .room-core { opacity: 1; }
+      .room-halo-layer .room-halo.covered { opacity: 1; }
+      .room.covered.many .room-fill { fill-opacity: 0; }
+      .room.covered.many .room-under { opacity: 0; }
+      .room.covered.many .room-core { opacity: 0.6; stroke-width: 2px; }
+      .room-halo-layer .room-halo.covered.many { opacity: 0; }
+      .room.press .room-fill { fill-opacity: 0.08; transition: none; }
+      .room.covered.press-clear .room-fill { fill-opacity: 0.06; transition: none; }
+      .room.hover .room-fill { fill-opacity: 0.06; transition: fill-opacity 100ms ease-out; }
+      .room.hover .room-dash { opacity: 1; }
+      .room.instant .room-fill, .room.instant .room-dash { transition: none; }
+      /* Armed to add: a static dashed core over the dark underlay, and no halo,
+         which stays the look of SELECTED. */
+      .room.armed .room-fill { fill-opacity: 0.12; transition: none; animation: slc-room-arm 180ms ease-out; }
+      .room.armed .room-under { opacity: 1; transition: none; }
+      .room.armed .room-core { opacity: 1; stroke-dasharray: 6 4; transition: none; }
+      .room.covered.flash-a .room-fill { animation: slc-room-in-a 280ms cubic-bezier(.2,.7,.2,1); }
+      .room.covered.flash-b .room-fill { animation: slc-room-in-b 280ms cubic-bezier(.2,.7,.2,1); }
+      .room.covered.flash-a .room-core, .room.covered.flash-a .room-under { animation: slc-room-stroke-a 280ms cubic-bezier(.2,.7,.2,1); }
+      .room.covered.flash-b .room-core, .room.covered.flash-b .room-under { animation: slc-room-stroke-b 280ms cubic-bezier(.2,.7,.2,1); }
+      .room.covered.reflash-a .room-fill { animation: slc-room-re-a 220ms ease-out; }
+      .room.covered.reflash-b .room-fill { animation: slc-room-re-b 220ms ease-out; }
+      .room.pulse-a .room-fill { animation: slc-room-pulse-a 400ms ease-out; }
+      .room.pulse-b .room-fill { animation: slc-room-pulse-b 400ms ease-out; }
+      /* Thinned rooms (four or more) confirm with the thin line itself: the
+         full selected look flashing in and snapping away reads as a glitch.
+         One class more than the flash rules, so position does not matter. */
+      .room.covered.many.flash-a .room-fill, .room.covered.many.flash-b .room-fill,
+      .room.covered.many.reflash-a .room-fill, .room.covered.many.reflash-b .room-fill,
+      .room.covered.many.flash-a .room-under, .room.covered.many.flash-b .room-under { animation: none; }
+      .room.covered.many.flash-a .room-core, .room.covered.many.reflash-a .room-core { animation: slc-room-many-a 280ms ease-out; }
+      .room.covered.many.flash-b .room-core, .room.covered.many.reflash-b .room-core { animation: slc-room-many-b 280ms ease-out; }
+      @keyframes slc-room-many-a { from { opacity: 1; } to { opacity: 0.6; } }
+      @keyframes slc-room-many-b { from { opacity: 1; } to { opacity: 0.6; } }
+      @keyframes slc-room-arm { from { fill-opacity: 0.20; } to { fill-opacity: 0.12; } }
+      @keyframes slc-room-in-a { 0% { fill-opacity: 0; } 35% { fill-opacity: 0.30; } 100% { fill-opacity: 0.14; } }
+      @keyframes slc-room-in-b { 0% { fill-opacity: 0; } 35% { fill-opacity: 0.30; } 100% { fill-opacity: 0.14; } }
+      @keyframes slc-room-stroke-a { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 1; } }
+      @keyframes slc-room-stroke-b { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 1; } }
+      @keyframes slc-room-re-a { from { fill-opacity: 0.24; } to { fill-opacity: 0.14; } }
+      @keyframes slc-room-re-b { from { fill-opacity: 0.24; } to { fill-opacity: 0.14; } }
+      @keyframes slc-room-pulse-a { from { fill-opacity: 0.30; } to { fill-opacity: 0; } }
+      @keyframes slc-room-pulse-b { from { fill-opacity: 0.30; } to { fill-opacity: 0; } }
+      .canvas.room-hover { cursor: pointer; }
+      .canvas.room-armed { cursor: copy; }
+      /* The lights a lift would add: a dashed ring OUTSIDE the marker (the
+         solid one inside is spoken for by .selected), lifted out of the
+         has-selection dim. The second selector out-specifies the dim's own
+         .off variant, which has one class more than the first. */
+      .light.room-pending::before { outline: 2px dashed rgba(${rgb},0.85); outline-offset: 3px; }
+      .canvas.has-selection .light.room-pending { --light-desat: none; --light-dim: 1; }
+      .canvas.has-selection .light.off.room-pending { --light-desat: none; --light-dim: 0.82; }
+      .cf-room {
+        position: absolute; left: 14px; top: 8px; max-width: calc(50% - 36px);
+        font-size: 11px; line-height: 14px; font-weight: 600;
+        color: var(--text-secondary, #9aa); white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+      }
+      /* The panel's padding shrinks with the card; the caption follows so it
+         never sits on the top bar. Two classes, below .tight's three. */
+      @container sle-card (max-width: 380px) { .controls-floating .cf-room { top: 6px; } }
+      @container sle-card (max-width: 260px) { .controls-floating .cf-room { top: 1px; } }
+      .controls-floating.tight .cf-room { top: 1px; }
+      @media (prefers-reduced-motion: reduce) {
+        .room .room-fill, .room .room-core, .room .room-under, .room-halo-layer .room-halo {
+          animation: none !important; transition: none !important;
+        }
+      }
+      @media (forced-colors: active) {
+        .room .room-fill { fill-opacity: 0 !important; }
+        .room .room-core, .room .room-dash { stroke: Highlight; }
+        .room-halo-layer { display: none; }
+      }`;
+  }
+
   /**
    * Arm the hold that swaps the shape for this drag, if one is configured.
    *
@@ -8864,8 +10145,11 @@ class SpatialLightColorCard extends HTMLElement {
    * yet, so exchanging it loses nothing and the change is the feedback.
    */
   _armSelectionSwap() {
-    const ms = this._config.selection_swap_hold;
+    let ms = this._config.selection_swap_hold;
     if (!ms) return;
+    // With room taps on, the swap and the room hold are ONE moment, and a
+    // hold under 250 ms is indistinguishable from a slow tap.
+    if (this._config.room_tap) ms = Math.max(SpatialLightColorCard.ROOM_HOLD_MIN, ms);
     if (this._selectionSwapTimer) clearTimeout(this._selectionSwapTimer);
     this._selectionSwapTimer = setTimeout(() => {
       this._selectionSwapTimer = null;
@@ -13753,6 +15037,7 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._els.canvas) {
       this._els.canvas.classList.toggle('has-selection', this._selectedLights.size > 0);
     }
+    this._syncRooms();
 
     // Update controls to reflect averaged state
     const shouldShowControls = this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity;
@@ -13906,6 +15191,14 @@ class SpatialLightColorCard extends HTMLElement {
     if (this._config.selection_mode === 'lasso') yamlLines.push('selection_mode: lasso');
     if (this._config.selection_swap_hold) {
       yamlLines.push(`selection_swap_hold: ${this._config.selection_swap_hold}`);
+    }
+    if (this._config.room_tap) yamlLines.push('room_tap: true');
+    if (this._config.room_auto_doorways === false) yamlLines.push('room_auto_doorways: false');
+    if (this._config.room_dividers && this._config.room_dividers.length) {
+      yamlLines.push('room_dividers:');
+      this._config.room_dividers.forEach((w) => {
+        yamlLines.push(`  - {x1: ${+w.x1.toFixed(2)}, y1: ${+w.y1.toFixed(2)}, x2: ${+w.x2.toFixed(2)}, y2: ${+w.y2.toFixed(2)}}`);
+      });
     }
     if (this._config.selection_color) {
       yamlLines.push(`selection_color: [${this._config.selection_color.join(', ')}]`);
@@ -16879,6 +18172,10 @@ class SpatialLightColorCardEditor extends HTMLElement {
               <ha-switch id="cfgCanvasTouchScroll"></ha-switch>
             </div>
             <div class="option-row">
+              <div><div class="label">Tap a Room to Select It</div><div class="sublabel">Tap the floor of a room, between its walls, to select its lights; tap it again to clear. Hold the floor to ADD a room. Rooms come from your walls (doors count as closed); split an open plan with <code>room_dividers</code> in YAML.</div></div>
+              <ha-switch id="cfgRoomTap"></ha-switch>
+            </div>
+            <div class="option-row">
               <div><div class="label">Area Selection Shape</div><div class="sublabel">What a drag on empty canvas draws. The rectangle is the classic rubber band; the lasso follows your finger and selects everything inside the outline, notches and all.</div></div>
               <select id="cfgSelectionMode">
                 <option value="box">Rectangle</option>
@@ -17133,6 +18430,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       cfgControlsBelow: c.controls_below !== false,
       cfgSwitchTap: c.switch_single_tap || false,
       cfgCanvasTouchScroll: c.canvas_touch_scroll !== false,
+      cfgRoomTap: c.room_tap === true,
       cfgThemeGlass: !!(c.theme && c.theme.glass),
       cfgGlowEnabled: this._glowProjectsEffective(),
       cfgGlowScaleBrightness: g.scale_with_brightness !== false,
@@ -17563,6 +18861,16 @@ class SpatialLightColorCardEditor extends HTMLElement {
     this._bindSwitch('cfgControlsBelow', 'controls_below');
     this._bindSwitch('cfgSwitchTap', 'switch_single_tap');
     this._bindSwitch('cfgCanvasTouchScroll', 'canvas_touch_scroll');
+    // Off is the absence of the key, so a card that never turned rooms on
+    // keeps a config byte-identical to before.
+    const roomTapEl = this.shadowRoot.getElementById('cfgRoomTap');
+    if (roomTapEl) {
+      roomTapEl.addEventListener('change', () => {
+        if (roomTapEl.checked) this._config.room_tap = true;
+        else delete this._config.room_tap;
+        this._fireConfigChanged();
+      });
+    }
 
     // --- Appearance (theme) ---
     const themeModeEl = root.getElementById('cfgThemeMode');
