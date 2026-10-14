@@ -1896,6 +1896,69 @@ every floor point is within 10px of a wall), `overlaySurvivesRebuild`, `overlayL
 `overlayAbsentWithoutRoomTap`, `overlayPaints`, and one per review finding: `overlayRawTapPoint`, `overlayPickFollowsEdits`, `overlayToggleKeepsDoorTick`, `overlayDividerEntries` and `overlayDeadWithExempt` (share of pixels changed, not total brightness --
 a translucent tint barely moves the sum -- plus the stage height across taps).
 
+### 8c-iii. Drawing room dividers
+
+Asked for as soon as the overlay could show them ("we need to draw them in editor"). A third mode,
+**Walls | Dividers | Lights**, present only with `room_tap`.
+
+**One seam, not a second editor.** `_wallLayer()` is `'dividers'` in that mode, and `_wallList()`
+then hands back `_draftWalls || room_dividers`. Every wall gesture -- draw, chain, Shift-drag an end
+or a body, joints, hit tests, right-click / long-press / Delete-key delete, tap-to-select -- already
+worked on whatever `_wallList()` returns, so none of them learned that dividers exist. The commit
+writes `_config[room_dividers]` and the delta carries `layer: 'dividers'` (absent for walls, so an
+older editor reads a wall delta unchanged); the editor's `_applyWallDelta` routes on it, through the
+same identify-by-geometry and box/polyline explosion.
+
+**`_liveWalls()` is the other half, and the dangerous one.** `_prepareOccluders`, `_drawFieldWalls`
+and `_invalidateWallGeometry`'s hash read `_draftWalls || glow_walls` directly -- in Dividers mode the
+draft IS a divider, so a stroke in progress would have cast a shadow and been drawn as a wall. They
+read `_liveWalls()` now: the real walls, draft included only while walls are the layer. Measured:
+`glow_walls` stays 59 through a divider draw, the card's `_liveWalls()` equals its `glow_walls`.
+
+**Snapping, Dividers mode only:** divider ends first (so dividers chain), then the real walls -- the
+nearest point ON the wall under the pointer, or that wall's corner only when the corner is within ~3px
+of the wall point. A divider usually meets a wall partway along, and one that stops a few px short
+leaks and splits nothing. The first version let any corner within 11px win outright, and review
+measured the Patio stroke at y=31.6 being saved as 31.6 -> 29.14: a straight stroke came out slanted
+because a corner 7px off beat the wall directly under the pointer (`divStraightSnap` now asserts both
+ends land at y=31.6 on x=0.57 and x=18). A point 4px beside the longest wall lands at 0.00px; the same
+point in Walls mode is not body-snapped (Walls mode is unchanged). Alt disables it as it does for
+walls.
+
+**A mode switch clears the hover index**, because Delete acts on it and it indexes whichever list the
+pointer was last over: switching Dividers -> Lights and pressing Delete removed an unrelated real wall
+(reproduced in node), and the mirror case a divider. Delete never acts in Lights mode at all, where
+nothing maintains the index. A divider being read about in Walls mode (Rooms on) becomes the SELECTED
+divider when you press Dividers, instead of a panel telling you to switch to the mode you are in.
+Dividers are counted and numbered by ENTRY everywhere (`_dividerEntries`: contiguous numbers, a
+session-drawn segment with no `_src` counts on its own), so the header, the panel and the Rooms
+summary agree on a polyline divider. Turning rooms off in the editor drops the `room_dividers` steps
+from the wall undo/redo stacks -- dividers cannot be seen then, so Ctrl+Z must not change them.
+
+**The overlay is forced on in Dividers mode** (the rooms are the subject), the Rooms toggle shows
+active and disabled, and dividers are drawn LIVE from `_wallList()` -- the model keeps the previous
+rooms mid-stroke, but the line must follow the hand -- with grab handles and the selected one in gold.
+Walls stay drawn but lose their selection and handles. A selected divider gets its own panel in the
+same fixed 59px box as the rooms panel, so switching between them cannot move the plan.
+
+**Undo knows WHICH list.** History entries are `{key, v}`, `v: null` for a list that did not exist,
+and `_restoreWallHistoryEntry` deletes the key in that case; old bare-array entries still read as
+walls. History is pushed BEFORE `_applyWallDelta` creates the list -- the first version created it
+first, so undoing the first divider left `room_dividers: []` (caught by `divUndoFirstRemovesKey`). An
+emptied list is deleted rather than kept as `[]`. Cancel's snapshot carries `room_dividers` too,
+`undefined` when absent, at both open sites.
+
+The header now WRAPS: with three modes, Rooms, zoom and two buttons, an 800px window crushed the
+title into three lines and clipped the last mode button ("Ligl"). Every group keeps its size; only the
+count gives way, with an ellipsis.
+
+`.harness/rooms.html` (local only): `divModeShows`, `divDraw` (across the Patio, both ends land on its
+walls at x=0.57 and x=18, 11 -> 12 rooms, walls untouched), `divSnapsToWalls`, `divSelectDelete`,
+`divShiftDrag`, `divUndoRedo`, `divUndoFirstRemovesKey`, `divCancel`, `divWallsModeStillWalls`,
+`divAbsentWithoutRoomTap`, and per review finding `divHoverNoCrossDelete`, `divPickCarries`,
+`divStraightSnap`, `divEntryCount`, `divHistoryDroppedWithRoomTap`. Probes that should snap must NOT carry Alt -- the first `divDraw` did, and
+"failed" with both ends left short of the walls.
+
 **List selection highlights the plan.** The editor's `toggleExpand` broadcasts `spatial-card-highlight-entity`; the card honours it only inside the editor preview and toggles `.light.editor-highlight` (gold, deliberately not the selection colour). `_applyEditorHighlight` re-runs after every `_renderAll`, since that rebuilds the markers.
 
 **Wall inspector.** A tap on a wall in the wall editor selects it (`_selectWall`) and `_syncWallInspector` populates a panel imperatively -- NOT through `_renderAll`, which would destroy and recreate the open `<dialog>` on every selection. The tap gesture was previously wasted: a sub-threshold stroke was discarded and nothing happened, so `_wallDrawState.overWall` records what the press landed on and pointerup selects it. The selection is mirrored onto the static `_wallEditorSelection` because HA replaces the preview card after every config change -- without that, ticking "it's a door" deselected the wall before an entity could be chosen. `_mountWallEntityPicker` uses `ha-entity-picker` when HA has upgraded it (always true, since the wall editor only opens from the card editor) and falls back to a text field.

@@ -763,12 +763,30 @@ leaky wall and watch two rooms come apart. Voila! The button only appears once
 **An open-plan space you think of as two rooms?** Split it with a divider. It is a
 wall that only exists for rooms: it casts no shadow and is never drawn.
 
+My hallway and entrance are one open space, and I want them as two rooms. So in the
+full-size editor I switch to **Dividers** (between Walls and Lights) and drag a line
+across where one ends and the other begins:
+
+1. **Drag across the room.** The ends snap onto the walls you start and finish on
+   &mdash; right where you let go along the wall, or onto the corner when you are
+   right at one &mdash; so the split closes properly and a straight stroke stays
+   straight. Hold <kbd>Alt</kbd> to place them freely.
+2. **Watch it split.** The rooms are always shown in this mode, and they re-cut the
+   moment you let go.
+3. **Fix it the same way as a wall.** Tap a divider to select it (Delete in the panel),
+   <kbd>Shift</kbd>-drag it or one of its ends to move it, right-click or long-press it
+   to delete. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes, and **Cancel** throws the whole
+   session away, dividers included.
+
+Voila! Your walls are never touched while you are in Dividers mode, and they are
+still drawn, so you can see what you are splitting.
+
+Prefer YAML? Same coordinates as `glow_walls`, in plan percent:
+
 ```yaml
 room_dividers:
   - {x1: 82.57, y1: 19.23, x2: 82.57, y2: 32.14}   # Hallway | Entrance
 ```
-
-Same coordinates as `glow_walls`, in plan percent.
 
 The overlaid controls sit on part of the plan, so a room underneath them cannot be
 tapped until they move &mdash; they follow the selection, so picking another room
@@ -934,7 +952,7 @@ Everything else is upstream's and
 | `selection_color` | list/string | `null` | Colour of the selection band, as `[r, g, b]` (a `"#rrggbb"` or `"rgb(r,g,b)"` string works too). Applies to both shapes. |
 | `selection_swap_hold` | number | `0` | Hold still this many milliseconds on empty canvas before dragging, and that one drag uses the *other* shape. `0` disables it; anything else is clamped to 150&ndash;5000. |
 | `room_tap` | bool | `false` | Tap the floor of a room to select its lights; hold it to add the room. See [Tap a room](#tap-a-room-to-select-it). |
-| `room_dividers` | list | `[]` | Walls that only exist for rooms, to split an open-plan space. Same forms as `glow_walls`; they cast no shadow and are never drawn. |
+| `room_dividers` | list | `[]` | Walls that only exist for rooms, to split an open-plan space. Same forms as `glow_walls`; they cast no shadow and are never drawn. Draw them in the full-size editor's **Dividers** mode. |
 | `room_auto_doorways` | bool | `true` | Bridge doorway-sized gaps between facing wall ends when working out rooms. |
 
 And these extend options the original card already had:

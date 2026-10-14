@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.54.0 (fork-maxi1134)';
+  static BUILD = 'v1.55.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -6102,12 +6102,21 @@ class SpatialLightColorCard extends HTMLElement {
         gap: 12px;
       }
       .wall-editor-overlay::backdrop { background: rgba(0,0,0,0.6); }
+      /* Wraps rather than squeezes: with Walls | Dividers | Lights, Rooms, the
+         zoom and two buttons, a narrow window used to crush the title into
+         three lines and clip the last mode button. Every group keeps its own
+         size; only the count gives way, and it truncates before it wraps. */
       .wall-editor-head {
-        display: flex; align-items: center; gap: 14px; width: 100%;
+        display: flex; align-items: center; gap: 14px; row-gap: 8px; width: 100%;
+        flex-wrap: wrap;
         padding: 0 4px; box-sizing: border-box;
       }
-      .wall-editor-title { font-size: 15px; font-weight: 600; color: #fff; }
-      .wall-editor-count { font-size: 12px; color: rgba(255,255,255,0.6); flex: 1; }
+      .wall-editor-head > * { flex-shrink: 0; }
+      .wall-editor-title { font-size: 15px; font-weight: 600; color: #fff; white-space: nowrap; }
+      .wall-editor-head > .wall-editor-count {
+        font-size: 12px; color: rgba(255,255,255,0.6); flex: 1 1 60px; min-width: 60px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
       .wall-editor-btn {
         border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.12);
         color: #fff; border-radius: 8px; padding: 7px 18px; font-size: 13px;
@@ -6240,6 +6249,9 @@ class SpatialLightColorCard extends HTMLElement {
       .wall-inspector .wi-rooms-body { font-size: 12px; line-height: 17px; color: rgba(255,255,255,0.78); }
       .wall-inspector .wi-rooms-body code { font-size: 11px; background: rgba(255,255,255,0.1); padding: 0 4px; border-radius: 3px; }
       .wall-inspector .wi-warn { color: #ff8a8a; }
+      .wall-inspector .wi-rooms .wi-row { margin-bottom: 4px; }
+      .wall-inspector kbd { font: 600 10px system-ui, sans-serif; background: rgba(255,255,255,0.12); border-radius: 3px; padding: 0 4px; }
+      .wall-editor-mode:disabled { cursor: default; opacity: 0.75; }
       .wall-inspector .wi-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
       /* Lights mode selects on the pointerdown of a drag, so this row has to
          be the same height holding a hint as holding the Remove button --
@@ -6678,6 +6690,10 @@ class SpatialLightColorCard extends HTMLElement {
    */
   _renderWallEditorOverlay() {
     if (!this._wallEditMode) return '';
+    // A config that turned rooms off cannot stay in a mode that only exists
+    // for them.
+    if (this._wallEditorMode === 'dividers' && !this._config.room_tap) this._wallEditorMode = 'walls';
+    const dividersMode = this._wallEditorMode === 'dividers';
     const bg = this._config.background_image;
     const ar = this._wallEditorAspect();
     const bgStyle = bg && bg.url
@@ -6691,16 +6707,18 @@ class SpatialLightColorCard extends HTMLElement {
     return `
       <dialog class="wall-editor-overlay" id="wallEditorOverlay">
         <div class="wall-editor-head">
-          <div class="wall-editor-title">${this._wallEditorMode === 'lights' ? 'Place lights' : 'Draw walls'}</div>
+          <div class="wall-editor-title">${this._wallEditorMode === 'lights' ? 'Place lights' : (dividersMode ? 'Draw room dividers' : 'Draw walls')}</div>
           <div class="wall-editor-count" id="wallEditorCount"></div>
           <div class="wall-editor-modes">
-            <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? '' : ' active'}" id="wallModeWalls">Walls</button>
+            <button class="wall-editor-mode${this._wallEditorMode === 'lights' || dividersMode ? '' : ' active'}" id="wallModeWalls">Walls</button>
+            ${this._config.room_tap ? `<button class="wall-editor-mode${dividersMode ? ' active' : ''}" id="wallModeDividers"
+                    title="Lines that split rooms without casting shadows">Dividers</button>` : ''}
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? ' active' : ''}" id="wallModeLights">Lights</button>
           </div>
           ${this._config.room_tap ? `<div class="wall-editor-modes">
-            <button class="wall-editor-mode${SpatialLightColorCard._roomsOverlay ? ' active' : ''}" id="wallRoomsToggle"
-                    aria-pressed="${SpatialLightColorCard._roomsOverlay ? 'true' : 'false'}"
-                    title="Show the rooms a tap on the dashboard selects">Rooms</button>
+            <button class="wall-editor-mode${SpatialLightColorCard._roomsOverlay || dividersMode ? ' active' : ''}" id="wallRoomsToggle"
+                    aria-pressed="${SpatialLightColorCard._roomsOverlay || dividersMode ? 'true' : 'false'}"${dividersMode ? ' disabled' : ''}
+                    title="${dividersMode ? 'Rooms are always shown while drawing dividers' : 'Show the rooms a tap on the dashboard selects'}">Rooms</button>
           </div>` : ''}
           <div class="wall-editor-zoom">
             <button class="we-zoom-btn" id="weZoomOut" title="Zoom out">&minus;</button>
@@ -6720,6 +6738,11 @@ class SpatialLightColorCard extends HTMLElement {
         <div class="wall-inspector" id="wallInspector"></div>
         <div class="wall-editor-hint">${this._wallEditorMode === 'lights'
           ? 'Pick a light below, then click the plan to place it &middot; drag one to move it &middot; tap to see which it is &middot; <kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
+          : dividersMode
+          ? 'Drag across a room to split it &mdash; the ends snap onto walls &middot; a divider bounds rooms only and casts no shadow &middot; '
+            + '<kbd>Shift</kbd>-drag a divider or its end to move it &middot; '
+            + 'right-click or long-press one to delete &middot; '
+            + '<kbd>Alt</kbd> ignores snapping &middot; scroll or pinch to zoom &middot; <kbd>Ctrl</kbd>-drag (or middle-drag) to pan'
           : 'Drag to draw &mdash; starting on a corner attaches to it exactly &middot; '
             + '<kbd>Esc</kbd> ends a run &middot; '
             + '<kbd>Shift</kbd>-drag a corner or a wall to move it &middot; '
@@ -7092,7 +7115,13 @@ class SpatialLightColorCard extends HTMLElement {
         this._els.wallCount.textContent = n === 1 ? '1 light' : `${n} lights`;
       } else {
         const count = (this._wallList() || []).length;
-        let text = count === 1 ? '1 wall' : `${count} walls`;
+        let text;
+        if (this._wallLayer() === 'dividers') {
+          const n = this._dividerEntries(this._wallList() || []).count;
+          text = n === 1 ? '1 divider' : `${n} dividers`;
+        } else {
+          text = count === 1 ? '1 wall' : `${count} walls`;
+        }
         if (this._roomsOverlayOn()) {
           const m = this._roomsOverlayModel();
           if (m) text += ` \u00b7 ${m.rooms.length === 1 ? '1 room' : `${m.rooms.length} rooms`}`;
@@ -7115,6 +7144,7 @@ class SpatialLightColorCard extends HTMLElement {
     SpatialLightColorCard._pendingLightAdd = null;
     this._pendingLightAt = null;
     SpatialLightColorCard._roomsOverlayPick = null;
+    this._wallHoverIndex = null;
     this._wallEditMode = false;
     this._wallEditorId = null;
     this._wallChainAnchor = null;
@@ -7654,7 +7684,7 @@ class SpatialLightColorCard extends HTMLElement {
         const wasActive = this._wallEditMode;
         this._wallEditMode = active;
         this._wallEditorId = active ? (d.editorId || null) : null;
-        this._wallEditorMode = (d.mode === 'lights') ? 'lights' : 'walls';
+        this._wallEditorMode = this._normalizeWallEditorMode(d.mode);
         // A fresh open starts fitted. A rebuild mid-session comes through the
         // hello handshake instead, which restores the view rather than
         // resetting it, so this cannot undo a zoom the user set.
@@ -7709,7 +7739,7 @@ class SpatialLightColorCard extends HTMLElement {
               if (wallActive) {
                 // Restore the MODE and the VIEW as well as the fact of being
                 // open, or committing a wall silently zooms back out.
-                this._wallEditorMode = (wallMode === 'lights') ? 'lights' : 'walls';
+                this._wallEditorMode = this._normalizeWallEditorMode(wallMode);
                 if (wallView && wallView.z > 0) {
                   this._weZoom = wallView.z;
                   this._wePanX = wallView.x || 0;
@@ -8057,6 +8087,14 @@ class SpatialLightColorCard extends HTMLElement {
 
       const setMode = (mode) => {
         if (this._wallEditorMode === mode) return;
+        // Read what the Rooms panel was showing BEFORE the mode changes the
+        // lists: a divider you were just reading about in Walls mode is the
+        // one you mean to edit when you press Dividers.
+        let carry = null;
+        if (mode === 'dividers' && this._roomsOverlayOn()) {
+          const p = this._roomsResolvedPick(this._roomsOverlayModel());
+          if (p && p.kind === 'divider') carry = p.id;
+        }
         this._wallEditorMode = mode;
         // Keep the editor's memory in step, or the next preview-card rebuild
         // restores whichever mode the editor last opened.
@@ -8065,8 +8103,13 @@ class SpatialLightColorCard extends HTMLElement {
             detail: { editorId: this._wallEditorId, active: true, mode },
           }));
         }
-        this._wallSelectedIndex = null;
-        SpatialLightColorCard._wallEditorSelection = null;
+        this._wallSelectedIndex = carry;
+        SpatialLightColorCard._wallEditorSelection = carry;
+        SpatialLightColorCard._roomsOverlayPick = null;
+        // The hover index belongs to the list the pointer was last over. A
+        // mode switch swaps the list under it, and Delete acts on the hover
+        // index -- so a stale one deleted an unrelated item in the OTHER list.
+        this._wallHoverIndex = null;
         this._lightStageSelected = null;
         SpatialLightColorCard._lightEditorSelection = null;
         SpatialLightColorCard._pendingLightAdd = null;
@@ -8080,6 +8123,8 @@ class SpatialLightColorCard extends HTMLElement {
       if (mw) mw.addEventListener('click', () => setMode('walls'));
       const ml = this.shadowRoot.getElementById('wallModeLights');
       if (ml) ml.addEventListener('click', () => setMode('lights'));
+      const md = this.shadowRoot.getElementById('wallModeDividers');
+      if (md) md.addEventListener('click', () => setMode('dividers'));
       const rt = this.shadowRoot.getElementById('wallRoomsToggle');
       if (rt) {
         rt.addEventListener('click', () => {
@@ -8490,7 +8535,9 @@ class SpatialLightColorCard extends HTMLElement {
         const done = this.shadowRoot && this.shadowRoot.getElementById('wallEditorDone');
         if (done) { done.click(); return; }
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && this._wallHoverIndex != null) {
+      // Nothing maintains the hover index in Lights mode, so it never deletes there.
+      if ((e.key === 'Delete' || e.key === 'Backspace') && this._wallHoverIndex != null
+        && this._wallEditorMode !== 'lights') {
         e.preventDefault();
         this._deleteWallAt(this._wallHoverIndex);
         this._wallHoverIndex = null;
@@ -13176,7 +13223,7 @@ class SpatialLightColorCard extends HTMLElement {
     const key = `${this._wallGeomVersion || 0}|${rect.width | 0}x${rect.height | 0}|${this._wallDoorStateKey()}`;
     if (this._fieldOccluders && this._fieldOccluders.key === key) return this._fieldOccluders;
 
-    let walls = this._wallsForRender(this._draftWalls || this._config.glow_walls || []);
+    let walls = this._wallsForRender(this._liveWalls());
     // The angle set grows with the wall count too (6 rays per endpoint pair),
     // so the solve is O(walls^2). Cap it rather than let a pathological config
     // wedge the browser, and say so instead of silently truncating.
@@ -13717,7 +13764,7 @@ class SpatialLightColorCard extends HTMLElement {
     // In lights mode walls are context rather than the subject, but they must
     // still be visible -- placing a light means placing it relative to a room.
 
-    const walls = this._wallsForRender(this._draftWalls || this._config.glow_walls || []);
+    const walls = this._wallsForRender(this._liveWalls());
     if (!walls.length) return;
 
     ctx.save();
@@ -13760,7 +13807,8 @@ class SpatialLightColorCard extends HTMLElement {
       ctx.globalAlpha = 1;
     }
 
-    if (drawing && this._wallEditorMode !== 'lights' && typeof this._wallSelectedIndex === 'number') {
+    const editingWalls = drawing && this._wallEditorMode !== 'lights' && this._wallLayer() === 'walls';
+    if (editingWalls && typeof this._wallSelectedIndex === 'number') {
       const sel = walls[this._wallSelectedIndex];
       if (sel) {
         ctx.save();
@@ -13775,7 +13823,7 @@ class SpatialLightColorCard extends HTMLElement {
       }
     }
 
-    if (drawing && this._wallEditorMode !== 'lights') {
+    if (editingWalls) {
       // Endpoint handles, so the user can see what is grabbable.
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.strokeStyle = 'rgba(60,110,170,0.9)';
@@ -13895,9 +13943,56 @@ class SpatialLightColorCard extends HTMLElement {
     });
   }
 
+  /**
+   * Which list the drawing UI edits. Dividers mode points every wall gesture
+   * -- draw, select, Shift-drag, joints, delete, hit tests -- at
+   * `room_dividers` instead of `glow_walls`, through this one seam, so none
+   * of those had to learn that dividers exist.
+   */
+  _wallLayer() {
+    return (this._wallEditMode && this._wallEditorMode === 'dividers') ? 'dividers' : 'walls';
+  }
+
   /** The wall list the drawing UI edits (draft while dragging, else config). */
   _wallList() {
-    return this._draftWalls || this._config.glow_walls || [];
+    if (this._draftWalls) return this._draftWalls;
+    return (this._wallLayer() === 'dividers' ? this._config.room_dividers : this._config.glow_walls) || [];
+  }
+
+  /**
+   * The REAL walls, draft included only while walls are what is being drawn.
+   * Everything that casts light or shadow, or draws a wall line, reads this
+   * -- never `_wallList()`, which in Dividers mode is the dividers, and a
+   * divider must never shadow anything.
+   */
+  _liveWalls() {
+    return (this._wallLayer() === 'walls' && this._draftWalls) || this._config.glow_walls || [];
+  }
+
+  /**
+   * Divider ENTRIES, not segments: a box or polyline divider normalizes into
+   * several segments that share a `_src`. Entries drawn this session have no
+   * `_src` yet, so each counts on its own. Returns, for a segment list, the
+   * number of entries and each segment's 1-based entry number -- contiguous,
+   * so the header, the panel title and the Rooms summary all agree.
+   */
+  _dividerEntries(list) {
+    const keys = [];
+    const numberOf = list.map((d, i) => {
+      const k = d && d._src != null ? `e${d._src}` : `s${i}`;
+      let n = keys.indexOf(k);
+      if (n < 0) { keys.push(k); n = keys.length - 1; }
+      return n + 1;
+    });
+    return { count: keys.length, numberOf };
+  }
+
+  /** A mode name from an event or the handshake; Dividers only exists for a
+   *  card that uses rooms. */
+  _normalizeWallEditorMode(mode) {
+    if (mode === 'lights') return 'lights';
+    if (mode === 'dividers' && this._config && this._config.room_tap) return 'dividers';
+    return 'walls';
   }
 
   /**
@@ -13953,17 +14048,55 @@ class SpatialLightColorCard extends HTMLElement {
     const walls = this._wallList();
     const tolPx = 11;
     let best = null, bestD = tolPx * tolPx;
+    const tryEnd = (ex, ey) => {
+      const ddx = (ex - x) / 100 * rect.width;
+      const ddy = (ey - y) / 100 * rect.height;
+      const d = ddx * ddx + ddy * ddy;
+      if (d < bestD) { bestD = d; best = { x: ex, y: ey }; }
+    };
     for (let i = 0; i < walls.length; i++) {
       if (skip(i)) continue;
       const w = walls[i];
-      for (const [ex, ey] of [[w.x1, w.y1], [w.x2, w.y2]]) {
-        const ddx = (ex - x) / 100 * rect.width;
-        const ddy = (ey - y) / 100 * rect.height;
-        const d = ddx * ddx + ddy * ddy;
-        if (d < bestD) { bestD = d; best = { x: ex, y: ey }; }
-      }
+      tryEnd(w.x1, w.y1);
+      tryEnd(w.x2, w.y2);
     }
+    // Same-layer ends first, so walls chain and dividers chain.
     if (best) return best;
+    // A divider is drawn BETWEEN walls, so its ends also snap to the real
+    // walls: the nearest point on the wall under the pointer, or a corner when
+    // that is about as close. Corners must not simply win -- one 7px off made
+    // a straight stroke across a room come out slanted, because a corner
+    // within 11px beat the wall directly under the pointer. Dividers only;
+    // walls keep the cascade they always had.
+    const realWalls = this._wallLayer() === 'dividers' ? this._liveWalls() : null;
+    if (realWalls) {
+      let corner = null, cornerD = tolPx * tolPx;
+      for (const w of realWalls) {
+        for (const [ex, ey] of [[w.x1, w.y1], [w.x2, w.y2]]) {
+          const ddx = (ex - x) / 100 * rect.width, ddy = (ey - y) / 100 * rect.height;
+          const d = ddx * ddx + ddy * ddy;
+          if (d < cornerD) { cornerD = d; corner = { x: ex, y: ey }; }
+        }
+      }
+      const px = x / 100 * rect.width, py = y / 100 * rect.height;
+      let onWall = null, onD = tolPx * tolPx;
+      for (const w of realWalls) {
+        const ax = w.x1 / 100 * rect.width, ay = w.y1 / 100 * rect.height;
+        const bx = w.x2 / 100 * rect.width, by = w.y2 / 100 * rect.height;
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        if (!(len2 > 0)) continue;
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+        const qx = ax + t * dx, qy = ay + t * dy;
+        const d = (qx - px) * (qx - px) + (qy - py) * (qy - py);
+        if (d < onD) { onD = d; onWall = { x: qx / rect.width * 100, y: qy / rect.height * 100 }; }
+      }
+      // The corner wins only when it is within ~3px of where the wall point
+      // already is (closing a corner exactly is still the better join), or
+      // when no wall is under the pointer at all.
+      if (corner && (!onWall || Math.sqrt(cornerD) <= Math.sqrt(onD) + 3)) return corner;
+      if (onWall) return onWall;
+    }
 
     // 2. Angle snap against the anchor, in PIXEL space so 45 degrees is 45
     //    degrees on screen rather than in the anisotropic percent grid.
@@ -14115,7 +14248,9 @@ class SpatialLightColorCard extends HTMLElement {
       return { x: this._wallChainAnchor.x, y: this._wallChainAnchor.y };
     }
     let best = null, bestD = TOL * TOL;
-    for (const w of this._wallList()) {
+    // In Dividers mode a stroke may start on a real wall's corner as well.
+    const latch = this._wallLayer() === 'dividers' ? this._wallList().concat(this._liveWalls()) : this._wallList();
+    for (const w of latch) {
       for (const pair of [[w.x1, w.y1], [w.x2, w.y2]]) {
         const dx = (pair[0] - pt.x) / 100 * pt.rect.width;
         const dy = (pair[1] - pt.y) / 100 * pt.rect.height;
@@ -14366,7 +14501,9 @@ class SpatialLightColorCard extends HTMLElement {
 
   /** On, and meaningful: rooms only exist for a card that uses them. */
   _roomsOverlayOn() {
-    return !!(SpatialLightColorCard._roomsOverlay && this._config && this._config.room_tap && this._wallEditMode);
+    if (!(this._config && this._config.room_tap && this._wallEditMode)) return false;
+    // Drawing dividers blind would be pointless: the rooms are the subject.
+    return !!SpatialLightColorCard._roomsOverlay || this._wallLayer() === 'dividers';
   }
 
   /**
@@ -14381,8 +14518,11 @@ class SpatialLightColorCard extends HTMLElement {
     if (!this._config) return null;
     const c = this._roomsOverlayCache || (this._roomsOverlayCache = { outlines: new Map() });
     if (this._wallDrawState && c.model) return c.model;
-    const walls = this._wallList() || [];
-    const dividers = this._config.room_dividers || [];
+    // Whichever layer is being edited comes in with its draft; the other from
+    // config. Never `_wallList()` for the walls: in Dividers mode it is the
+    // dividers.
+    const walls = this._liveWalls();
+    const dividers = (this._wallLayer() === 'dividers' ? this._wallList() : this._config.room_dividers) || [];
     const auto = this._config.room_auto_doorways !== false;
     const measured = this._planAspect();
     const aspect = Math.round((measured == null ? (c.aspect || 1.6) : measured) * 100) / 100;
@@ -14521,11 +14661,32 @@ class SpatialLightColorCard extends HTMLElement {
       seg(dw.a, dw.b, 'rgba(0,0,0,0.6)', picked ? 7 : 5, []);
       seg(dw.a, dw.b, `rgba(${sel},0.95)`, picked ? 4 : 2.5, [6, 4]);
     });
-    model.dividers.forEach((dv, i) => {
-      const picked = pick && pick.kind === 'divider' && pick.id === i;
-      seg({ x: dv.x1, y: dv.y1 }, { x: dv.x2, y: dv.y2 }, 'rgba(0,0,0,0.6)', picked ? 7 : 5, []);
-      seg({ x: dv.x1, y: dv.y1 }, { x: dv.x2, y: dv.y2 }, 'rgba(255,255,255,0.95)', picked ? 4 : 2.5, [4, 4]);
+    // Live, not from the model: the model keeps the previous rooms while a
+    // stroke is in progress, and the line being drawn must follow the hand.
+    const editingDividers = this._wallLayer() === 'dividers';
+    const dividerList = editingDividers ? this._wallList() : model.dividers;
+    const selIdx = editingDividers && typeof this._wallSelectedIndex === 'number' ? this._wallSelectedIndex : -1;
+    dividerList.forEach((dv, i) => {
+      const picked = (pick && pick.kind === 'divider' && pick.id === i) || i === selIdx;
+      const a = { x: dv.x1, y: dv.y1 }, b = { x: dv.x2, y: dv.y2 };
+      seg(a, b, 'rgba(0,0,0,0.6)', picked ? 7 : 5, []);
+      seg(a, b, i === selIdx ? 'rgba(255,214,92,0.95)' : 'rgba(255,255,255,0.95)', picked ? 4 : 2.5, i === selIdx ? [] : [4, 4]);
     });
+    if (editingDividers) {
+      // Grab handles on the layer being edited, as walls have in Walls mode.
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.strokeStyle = 'rgba(60,60,60,0.9)';
+      ctx.lineWidth = 1.5;
+      for (const dv of dividerList) {
+        for (const [hx, hy] of [[dv.x1, dv.y1], [dv.x2, dv.y2]]) {
+          const [X, Y] = px(hx, hy);
+          ctx.beginPath();
+          ctx.arc(X, Y, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
     // Lights that no room will ever take: a red dashed ring, drawn a size up
     // so the handle on top of it does not hide it.
     for (const id of model.orphans) {
@@ -14649,7 +14810,7 @@ class SpatialLightColorCard extends HTMLElement {
     const facts = [plural(model.rooms.length, 'room', 'rooms')];
     if (model.doorways.length) facts.push(`${plural(model.doorways.length, 'doorway', 'doorways')} closed automatically`);
     // Entries, not segments: a box or polyline divider normalizes into several.
-    const nDiv = new Set(model.dividers.map((d, i) => (d._src != null ? d._src : `s${i}`))).size;
+    const nDiv = this._dividerEntries(model.dividers).count;
     if (nDiv) facts.push(plural(nDiv, 'room divider', 'room dividers'));
     if (model.pockets) facts.push(`${plural(model.pockets, 'pocket', 'pockets')} joined to the room around it`);
     const emptyDead = model.dead.filter((d) => !d.exempt.length).length;
@@ -14667,7 +14828,9 @@ class SpatialLightColorCard extends HTMLElement {
       const orphanNames = model.orphans.slice(0, 4).map((id) => esc(this._roomLightName(id))).join(', ');
       return row('Rooms', facts.join(' &middot; ')
         + (model.orphans.length ? `<br>In no room: ${orphanNames}${model.orphans.length > 4 ? ', &hellip;' : ''} &mdash; a room tap never picks these.` : '')
-        + '<br><span class="wi-hint">Tap a room, a doorway or a divider to see why it is there. Tap a wall to make it a door.</span>');
+        + (this._wallLayer() === 'dividers'
+          ? '<br><span class="wi-hint">Drag across a room to split it. Tap a room to see what it holds, or a divider to select it.</span>'
+          : '<br><span class="wi-hint">Tap a room, a doorway or a divider to see why it is there. Tap a wall to make it a door.</span>'));
     }
     if (pick.kind === 'room') {
       const r = model.rooms.find((x) => x.id === pick.id);
@@ -14684,7 +14847,7 @@ class SpatialLightColorCard extends HTMLElement {
       const parts = [`A tap selects ${plural(r.selectable.length, 'light', 'lights')}. Home Assistant areas: ${areaText || 'none'}.`];
       // Lights with no area say nothing about where a room ends; only two
       // real areas sharing one space suggest it is two rooms.
-      if (areas.size > 1) parts.push('If you think of this as more than one room, split it with a line under <code>room_dividers</code> in YAML.');
+      if (areas.size > 1) parts.push('If you think of this as more than one room, draw a divider across it in <b>Dividers</b> mode.');
       const ex = r.exempt.filter((id) => !id.startsWith('binary_sensor.'));
       if (ex.length) parts.push(`Skipped, as not affected by group selection: ${ex.map((id) => esc(this._roomLightName(id))).join(', ')}.`);
       if (r.labels.length > 1) parts.push(`Includes ${plural(r.labels.length - 1, 'walled pocket', 'walled pockets')} with no lights of its own, so tapping there selects this room too.`);
@@ -14694,12 +14857,11 @@ class SpatialLightColorCard extends HTMLElement {
       return row('Doorway &middot; closed for rooms',
         'Two wall ends face each other across this gap, so it is closed when working out rooms, and the rooms on either side stay separate. '
         + 'Light still passes through it, and nothing is drawn on the dashboard.'
-        + '<br><span class="wi-hint"><code>room_auto_doorways: false</code> turns this off; drawing a short wall across the gap makes it permanent.</span>');
+        + '<br><span class="wi-hint"><code>room_auto_doorways: false</code> turns this off; a divider (or a short wall) across the gap makes it permanent.</span>');
     }
     if (pick.kind === 'divider') {
-      const dv = model.dividers[pick.id];
-      return row(`Room divider ${(dv && dv._src != null ? dv._src : pick.id) + 1}`,
-        'Bounds rooms only: it casts no shadow and is never drawn on the dashboard. Edit it under <code>room_dividers</code> in YAML.');
+      return row(`Room divider ${this._dividerEntries(model.dividers).numberOf[pick.id] || pick.id + 1}`,
+        'Bounds rooms only: it casts no shadow and is never drawn on the dashboard. Switch to <b>Dividers</b> to move or delete it.');
     }
     if (pick.kind === 'dead') {
       const d = model.dead.find((x) => x.id === pick.id);
@@ -14741,6 +14903,32 @@ class SpatialLightColorCard extends HTMLElement {
       host.innerHTML = this._roomsOverlayOn()
         ? this._roomsInspectorHtml()
         : '<div class="wi-hint">Tap a wall to make it a door</div>';
+      return;
+    }
+
+    if (this._wallLayer() === 'dividers') {
+      // The same fixed box as the rooms panel, so selecting a divider after
+      // tapping a room (or the other way round) cannot move the plan.
+      host.innerHTML = `
+        <div class="wi-rooms">
+          <div class="wi-row">
+            <span class="wi-title">Divider ${this._dividerEntries(walls).numberOf[idx] || idx + 1}</span>
+            <span class="wi-coords">(${Math.round(w.x1)}, ${Math.round(w.y1)}) &rarr; (${Math.round(w.x2)}, ${Math.round(w.y2)})</span>
+            <button class="wi-btn wi-danger" id="wiDelete">Delete</button>
+            <button class="wi-btn" id="wiClose">&times;</button>
+          </div>
+          <div class="wi-rooms-body">Splits rooms only: it casts no shadow and is never drawn on the dashboard. <kbd>Shift</kbd>-drag it or its ends to move it.</div>
+        </div>`;
+      const dClose = host.querySelector('#wiClose');
+      if (dClose) dClose.addEventListener('click', () => this._selectWall(null));
+      const dDel = host.querySelector('#wiDelete');
+      if (dDel) {
+        dDel.addEventListener('click', () => {
+          const target = this._wallSelectedIndex;
+          this._selectWall(null);
+          if (typeof target === 'number') this._deleteWallAt(target);
+        });
+      }
       return;
     }
 
@@ -15351,14 +15539,17 @@ class SpatialLightColorCard extends HTMLElement {
    * legacy mask cache short-circuit on a key containing it.
    */
   _commitWalls(delta) {
+    const dividers = this._wallLayer() === 'dividers';
     if (this._draftWalls) {
-      this._config.glow_walls = this._draftWalls.map(w => ({ ...w }));
+      this._config[dividers ? 'room_dividers' : 'glow_walls'] = this._draftWalls.map(w => ({ ...w }));
       this._draftWalls = null;
     }
     this._invalidateWallGeometry();
     if (delta && this._wallEditorId && typeof window !== 'undefined') {
+      // `layer` is absent for walls, so an older editor build reads a wall
+      // delta exactly as before.
       window.dispatchEvent(new CustomEvent('spatial-card-wall-delta', {
-        detail: { editorId: this._wallEditorId, ...delta },
+        detail: { editorId: this._wallEditorId, ...delta, ...(dividers ? { layer: 'dividers' } : {}) },
       }));
     }
   }
@@ -15369,7 +15560,7 @@ class SpatialLightColorCard extends HTMLElement {
     // would point at a different wall than the one under the pointer. The next
     // pointermove re-establishes it.
     this._wallHoverIndex = null;
-    this._wallGeomVersion = this._hashWalls(this._wallList());
+    this._wallGeomVersion = this._hashWalls(this._liveWalls());
     this._wallConfigVersion = (this._wallConfigVersion || 0) + 1;
     this._wallMaskPerEntity = {};
     if (this._wallMaskCache) this._wallMaskCache.clear();
@@ -16057,7 +16248,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         // without this the rebuilt card defaults to 'walls' and the modal
         // flips out of Lights the instant you drop a lamp.
         e.detail.reply(this._editorId, this._editPositionsActive, this._wallDrawActive,
-          this._wallDrawMode === 'lights' ? 'lights' : 'walls',
+          (this._wallDrawMode === 'lights' || this._wallDrawMode === 'dividers') ? this._wallDrawMode : 'walls',
           this._wallViewState || null);
       }
     };
@@ -16087,6 +16278,8 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._applyEntityStateSnapshot(snap);
         this._config.canvas_elements = snap.canvas_elements;
         this._config.glow_walls = snap.glow_walls;
+        if (snap.room_dividers === undefined) delete this._config.room_dividers;
+        else this._config.room_dividers = snap.room_dividers;
         // Both stacks hold states from the session being thrown away; an undo
         // into them would restore a half-edited plan the user just rejected.
         this._wallHistory = [];
@@ -16120,7 +16313,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       if (d.active) {
         // The card's own Walls/Lights switch is authoritative while the modal
         // is open; remember it so the next handshake restores the same mode.
-        if (d.mode === 'lights' || d.mode === 'walls') this._wallDrawMode = d.mode;
+        if (d.mode === 'lights' || d.mode === 'walls' || d.mode === 'dividers') this._wallDrawMode = d.mode;
         return;
       }
       if (!this._wallDrawActive) return;
@@ -16497,14 +16690,24 @@ class SpatialLightColorCardEditor extends HTMLElement {
    * edge, and never as a side effect of drawing somewhere else.
    */
   _applyWallDelta(d) {
-    if (!Array.isArray(this._config.glow_walls)) this._config.glow_walls = [];
-    const walls = this._config.glow_walls;
-    this._pushWallHistory();
+    // `layer: 'dividers'` sends the same protocol to `room_dividers`: same
+    // forms, same identify-by-geometry, same box/polyline explosion.
+    const key = d.layer === 'dividers' ? 'room_dividers' : 'glow_walls';
+    // History FIRST: it has to record that the list did not exist yet, or
+    // undoing the first divider would leave `room_dividers: []` behind.
+    this._pushWallHistory(key);
+    if (!Array.isArray(this._config[key])) this._config[key] = [];
+    const walls = this._config[key];
+    // An emptied divider list leaves no `room_dividers: []` behind.
+    const finish = () => {
+      if (key === 'room_dividers' && !walls.length) delete this._config.room_dividers;
+      this._fireConfigChanged();
+      this._render();
+    };
 
     if (d.op === 'add') {
       walls.push({ x1: this._round2(d.wall.x1), y1: this._round2(d.wall.y1), x2: this._round2(d.wall.x2), y2: this._round2(d.wall.y2) });
-      this._fireConfigChanged();
-      this._render();
+      finish();
       return;
     }
 
@@ -16517,8 +16720,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
         if (this._applyOneWallUpdate(walls, item)) changed += 1;
       }
       if (!changed) { this._wallHistory.pop(); return; }
-      this._fireConfigChanged();
-      this._render();
+      finish();
       return;
     }
 
@@ -16575,8 +16777,7 @@ class SpatialLightColorCardEditor extends HTMLElement {
       return;
     }
 
-    this._fireConfigChanged();
-    this._render();
+    finish();
   }
 
   /**
@@ -16699,17 +16900,43 @@ class SpatialLightColorCardEditor extends HTMLElement {
    * `_pushPositionHistory` would mean an unrelated position undo silently
    * reverting wall edits, since that snapshot only captures `positions`.
    */
-  _pushWallHistory() {
+  _pushWallHistory(key = 'glow_walls') {
     if (!Array.isArray(this._wallHistory)) this._wallHistory = [];
-    this._wallHistory.push(JSON.stringify(this._config.glow_walls || []));
+    this._wallHistory.push(this._wallHistoryEntry(key));
     if (this._wallHistory.length > 50) this._wallHistory.shift();
     this._wallRedoStack = [];
   }
 
+  /**
+   * One undo step: WHICH list and what it held. Walls and dividers share the
+   * stack because they share the modal and the gestures -- Ctrl+Z undoes the
+   * last thing drawn, whichever it was. `undefined` for a list that did not
+   * exist, so undoing the first divider removes the key rather than leaving
+   * `room_dividers: []`.
+   */
+  _wallHistoryEntry(key) {
+    const v = this._config[key];
+    return JSON.stringify({ key, v: Array.isArray(v) ? v : null });
+  }
+
+  _restoreWallHistoryEntry(entry) {
+    let e;
+    try { e = JSON.parse(entry); } catch (_) { return null; }
+    // Entries from before the key was recorded were bare wall arrays.
+    if (Array.isArray(e)) e = { key: 'glow_walls', v: e };
+    if (!e || (e.key !== 'glow_walls' && e.key !== 'room_dividers')) return null;
+    if (e.v == null) delete this._config[e.key];
+    else this._config[e.key] = e.v;
+    return e.key;
+  }
+
   _undoWalls() {
     if (!this._wallHistory || !this._wallHistory.length) return false;
-    this._wallRedoStack.push(JSON.stringify(this._config.glow_walls || []));
-    this._config.glow_walls = JSON.parse(this._wallHistory.pop());
+    const entry = this._wallHistory.pop();
+    let key = 'glow_walls';
+    try { const p = JSON.parse(entry); if (p && !Array.isArray(p) && p.key) key = p.key; } catch (_) { /* bare array */ }
+    this._wallRedoStack.push(this._wallHistoryEntry(key));
+    this._restoreWallHistoryEntry(entry);
     this._fireConfigChanged();
     this._render();
     return true;
@@ -16717,8 +16944,11 @@ class SpatialLightColorCardEditor extends HTMLElement {
 
   _redoWalls() {
     if (!this._wallRedoStack || !this._wallRedoStack.length) return false;
-    this._wallHistory.push(JSON.stringify(this._config.glow_walls || []));
-    this._config.glow_walls = JSON.parse(this._wallRedoStack.pop());
+    const entry = this._wallRedoStack.pop();
+    let key = 'glow_walls';
+    try { const p = JSON.parse(entry); if (p && !Array.isArray(p) && p.key) key = p.key; } catch (_) { /* bare array */ }
+    this._wallHistory.push(this._wallHistoryEntry(key));
+    this._restoreWallHistoryEntry(entry);
     this._fireConfigChanged();
     this._render();
     return true;
@@ -19336,7 +19566,18 @@ class SpatialLightColorCardEditor extends HTMLElement {
     if (roomTapEl) {
       roomTapEl.addEventListener('change', () => {
         if (roomTapEl.checked) this._config.room_tap = true;
-        else delete this._config.room_tap;
+        else {
+          delete this._config.room_tap;
+          // Dividers cannot be seen or edited without rooms, so Ctrl+Z in the
+          // wall editor must not reach back and change them invisibly. Each
+          // entry is a whole snapshot of ONE list, so dropping the divider
+          // ones leaves the wall steps correct.
+          const keepWalls = (en) => {
+            try { const p = JSON.parse(en); return Array.isArray(p) || !p || p.key !== 'room_dividers'; } catch (_) { return true; }
+          };
+          if (Array.isArray(this._wallHistory)) this._wallHistory = this._wallHistory.filter(keepWalls);
+          if (Array.isArray(this._wallRedoStack)) this._wallRedoStack = this._wallRedoStack.filter(keepWalls);
+        }
         this._fireConfigChanged();
       });
     }
@@ -20073,6 +20314,9 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._wallEditorSnapshot = Object.assign(this._entityStateSnapshot(), {
           canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
           glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
+          // undefined, not [], when there were none: Cancel then removes the key.
+          room_dividers: Array.isArray(this._config.room_dividers)
+            ? JSON.parse(JSON.stringify(this._config.room_dividers)) : undefined,
         });
         }
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
@@ -20107,6 +20351,8 @@ class SpatialLightColorCardEditor extends HTMLElement {
         this._wallEditorSnapshot = Object.assign(this._entityStateSnapshot(), {
           canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements || [])),
           glow_walls: JSON.parse(JSON.stringify(this._config.glow_walls || [])),
+          room_dividers: Array.isArray(this._config.room_dividers)
+            ? JSON.parse(JSON.stringify(this._config.room_dividers)) : undefined,
         });
         window.dispatchEvent(new CustomEvent('spatial-card-wall-mode', {
           detail: { editorId: this._editorId, active: true, mode: 'lights' },
