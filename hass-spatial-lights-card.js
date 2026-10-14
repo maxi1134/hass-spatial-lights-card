@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.53.0 (fork-maxi1134)';
+  static BUILD = 'v1.54.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -609,6 +609,47 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * A point well inside each room, for its label: the cell of the room's own
+   * label that is FARTHEST from anything else (a wall, another space, the
+   * plan's edge). City-block chamfer in two passes over the grid -- the cells
+   * are square in real space, so that is a fair distance -- a few ms for the
+   * whole plan. Plan percent out.
+   */
+  static roomAnchors(geom, rooms) {
+    const { W, H, lab } = geom;
+    const d = new Uint16Array(W * H);
+    for (let r = 0; r < H; r++) {
+      for (let c = 0; c < W; c++) {
+        const i = r * W + c;
+        const k = lab[i];
+        if (!k) continue;
+        const up = r > 0 && lab[i - W] === k ? d[i - W] + 1 : 1;
+        const lf = c > 0 && lab[i - 1] === k ? d[i - 1] + 1 : 1;
+        d[i] = Math.min(up, lf);
+      }
+    }
+    const want = new Set(rooms.map((rm) => rm.id));
+    const best = new Map();
+    for (let r = H - 1; r >= 0; r--) {
+      for (let c = W - 1; c >= 0; c--) {
+        const i = r * W + c;
+        const k = lab[i];
+        if (!k) continue;
+        const dn = r < H - 1 && lab[i + W] === k ? d[i + W] + 1 : 1;
+        const rt = c < W - 1 && lab[i + 1] === k ? d[i + 1] + 1 : 1;
+        const v = Math.min(d[i], dn, rt);
+        d[i] = v;
+        if (!want.has(k)) continue;
+        const b = best.get(k);
+        if (!b || v > b.v) best.set(k, { v, r, c });
+      }
+    }
+    const out = new Map();
+    best.forEach((b, k) => out.set(k, { x: (b.c + 0.5) / W * 100, y: (b.r + 0.5) / H * 100 }));
+    return out;
+  }
+
+  /**
    * The outline of a set of labels as polygon loops in plan percent, for
    * drawing. A small CLOSING (grow 2 cells, shrink 2) first, which erases the
    * walls between a room and a pocket it adopted, so the room reads as ONE
@@ -834,6 +875,14 @@ class SpatialLightColorCard extends HTMLElement {
    * clicking would otherwise silently drop the pick.
    */
   static _pendingLightAdd = null;
+  /** The full-size editor's Rooms overlay, and what was last tapped in it.
+   *  Static for the same reason as the selections above: every committed
+   *  wall replaces the preview card, and the view must outlive that. */
+  static _roomsOverlay = false;
+  /** A plan-percent POINT, never a label or an index: labels are flood-fill
+   *  numbers and renumber on any wall edit, so a remembered id would go on
+   *  describing whichever room inherited the number. */
+  static _roomsOverlayPick = null;
   /**
    * Plan-percent clearance a newly added light looks for before it settles.
    * Several dropped on one pixel look like one light that will not move.
@@ -6183,6 +6232,14 @@ class SpatialLightColorCard extends HTMLElement {
         box-sizing: content-box;
       }
       .wall-inspector .wi-hint { color: rgba(255,255,255,0.45); font-size: 12px; }
+      .wall-inspector .wi-rooms {
+        height: 59px; overflow-y: auto; overscroll-behavior: contain;
+        scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.3) transparent;
+      }
+      .wall-inspector .wi-rooms .wi-title { line-height: 17px; }
+      .wall-inspector .wi-rooms-body { font-size: 12px; line-height: 17px; color: rgba(255,255,255,0.78); }
+      .wall-inspector .wi-rooms-body code { font-size: 11px; background: rgba(255,255,255,0.1); padding: 0 4px; border-radius: 3px; }
+      .wall-inspector .wi-warn { color: #ff8a8a; }
       .wall-inspector .wi-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
       /* Lights mode selects on the pointerdown of a drag, so this row has to
          be the same height holding a hint as holding the Remove button --
@@ -6640,6 +6697,11 @@ class SpatialLightColorCard extends HTMLElement {
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? '' : ' active'}" id="wallModeWalls">Walls</button>
             <button class="wall-editor-mode${this._wallEditorMode === 'lights' ? ' active' : ''}" id="wallModeLights">Lights</button>
           </div>
+          ${this._config.room_tap ? `<div class="wall-editor-modes">
+            <button class="wall-editor-mode${SpatialLightColorCard._roomsOverlay ? ' active' : ''}" id="wallRoomsToggle"
+                    aria-pressed="${SpatialLightColorCard._roomsOverlay ? 'true' : 'false'}"
+                    title="Show the rooms a tap on the dashboard selects">Rooms</button>
+          </div>` : ''}
           <div class="wall-editor-zoom">
             <button class="we-zoom-btn" id="weZoomOut" title="Zoom out">&minus;</button>
             <button class="we-zoom-level" id="weZoomLevel" title="Reset to fit">100%</button>
@@ -6925,6 +6987,12 @@ class SpatialLightColorCard extends HTMLElement {
     const dpr2 = cv.width / view.canvasRect.width;
     ctx.setTransform(dpr2, 0, 0, dpr2, 0, 0);
     ctx.translate(view.panX, view.panY);
+    if (this._roomsOverlayOn()) {
+      this._drawRoomsOverlay(ctx, rect);
+      // Lights mode drags the handles, so they and the pending-add ghost stay
+      // on top; in Walls mode they are reference dots and the names win.
+      if (lightsMode) { ctx.save(); this._drawRoomsOverlayLabels(ctx, rect); ctx.restore(); }
+    }
     ctx.save();
     const radius = lightsMode ? 11 : 7;
     for (const id of this._config.entities) {
@@ -7012,6 +7080,11 @@ class SpatialLightColorCard extends HTMLElement {
       ctx.restore();
     }
     ctx.restore();
+    if (!lightsMode && this._roomsOverlayOn()) {
+      ctx.save();
+      this._drawRoomsOverlayLabels(ctx, rect);
+      ctx.restore();
+    }
 
     if (this._els.wallCount) {
       if (lightsMode) {
@@ -7019,7 +7092,12 @@ class SpatialLightColorCard extends HTMLElement {
         this._els.wallCount.textContent = n === 1 ? '1 light' : `${n} lights`;
       } else {
         const count = (this._wallList() || []).length;
-        this._els.wallCount.textContent = count === 1 ? '1 wall' : `${count} walls`;
+        let text = count === 1 ? '1 wall' : `${count} walls`;
+        if (this._roomsOverlayOn()) {
+          const m = this._roomsOverlayModel();
+          if (m) text += ` \u00b7 ${m.rooms.length === 1 ? '1 room' : `${m.rooms.length} rooms`}`;
+        }
+        this._els.wallCount.textContent = text;
       }
     }
   }
@@ -7036,6 +7114,7 @@ class SpatialLightColorCard extends HTMLElement {
     SpatialLightColorCard._lightEditorSelection = null;
     SpatialLightColorCard._pendingLightAdd = null;
     this._pendingLightAt = null;
+    SpatialLightColorCard._roomsOverlayPick = null;
     this._wallEditMode = false;
     this._wallEditorId = null;
     this._wallChainAnchor = null;
@@ -8001,6 +8080,23 @@ class SpatialLightColorCard extends HTMLElement {
       if (mw) mw.addEventListener('click', () => setMode('walls'));
       const ml = this.shadowRoot.getElementById('wallModeLights');
       if (ml) ml.addEventListener('click', () => setMode('lights'));
+      const rt = this.shadowRoot.getElementById('wallRoomsToggle');
+      if (rt) {
+        rt.addEventListener('click', () => {
+          const on = !SpatialLightColorCard._roomsOverlay;
+          SpatialLightColorCard._roomsOverlay = on;
+          SpatialLightColorCard._roomsOverlayPick = null;
+          rt.classList.toggle('active', on);
+          rt.setAttribute('aria-pressed', on ? 'true' : 'false');
+          // Only the panel that DEPENDS on the overlay is rebuilt. A selected
+          // wall's panel does not, and rebuilding it would drop an "It's a
+          // door" tick that has not been given an entity yet.
+          const wi = this._wallSelectedIndex;
+          const showsWall = this._wallEditorMode !== 'lights' && typeof wi === 'number' && !!this._wallList()[wi];
+          if (!showsWall) this._syncWallInspector();
+          this._requestWallEditorDraw();
+        });
+      }
 
       this._bindWallZoom();
       const zIn = this.shadowRoot.getElementById('weZoomIn');
@@ -9529,16 +9625,7 @@ class SpatialLightColorCard extends HTMLElement {
       c.walls = walls; c.dividers = dividers; c.aspect = aspect; c.auto = auto;
       c.memberKey = null;
     }
-    const lights = [];
-    const parts = [];
-    for (const id of (this._config.entities || [])) {
-      const p = this._config.positions && this._config.positions[id];
-      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
-      const selectable = this._isSelectableEntity(id) && !this._isGroupExempt(id);
-      lights.push({ id, x: p.x, y: p.y, selectable });
-      parts.push(id + ':' + p.x.toFixed(2) + ',' + p.y.toFixed(2) + (selectable ? '' : '!'));
-    }
-    const mkey = parts.join('|');
+    const { lights, key: mkey } = this._roomLights();
     if (c.memberKey !== mkey || !c.model) {
       const members = SpatialLightColorCard.roomMembership(c.geom, lights);
       c.memberKey = mkey;
@@ -9552,6 +9639,25 @@ class SpatialLightColorCard extends HTMLElement {
       };
     }
     return c.model;
+  }
+
+  /**
+   * The lights a room may hold, in plan percent, and a key that changes when
+   * any of them moves, joins, leaves or changes selectability. One list for
+   * the dashboard's rooms and the editor's overlay, so they cannot disagree
+   * about what a room contains.
+   */
+  _roomLights() {
+    const lights = [];
+    const parts = [];
+    for (const id of (this._config.entities || [])) {
+      const p = this._config.positions && this._config.positions[id];
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const selectable = this._isSelectableEntity(id) && !this._isGroupExempt(id);
+      lights.push({ id, x: p.x, y: p.y, selectable });
+      parts.push(id + ':' + p.x.toFixed(2) + ',' + p.y.toFixed(2) + (selectable ? '' : '!'));
+    }
+    return { lights, key: parts.join('|') };
   }
 
   /** Room outlines in plan percent, traced once per model. */
@@ -13971,6 +14077,10 @@ class SpatialLightColorCard extends HTMLElement {
       this._wallDrawState = {
         mode: 'draw', index: this._draftWalls.length - 1, pointerId: e.pointerId, moved: false,
         anchor: start,
+        // The RAW press point, for the Rooms overlay's tap: `start` may have
+        // latched onto a corner up to 15px away -- across a wall, or onto a
+        // doorway's end -- while the wall hit test used the raw point.
+        tapAt: { x: pt.x, y: pt.y },
       };
       // Remember what the press landed on: pointerup uses it to select, and
       // a stationary hold uses it to delete.
@@ -14246,8 +14356,362 @@ class SpatialLightColorCard extends HTMLElement {
     const next = (typeof index === 'number' && walls[index]) ? index : null;
     this._wallSelectedIndex = next;
     SpatialLightColorCard._wallEditorSelection = next;
+    // A wall and a room are never both "the thing you tapped".
+    if (next != null) SpatialLightColorCard._roomsOverlayPick = null;
     this._syncWallInspector();
     this._requestWallEditorDraw();
+  }
+
+  /** ---------- The Rooms overlay in the full-size editor ---------- */
+
+  /** On, and meaningful: rooms only exist for a card that uses them. */
+  _roomsOverlayOn() {
+    return !!(SpatialLightColorCard._roomsOverlay && this._config && this._config.room_tap && this._wallEditMode);
+  }
+
+  /**
+   * The rooms as the editor sees them RIGHT NOW: from `_wallList()`, i.e. the
+   * walls including what you just drew, where the dashboard's `_roomModel`
+   * deliberately reads only the saved ones. Mid-stroke the walls change every
+   * frame and a re-cut costs ~15 ms, so the previous rooms are kept until the
+   * stroke ends. Outlines are cached by label set, so dragging a light (which
+   * re-runs membership) only re-traces a room whose SHAPE changed.
+   */
+  _roomsOverlayModel() {
+    if (!this._config) return null;
+    const c = this._roomsOverlayCache || (this._roomsOverlayCache = { outlines: new Map() });
+    if (this._wallDrawState && c.model) return c.model;
+    const walls = this._wallList() || [];
+    const dividers = this._config.room_dividers || [];
+    const auto = this._config.room_auto_doorways !== false;
+    const measured = this._planAspect();
+    const aspect = Math.round((measured == null ? (c.aspect || 1.6) : measured) * 100) / 100;
+    const r2 = (v) => (Math.round(v * 100) / 100);
+    const gkey = walls.map((w) => `${r2(w.x1)},${r2(w.y1)},${r2(w.x2)},${r2(w.y2)}`).join(';')
+      + '|' + dividers.map((w) => `${r2(w.x1)},${r2(w.y1)},${r2(w.x2)},${r2(w.y2)}`).join(';')
+      + '|' + aspect + '|' + auto;
+    if (c.gkey !== gkey) {
+      c.geom = SpatialLightColorCard.roomGeometry(walls, dividers, aspect, { autoDoorways: auto });
+      c.gkey = gkey;
+      c.aspect = aspect;
+      c.outlines = new Map();
+      c.mkey = null;
+    }
+    const { lights, key } = this._roomLights();
+    if (c.mkey !== key || !c.model) {
+      const geom = c.geom;
+      const mem = SpatialLightColorCard.roomMembership(geom, lights);
+      const trace = (labels) => {
+        const k = labels.slice().sort((a, b) => a - b).join(',');
+        if (!c.outlines.has(k)) c.outlines.set(k, SpatialLightColorCard.roomOutline(geom, labels));
+        return c.outlines.get(k);
+      };
+      const anchors = SpatialLightColorCard.roomAnchors(geom, mem.rooms);
+      const orphans = lights.filter((l) => l.selectable && !mem.roomOfLabel.has(mem.lightRoomLabel.get(l.id)))
+        .map((l) => l.id);
+      c.mkey = key;
+      c.model = {
+        geom,
+        rooms: mem.rooms.map((r, i) => ({
+          ...r, index: i, loops: trace(r.labels), anchor: anchors.get(r.id) || null,
+        })),
+        roomOfLabel: mem.roomOfLabel,
+        // A dead space is one with no light a TAP would take -- which may still
+        // hold lights that are not affected by group selection.
+        dead: mem.dead.map((k) => ({
+          id: k, loops: trace([k]),
+          exempt: lights.filter((l) => mem.lightRoomLabel.get(l.id) === k && !l.id.startsWith('binary_sensor.')).map((l) => l.id),
+        })),
+        // The model hands doorways out as [x, y] pairs; the overlay draws and
+        // hit-tests points, so they are turned into {x, y} once, here.
+        doorways: (geom.doorways || []).map((dw) => ({
+          a: { x: dw.a[0], y: dw.a[1] }, b: { x: dw.b[0], y: dw.b[1] },
+        })),
+        dividers,
+        orphans,
+        exempt: mem.rooms.reduce((t, r) => t + r.exempt.filter((id) => !id.startsWith('binary_sensor.')).length, 0)
+          + mem.dead.reduce((t, k) => t + lights.filter((l) => mem.lightRoomLabel.get(l.id) === k
+            && !l.id.startsWith('binary_sensor.')).length, 0),
+        pockets: mem.rooms.reduce((t, r) => t + r.labels.length - 1, 0),
+      };
+    }
+    return c.model;
+  }
+
+  /** A room's colour in the overlay: spread round the wheel by the golden
+   *  angle, so neighbours never come out as near-twins. */
+  _roomHue(index) {
+    return Math.round((index * 137.508 + 300) % 360);
+  }
+
+  /** Draw the overlay onto the editor canvas, under the light handles. */
+  _drawRoomsOverlay(ctx, rect) {
+    const model = this._roomsOverlayModel();
+    if (!model) return;
+    const pick = this._roomsResolvedPick(model);
+    const px = (x, y) => {
+      const sp = this._toScreenPct(x, y);
+      return [sp.x / 100 * rect.width, sp.y / 100 * rect.height];
+    };
+    const tracePath = (loops) => {
+      ctx.beginPath();
+      for (const loop of loops) {
+        loop.forEach(([x, y], i) => {
+          const [X, Y] = px(x, y);
+          if (i) ctx.lineTo(X, Y); else ctx.moveTo(X, Y);
+        });
+        ctx.closePath();
+      }
+    };
+    ctx.save();
+    // Spaces with no lights: hatched, because "nothing here" has to read as
+    // different from "a room you have not looked at".
+    if (model.dead.length) {
+      if (!this._roomHatch) {
+        const t = document.createElement('canvas');
+        t.width = 8; t.height = 8;
+        const tc = t.getContext('2d');
+        if (tc) {
+          tc.strokeStyle = 'rgba(255,255,255,0.28)';
+          tc.lineWidth = 1.5;
+          tc.beginPath(); tc.moveTo(-2, 10); tc.lineTo(10, -2); tc.stroke();
+          tc.beginPath(); tc.moveTo(6, 10); tc.lineTo(10, 6); tc.stroke();
+          tc.beginPath(); tc.moveTo(-2, 2); tc.lineTo(2, -2); tc.stroke();
+        }
+        this._roomHatch = t;
+      }
+      const pat = ctx.createPattern(this._roomHatch, 'repeat');
+      for (const d of model.dead) {
+        const picked = pick && pick.kind === 'dead' && pick.id === d.id;
+        tracePath(d.loops);
+        ctx.fillStyle = pat || 'rgba(255,255,255,0.08)';
+        ctx.fill('evenodd');
+        if (picked) {
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.stroke();
+        }
+      }
+    }
+    for (const r of model.rooms) {
+      const hue = this._roomHue(r.index);
+      const picked = pick && pick.kind === 'room' && pick.id === r.id;
+      tracePath(r.loops);
+      ctx.fillStyle = `hsla(${hue}, 75%, 58%, ${picked ? 0.40 : 0.22})`;
+      ctx.fill('evenodd');
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = picked ? 3 : 1.5;
+      ctx.strokeStyle = picked ? 'rgba(255,255,255,0.95)' : `hsla(${hue}, 80%, 66%, 0.9)`;
+      ctx.stroke();
+    }
+    const sel = (this._config.selection_color || SpatialLightColorCard.SELECTION_RGB).join(',');
+    const seg = (a, b, colour, width, dash) => {
+      const [x1, y1] = px(a.x, a.y);
+      const [x2, y2] = px(b.x, b.y);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.setLineDash(dash);
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = colour;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    model.doorways.forEach((dw, i) => {
+      const picked = pick && pick.kind === 'doorway' && pick.id === i;
+      seg(dw.a, dw.b, 'rgba(0,0,0,0.6)', picked ? 7 : 5, []);
+      seg(dw.a, dw.b, `rgba(${sel},0.95)`, picked ? 4 : 2.5, [6, 4]);
+    });
+    model.dividers.forEach((dv, i) => {
+      const picked = pick && pick.kind === 'divider' && pick.id === i;
+      seg({ x: dv.x1, y: dv.y1 }, { x: dv.x2, y: dv.y2 }, 'rgba(0,0,0,0.6)', picked ? 7 : 5, []);
+      seg({ x: dv.x1, y: dv.y1 }, { x: dv.x2, y: dv.y2 }, 'rgba(255,255,255,0.95)', picked ? 4 : 2.5, [4, 4]);
+    });
+    // Lights that no room will ever take: a red dashed ring, drawn a size up
+    // so the handle on top of it does not hide it.
+    for (const id of model.orphans) {
+      const p = this._config.positions[id];
+      if (!p) continue;
+      const [X, Y] = px(p.x, p.y);
+      ctx.beginPath();
+      ctx.arc(X, Y, 14, 0, Math.PI * 2);
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255,96,96,0.95)';
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /** The room names, drawn AFTER the light handles: in Walls mode the
+   *  handles are only reference points, and a name half under one cannot be
+   *  read. */
+  _drawRoomsOverlayLabels(ctx, rect) {
+    const model = this._roomsOverlayModel();
+    if (!model) return;
+    const px = (x, y) => {
+      const sp = this._toScreenPct(x, y);
+      return [sp.x / 100 * rect.width, sp.y / 100 * rect.height];
+    };
+    ctx.save();
+    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const r of model.rooms) {
+      if (!r.anchor) continue;
+      const [X, Y] = px(r.anchor.x, r.anchor.y);
+      const text = `${this._roomName(r)} \u00b7 ${r.selectable.length}`;
+      const w = ctx.measureText(text).width;
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(X - w / 2 - 6, Y - 9, w + 12, 18, 9);
+      else ctx.rect(X - w / 2 - 6, Y - 9, w + 12, 18);
+      ctx.fill();
+      ctx.fillStyle = `hsl(${this._roomHue(r.index)}, 85%, 78%)`;
+      ctx.fillText(text, X, Y);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * What a tap in Walls mode landed on, when it was not a wall: a doorway or
+   * a divider (within 10 screen px), else the room, the light-less space or
+   * the outside under the point. Plan percent in.
+   */
+  _pickRoomAt(x, y) {
+    SpatialLightColorCard._roomsOverlayPick = { x, y };
+    this._syncWallInspector();
+    this._requestWallEditorDraw();
+  }
+
+  /**
+   * What is at the picked point in THIS model, cached on the model. After a
+   * wall edit or a light drop the same spot is simply asked again, so the
+   * panel describes what is there now rather than what used to be.
+   */
+  _roomsResolvedPick(model) {
+    const pt = SpatialLightColorCard._roomsOverlayPick;
+    if (!pt || !model) return null;
+    if (model._pickFor !== pt) {
+      model._pickFor = pt;
+      model._pick = this._classifyRoomPoint(model, pt.x, pt.y);
+    }
+    return model._pick;
+  }
+
+  _classifyRoomPoint(model, x, y) {
+    const surf = this._wallSurface && this._wallSurface();
+    const rect = surf ? this._planSpaceRect(surf.getBoundingClientRect()) : { width: 100, height: 100 };
+    const sx = rect.width / 100, sy = rect.height / 100;
+    const near = (a, b) => {
+      const ax = a.x * sx, ay = a.y * sy, bx = b.x * sx, by = b.y * sy, qx = x * sx, qy = y * sy;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((qx - ax) * dx + (qy - ay) * dy) / len2)) : 0;
+      return Math.hypot(qx - (ax + t * dx), qy - (ay + t * dy));
+    };
+    let pick = null;
+    let bestD = 10;
+    model.doorways.forEach((dw, i) => {
+      const d = near(dw.a, dw.b);
+      if (d <= bestD) { bestD = d; pick = { kind: 'doorway', id: i }; }
+    });
+    model.dividers.forEach((dv, i) => {
+      const d = near({ x: dv.x1, y: dv.y1 }, { x: dv.x2, y: dv.y2 });
+      if (d <= bestD) { bestD = d; pick = { kind: 'divider', id: i }; }
+    });
+    if (!pick) {
+      const k = SpatialLightColorCard.roomLabelAt(model.geom, x, y, 4);
+      const rid = model.roomOfLabel.get(k);
+      if (rid) pick = { kind: 'room', id: rid };
+      else if (model.dead.some((d) => d.id === k)) pick = { kind: 'dead', id: k };
+      else pick = { kind: 'outside', id: 0 };
+    }
+    return pick;
+  }
+
+  /** A light's name for the inspector: its friendly name, never the marker
+   *  label, which `label_mode: none` legitimately leaves empty. */
+  _roomLightName(id) {
+    const st = this._hass && this._hass.states && this._hass.states[id];
+    const fn = st && st.attributes && st.attributes.friendly_name;
+    return fn || (this._config.label_overrides && this._config.label_overrides[id]) || id;
+  }
+
+  /** The inspector's Rooms panel: a summary, or why the tapped thing is what
+   *  it is. Text only, built from the same model the canvas draws. */
+  _roomsInspectorHtml() {
+    const model = this._roomsOverlayModel();
+    if (!model) return '<div class="wi-hint">Rooms</div>';
+    const esc = (v) => this._escapeHtml(String(v == null ? '' : v));
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const pick = this._roomsResolvedPick(model);
+    const facts = [plural(model.rooms.length, 'room', 'rooms')];
+    if (model.doorways.length) facts.push(`${plural(model.doorways.length, 'doorway', 'doorways')} closed automatically`);
+    // Entries, not segments: a box or polyline divider normalizes into several.
+    const nDiv = new Set(model.dividers.map((d, i) => (d._src != null ? d._src : `s${i}`))).size;
+    if (nDiv) facts.push(plural(nDiv, 'room divider', 'room dividers'));
+    if (model.pockets) facts.push(`${plural(model.pockets, 'pocket', 'pockets')} joined to the room around it`);
+    const emptyDead = model.dead.filter((d) => !d.exempt.length).length;
+    const skipDead = model.dead.length - emptyDead;
+    if (emptyDead) facts.push(`${plural(emptyDead, 'space', 'spaces')} without lights`);
+    if (skipDead) facts.push(`${plural(skipDead, 'space', 'spaces')} with only skipped lights`);
+    if (model.exempt) facts.push(`${plural(model.exempt, 'light', 'lights')} skipped (not affected by group selection)`);
+    if (model.orphans.length) facts.push(`<span class="wi-warn">${plural(model.orphans.length, 'light', 'lights')} in no room</span>`);
+    // One fixed-height box whatever it says, scrolling inside when it has to:
+    // the inspector's height decides the plan's, and tapping from room to
+    // room must not make the plan jump (the rule the inspector already keeps).
+    const row = (title, body) => `<div class="wi-rooms"><div class="wi-title">${title}</div>`
+      + `<div class="wi-rooms-body">${body}</div></div>`;
+    if (!pick) {
+      const orphanNames = model.orphans.slice(0, 4).map((id) => esc(this._roomLightName(id))).join(', ');
+      return row('Rooms', facts.join(' &middot; ')
+        + (model.orphans.length ? `<br>In no room: ${orphanNames}${model.orphans.length > 4 ? ', &hellip;' : ''} &mdash; a room tap never picks these.` : '')
+        + '<br><span class="wi-hint">Tap a room, a doorway or a divider to see why it is there. Tap a wall to make it a door.</span>');
+    }
+    if (pick.kind === 'room') {
+      const r = model.rooms.find((x) => x.id === pick.id);
+      if (!r) return row('Rooms', facts.join(' &middot; '));
+      const areas = new Map();
+      let noArea = 0;
+      for (const id of r.selectable) {
+        const a = this._entityAreaName(id);
+        if (a) areas.set(a, (areas.get(a) || 0) + 1);
+        else noArea++;
+      }
+      const areaText = [...areas.entries()].sort((a, b) => b[1] - a[1]).map(([a, n]) => `${esc(a)} ${n}`)
+        .concat(noArea ? [`no area ${noArea}`] : []).join(', ');
+      const parts = [`A tap selects ${plural(r.selectable.length, 'light', 'lights')}. Home Assistant areas: ${areaText || 'none'}.`];
+      // Lights with no area say nothing about where a room ends; only two
+      // real areas sharing one space suggest it is two rooms.
+      if (areas.size > 1) parts.push('If you think of this as more than one room, split it with a line under <code>room_dividers</code> in YAML.');
+      const ex = r.exempt.filter((id) => !id.startsWith('binary_sensor.'));
+      if (ex.length) parts.push(`Skipped, as not affected by group selection: ${ex.map((id) => esc(this._roomLightName(id))).join(', ')}.`);
+      if (r.labels.length > 1) parts.push(`Includes ${plural(r.labels.length - 1, 'walled pocket', 'walled pockets')} with no lights of its own, so tapping there selects this room too.`);
+      return row(`${esc(this._roomName(r))} &middot; ${plural(r.selectable.length, 'light', 'lights')}`, parts.join('<br>'));
+    }
+    if (pick.kind === 'doorway') {
+      return row('Doorway &middot; closed for rooms',
+        'Two wall ends face each other across this gap, so it is closed when working out rooms, and the rooms on either side stay separate. '
+        + 'Light still passes through it, and nothing is drawn on the dashboard.'
+        + '<br><span class="wi-hint"><code>room_auto_doorways: false</code> turns this off; drawing a short wall across the gap makes it permanent.</span>');
+    }
+    if (pick.kind === 'divider') {
+      const dv = model.dividers[pick.id];
+      return row(`Room divider ${(dv && dv._src != null ? dv._src : pick.id) + 1}`,
+        'Bounds rooms only: it casts no shadow and is never drawn on the dashboard. Edit it under <code>room_dividers</code> in YAML.');
+    }
+    if (pick.kind === 'dead') {
+      const d = model.dead.find((x) => x.id === pick.id);
+      if (d && d.exempt.length) {
+        return row('Not a room',
+          `The only lights here are not affected by group selection (${d.exempt.map((id) => esc(this._roomLightName(id))).join(', ')}), `
+          + 'so a room tap has nothing to take. A tap here clears the selection, like empty floor.');
+      }
+      return row('No lights here',
+        'This walled space has no lights of its own, so it is not a room. A tap here clears the selection, like empty floor.');
+    }
+    return row('Outside', 'Not enclosed by walls. A tap here clears the selection, like empty floor.');
   }
 
   /**
@@ -14274,7 +14738,9 @@ class SpatialLightColorCard extends HTMLElement {
     const w = (typeof idx === 'number') ? walls[idx] : null;
 
     if (!w) {
-      host.innerHTML = '<div class="wi-hint">Tap a wall to make it a door</div>';
+      host.innerHTML = this._roomsOverlayOn()
+        ? this._roomsInspectorHtml()
+        : '<div class="wi-hint">Tap a wall to make it a door</div>';
       return;
     }
 
@@ -14815,6 +15281,9 @@ class SpatialLightColorCard extends HTMLElement {
         const hitNow = st.overWall != null ? { index: st.overWall } : null;
         this._commitWalls(null);
         this._selectWall(hitNow ? hitNow.index : null);
+        // With the Rooms overlay up, a tap that found no wall asks about the
+        // room, doorway or divider under it instead of doing nothing.
+        if (!hitNow && this._roomsOverlayOn() && st.tapAt) this._pickRoomAt(st.tapAt.x, st.tapAt.y);
         e.preventDefault();
         return true;
       }

@@ -1823,6 +1823,79 @@ something already on the plan selects it rather than doing nothing visible) and
 `wallsUntouched`. `all(only)` takes a slice, because the full set overruns a
 single browser call.
 
+### 8c-ii. The Rooms overlay
+
+**Room tap shipped (v1.53.0) with no way to SEE the rooms in the editor**, which the approved
+mockup had and the release left out; asked for straight away ("how do I see the zones/rooms in the
+editor"). A **Rooms** toggle in the full-size editor's header, present only when `room_tap` is on.
+
+**Its state is static** -- `_roomsOverlay` and `_roomsOverlayPick` -- for the reason every other
+editor selection is: each committed wall replaces the preview card. Measured: draw a wall across the
+Patio, the card is replaced, the overlay is still up and reads `60 walls · 12 rooms`.
+
+**It shows the rooms as they are NOW**, which is the one way it deliberately differs from the
+dashboard: `_roomsOverlayModel` reads `_wallList()` (draft walls included) where `_roomModel` reads
+only the saved ones, so you can watch a fix take effect. Everything else is shared -- the same static
+model, the same `_roomLights()` list (extracted from `_roomModel` so the two cannot disagree about
+membership), the same aspect, dividers and doorway flag. Mid-stroke the walls change every frame and
+a re-cut costs ~15ms, so the previous model is kept while `_wallDrawState` is live; outlines are cached
+by label set, so a light drag (which re-runs membership, ~6ms) re-traces only a room whose shape
+changed. Draw cost measured at ~1.2ms.
+
+**The model hands doorways out as `[x, y]` pairs**, and the first version read them as `{x, y}`:
+every doorway drew as nothing and hit-tested as NaN, so a tap on one read "Outside". The model object
+converts them once.
+
+What is drawn, under the light handles: each room filled in its own hue (golden-angle spacing, so
+neighbours never come out as near-twins), dead spaces hatched, implied doorways dashed in the
+selection colour, dividers dashed white, and a red dashed ring round any selectable light no room
+holds. Names go ABOVE the handles (`_drawRoomsOverlayLabels`), because in Walls mode the handles are
+reference points and a name half under one cannot be read. A name sits at `roomAnchors`: the cell of
+the room's own label farthest from anything else, by a two-pass city-block chamfer (the cells are
+square in real space).
+
+**A tap in Walls mode that finds no wall asks about the room** (`_pickRoomAt`): a doorway or divider
+within 10 screen px first, else the room, the light-less space or the outside under the point.
+Selecting a wall clears the room pick and vice versa; a tap on a wall still selects the wall, so
+nothing the wall editor did before has changed.
+
+**The tap is resolved at the RAW press point** (`_wallDrawState.tapAt`), never at the stroke's start.
+`_wallStartPoint` latches the start onto a corner up to 15px away, which Alt does not undo, while the
+wall hit test used the raw point -- so a tap 10-15px from a corner missed the wall and was then
+resolved ON the corner: across the wall in the next room, or on a doorway's end (review finding,
+measured: a tap inside Hotbox reported Kitchen). The harness had missed it because its taps carried
+Alt at 5x zoom; `overlayRawTapPoint` taps without Alt at 1x.
+
+**The pick is a PLACE, not an id.** `_roomsOverlayPick` holds a plan-percent point, and
+`_roomsResolvedPick(model)` classifies it against whichever model is current, cached on that model.
+Labels are flood-fill numbers that renumber on any wall edit, doorways and dividers are list indices,
+and the pick is static across card replacement -- so a stored id went on describing whichever room
+inherited the number (measured: Kitchen's label went 4 -> 3 after deleting the Patio's outer wall,
+and the panel read WorkShop). Asking again at the same spot describes what is there now.
+
+The Rooms toggle rebuilds the inspector only when its panel depends on the overlay; a selected
+wall's panel does not, and rebuilding it dropped an "It's a door" tick that had no entity yet. In
+Lights mode the names are drawn UNDER the handles and the pending-add ghost, since those are what you
+drag there. Dividers are counted and numbered by their `room_dividers` ENTRY (`_src`), not by
+normalized segment -- a polyline divider is several segments. A dead space that holds only exempt
+lights is "Not a room" with those lights named, not "No lights here", and they count as skipped.
+
+**The inspector box is FIXED-HEIGHT** (`.wi-rooms`, 59px, scrolling inside), and that is the §8c rule
+again, found by measurement: the first version let the summary set the height, the summary is three
+lines in a narrow dialog, `_sizeWallEditor` took it out of the stage, and the stage went from 43px to
+3px tall. At a 1280x800 window the stage measures 293px in the summary, room and doorway states alike.
+
+Names in the inspector come from `friendly_name`, never `_generateLabel` -- `label_mode: none`
+legitimately makes that empty, which printed "Skipped: , ." on the owner's own config. A room only
+suggests a divider when it holds two REAL areas; lights with no area say nothing about where a room
+ends. Every interpolated value goes through `_escapeHtml`.
+
+`.harness/rooms.html` (local only) pins it: `overlayToggle` (the summary counts on the real plan),
+`overlayPick` (kitchen, salon, outside, doorway, divider -- zoomed in first, because in a narrow pane
+every floor point is within 10px of a wall), `overlaySurvivesRebuild`, `overlayLightsMode`,
+`overlayAbsentWithoutRoomTap`, `overlayPaints`, and one per review finding: `overlayRawTapPoint`, `overlayPickFollowsEdits`, `overlayToggleKeepsDoorTick`, `overlayDividerEntries` and `overlayDeadWithExempt` (share of pixels changed, not total brightness --
+a translucent tint barely moves the sum -- plus the stage height across taps).
+
 **List selection highlights the plan.** The editor's `toggleExpand` broadcasts `spatial-card-highlight-entity`; the card honours it only inside the editor preview and toggles `.light.editor-highlight` (gold, deliberately not the selection colour). `_applyEditorHighlight` re-runs after every `_renderAll`, since that rebuilds the markers.
 
 **Wall inspector.** A tap on a wall in the wall editor selects it (`_selectWall`) and `_syncWallInspector` populates a panel imperatively -- NOT through `_renderAll`, which would destroy and recreate the open `<dialog>` on every selection. The tap gesture was previously wasted: a sub-threshold stroke was discarded and nothing happened, so `_wallDrawState.overWall` records what the press landed on and pointerup selects it. The selection is mirrored onto the static `_wallEditorSelection` because HA replaces the preview card after every config change -- without that, ticking "it's a door" deselected the wall before an entity could be chosen. `_mountWallEntityPicker` uses `ha-entity-picker` when HA has upgraded it (always true, since the wall editor only opens from the card editor) and falls back to a text field.

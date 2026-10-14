@@ -45,7 +45,7 @@ it, and an open door lets it through.
 | **[Light diffusion](#light-diffusion-light_field)** | Every light paints onto one shared surface, so overlapping pools genuinely mix instead of stacking. Red over blue gives magenta, not two circles. |
 | **[Walls and shadows](#walls-and-shadows)** | Draw walls on the plan and light stops at them, with exact shadows solved by ray-casting &mdash; it wraps around a wall's end precisely where geometry says it should. |
 | **[Doors](#doors--walls-that-open)** | A wall can be tied to a `binary_sensor`, so it blocks light only while the door is shut. |
-| **[The full-size editor](#the-full-size-editor)** | Draw walls, and place, add and remove lights on a near-fullscreen plan instead of a 250px preview pane. |
+| **[The full-size editor](#the-full-size-editor)** | Draw walls, place, add and remove lights, and see the rooms a tap selects, on a near-fullscreen plan instead of a 250px preview pane. |
 | **[Rotating the plan](#rotating-the-plan)** | Turn the whole layout 90/180/270&deg;: lights, zones, walls, image and emission directions together. Non-destructive &mdash; nothing you placed is rewritten. |
 | **[Colour bars](#colour-bars)** | The colour wheel is replaced by four bars: a vertical brightness bar beside colour, saturation and temperature. Easier to aim than a 128px circle. |
 | **[Only the bars that apply](#only-the-controls-a-light-actually-has)** | A bulb that only does white does not get a hue bar, and one that only switches gets an Off &#124; On control instead. |
@@ -744,6 +744,21 @@ so it needs no extra setup if you already traced the plan in the
   stay out**, exactly like a drag-select.
 - **Names come from Home Assistant areas**, the most common area among the room's
   lights. They are only ever a label; the walls decide what is in the room.
+
+**See exactly what the card found.** Open the [full-size editor](#the-full-size-editor)
+and press **Rooms** in its header. Every room gets its own colour, with its name and
+how many lights a tap selects. Then:
+
+- the doorways it closed on its own show as dashed lines in your band colour;
+- your dividers show as dashed white lines;
+- spaces with no lights are hatched;
+- a light that no room will ever pick up gets a red dashed ring.
+
+Tap a room, a doorway or a divider (in Walls mode) and the panel under the plan
+tells you why it is there: which areas a room holds, which lights it skips, or
+that a doorway only closes for rooms. It updates as you draw, so you can fix a
+leaky wall and watch two rooms come apart. Voila! The button only appears once
+`room_tap` is on.
 
 **An open-plan space you think of as two rooms?** Split it with a divider. It is a
 wall that only exists for rooms: it casts no shadow and is never drawn.
