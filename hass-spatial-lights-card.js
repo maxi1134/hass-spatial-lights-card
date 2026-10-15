@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.55.0 (fork-maxi1134)';
+  static BUILD = 'v1.56.0 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -900,6 +900,7 @@ class SpatialLightColorCard extends HTMLElement {
     /** Selection & interactions */
     this._selectedLights = new Set();
     this._cfSide = null;                // side of the selection the floating controls last took
+    this._cfTier = null;                // which box that side was cleared against (room selections)
     this._cfAt = null;                  // last '<x>,<y>' written by _placeFloatingControls
     this._cfKey = null;                 // selection+geometry the free-axis offset below was computed for
     this._cfFreeY = null;               // held free-axis offset for the sideways placements
@@ -3979,6 +3980,9 @@ class SpatialLightColorCard extends HTMLElement {
     // nudge, undo, redo, Rearrange -- and none of them reached placement, so
     // the markers slid to their new places and the panel stayed behind until
     // some unrelated state change happened to run updateLights.
+    // Rooms first: the panel clears the selected room, and an undo or a nudge
+    // that moved a light can have changed what the room holds.
+    this._syncRooms();
     this._placeFloatingControls();
   }
 
@@ -4502,6 +4506,7 @@ class SpatialLightColorCard extends HTMLElement {
     // visible in the editor, which re-renders on every keystroke.
     this._cfAt = null;
     this._cfSide = null;
+    this._cfTier = null;
     this._cfKey = null;
     this._cfFreeY = null;
     // The fit lives in an inline style on a element that has just been
@@ -4609,6 +4614,10 @@ class SpatialLightColorCard extends HTMLElement {
       // placements are measured against a canvas box that just changed, and
       // that entry point routes a hand-placed one to _applyFloatingPos on its
       // own.
+      // Rooms are cut in the canvas' shape when nothing else gives one, and
+      // this is the one place a detached first render gets its real box --
+      // so they are re-cut BEFORE the panel is placed against them.
+      this._syncRooms();
       this._placeFloatingControls();
       // Leading + trailing debounce. The leading call keeps the initial
       // layout flush instant (this observer is what renders walls on first
@@ -4616,9 +4625,6 @@ class SpatialLightColorCard extends HTMLElement {
       // changes miss every mask cache, so intermediate frames coalesce
       // into one trailing recompute at the settled size.
       const now = Date.now();
-      // Rooms are cut in the canvas' shape when nothing else gives one, and
-      // this is the one place a detached first render gets its real box.
-      this._syncRooms();
       if (!this._glowResizeLast || now - this._glowResizeLast > 250) {
         this._glowResizeLast = now;
         this._updateAllGlows();
@@ -4684,6 +4690,7 @@ class SpatialLightColorCard extends HTMLElement {
     // The canvas can be a different size under its new parent: a hand-placed
     // box is stored as fractions of it, and an automatic one was measured
     // against it.
+    this._syncRooms();
     this._placeFloatingControls();
     this._updateAllGlows();
     this._requestLightFieldDraw();
@@ -9792,6 +9799,47 @@ class SpatialLightColorCard extends HTMLElement {
   }
 
   /**
+   * The box the floating controls must clear when the selection is whole
+   * rooms -- exactly the case where their outline is drawn -- in host px, or
+   * null. The union of the covered rooms' outline bounds, each measured once
+   * per model in plan percent and turned to the screen by its two corners (a
+   * quarter turn maps an axis-aligned box onto one).
+   */
+  _roomPlacementBox(hb) {
+    const model = this._roomModel();
+    if (!model) return null;
+    const cov = this._coveredRooms(model);
+    if (!cov.rooms.length) return null;
+    const outlines = this._roomOutlines(model);
+    if (!model.bounds) model.bounds = new Map();
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const room of cov.rooms) {
+      let bb = model.bounds.get(room.id);
+      if (!bb) {
+        bb = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        for (const loop of outlines.get(room.id) || []) {
+          for (const [x, y] of loop) {
+            if (x < bb.x0) bb.x0 = x;
+            if (x > bb.x1) bb.x1 = x;
+            if (y < bb.y0) bb.y0 = y;
+            if (y > bb.y1) bb.y1 = y;
+          }
+        }
+        model.bounds.set(room.id, bb);
+      }
+      if (!(bb.x1 >= bb.x0)) continue;
+      const a = this._toScreenPct(bb.x0, bb.y0);
+      const c = this._toScreenPct(bb.x1, bb.y1);
+      l = Math.min(l, Math.min(a.x, c.x) / 100 * hb.width);
+      r = Math.max(r, Math.max(a.x, c.x) / 100 * hb.width);
+      t = Math.min(t, Math.min(a.y, c.y) / 100 * hb.height);
+      b = Math.max(b, Math.max(a.y, c.y) / 100 * hb.height);
+    }
+    if (!(r > l) || !(b > t)) return null;
+    return { box: { l, t, r, b }, key: cov.rooms.map((rm) => rm.id).join(',') };
+  }
+
+  /**
    * "The selection is this room": all of its lights, and nothing outside it
    * but its own exempt ones (a UV lamp you long-pressed in). The SAME test the
    * outline draws from, so a room shown as the selection clears on a tap.
@@ -11841,6 +11889,7 @@ class SpatialLightColorCard extends HTMLElement {
   _clearAutoPlacement(el) {
     this._cfAt = null;
     this._cfSide = null;
+    this._cfTier = null;
     this._cfKey = null;
     this._cfFreeY = null;
     el.classList.remove('auto-placed');
@@ -12043,6 +12092,7 @@ class SpatialLightColorCard extends HTMLElement {
       // because `_cfKey` was unchanged and never invalidated it. Measured at
       // 31px off on a 1400x700 plan.
       this._cfSide = null;
+      this._cfTier = null;
       this._cfKey = null;
       this._cfFreeY = null;
       if (el.classList.contains('auto-placed')) this._clearAutoPlacement(el);
@@ -12074,6 +12124,23 @@ class SpatialLightColorCard extends HTMLElement {
     const hard = { l, t, r, b };
     const soft = { l: l - LABEL, t: t - LABEL, r: r + LABEL, b: b + LABEL };
     const mx = (l + r) / 2, my = (t + b) / 2;
+    // Whole rooms selected (the outline is showing): clear the ROOM, not just
+    // its lights. A room's lights sit well inside its walls, so a panel parked
+    // GAP px past the markers still landed on the very floor you just tapped,
+    // covering the outline that says what is selected. The room's boxes go
+    // first -- below, above, then beside it -- and the marker boxes stay as the
+    // fallback, so a room too big to clear still leaves its lights uncovered.
+    // Both room boxes are UNIONS with the marker boxes: the outline is traced
+    // inside the walls, and a sconce on a wall belongs to the room while its
+    // marker pokes out past the outline -- a bare room box let the panel land
+    // on it, which v1.55.0 never did.
+    const roomPlace = this._config.room_tap ? this._roomPlacementBox(hb) : null;
+    let boxes = [soft, hard];
+    if (roomPlace) {
+      const rb = roomPlace.box;
+      const uni = (a, c) => ({ l: Math.min(a.l, c.l), t: Math.min(a.t, c.t), r: Math.max(a.r, c.r), b: Math.max(a.b, c.b) });
+      boxes = [uni(rb, soft), uni(rb, hard), soft, hard];
+    }
 
 
     // The escape axis is what the user asked for -- the panel sits GAP px
@@ -12092,8 +12159,9 @@ class SpatialLightColorCard extends HTMLElement {
     // their free axis uses the panel WIDTH, which is min(420px, 100% - 20px)
     // and moves only when the canvas does -- which is in the key below.
     const selKey = ids.slice().sort().join(',') + '|' + this._planRotation()
-      + '|' + Math.round(hb.width) + 'x' + Math.round(hb.height);
-    if (selKey !== this._cfKey) { this._cfKey = selKey; this._cfFreeY = null; }
+      + '|' + Math.round(hb.width) + 'x' + Math.round(hb.height)
+      + (roomPlace ? '|rooms:' + roomPlace.key : '');
+    if (selKey !== this._cfKey) { this._cfKey = selKey; this._cfFreeY = null; this._cfTier = null; }
     const freeY = () => (this._cfFreeY === null ? (this._cfFreeY = my - ph / 2) : this._cfFreeY);
 
     const pw = eb.width, ph = eb.height;
@@ -12145,7 +12213,27 @@ class SpatialLightColorCard extends HTMLElement {
     const SIDES = ['below', 'above', 'right', 'left'];
     const prev = this._cfSide;
     let chosen = null;
-    for (const box of [soft, hard]) {
+    if (roomPlace) {
+      // With four boxes the incumbent must be a (side, BOX) pair. Kept as a
+      // side alone -- as the two-box path below does -- it fitted "past the
+      // room" on one tick and "past the lights" on the next whenever the panel
+      // height flapped (a lamp anywhere adding a preset swatch), and the panel
+      // jumped ~85px back and forth on every unrelated toggle. So: the
+      // incumbent stays at ITS box while it still fits there; anything else,
+      // including a better box, has to win a fresh search with SLOP to spare.
+      // It can settle once on a real change, never oscillate.
+      const tier = this._cfTier;
+      if (prev && tier != null && tier < boxes.length) {
+        const keep = place(prev, boxes[tier]);
+        if (keep.slack >= 0) chosen = { side: prev, tier, ...keep };
+      }
+      for (let i = 0; !chosen && i < boxes.length; i++) {
+        for (const side of SIDES) {
+          const cand = place(side, boxes[i]);
+          if (cand.slack >= SLOP) { chosen = { side, tier: i, ...cand }; break; }
+        }
+      }
+    } else for (const box of boxes) {
       // Hysteresis. The incumbent only has to still fit; anything else has to
       // fit with SLOP to spare. Without it a one-pixel change in the height
       // of the panel -- a preset appearing, a font settling -- could send it
@@ -12168,6 +12256,9 @@ class SpatialLightColorCard extends HTMLElement {
       // with the most room and pin the panel flush to THAT edge -- instead of
       // retreating to an end of the plan the selection is nowhere near. The
       // free axis still tracks the selection, so it stays alongside it.
+      // Against the MARKERS, rooms or not, exactly as before rooms existed: the
+      // side with the least room covered can be the one with the most LIGHTS
+      // covered, and the lights are what the panel must never sit on.
       for (const side of SIDES) {
         const cand = { side, ...place(side, hard) };
         if (!chosen) { chosen = cand; continue; }
@@ -12188,6 +12279,7 @@ class SpatialLightColorCard extends HTMLElement {
     const x = clampX(chosen.x);
     const y = clampY(chosen.y);
     this._cfSide = chosen.side;
+    this._cfTier = chosen.tier != null ? chosen.tier : null;
     const at = x + ',' + y;
     // Only touch the DOM when the answer changed. The class check is what
     // catches a re-render, a drag and the two resets, all of which clobber

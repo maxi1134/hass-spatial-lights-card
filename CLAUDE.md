@@ -541,6 +541,53 @@ re-adding a class does not replay an animation. Pending lights get `.room-pendin
 OUTSIDE the marker, lifted out of the has-selection dim; the `.off` variant needs its own selector to
 out-specify the dim's). The canvas gets `room-armed` (`copy` cursor) and `room-hover` (pointer).
 
+**The floating panel clears the ROOM, not just its lights** (`_roomPlacementBox`). Reported as "the
+color selection modal is overlaid on the room when we select one": placement cleared the bounding box
+of the selected MARKERS, and a room's lights sit well inside its walls, so a panel GAP px past them
+still landed on the floor that was just tapped, over the outline that says what is selected. When the
+selection is exactly whole rooms (`_coveredRooms` non-empty -- the same test the outline draws from),
+`_placeFloatingControls` tries `[room + label band, room, markers + labels, markers]` instead of
+`[markers + labels, markers]`, centres on the room, keys `_cfKey` on the room ids, and measures the
+fits-nowhere fallback against the room. The room's bounds are cached per model in plan percent and
+turned to the screen by two corners (a quarter turn maps an axis-aligned box onto one). Gated on
+`room_tap`, which is also what keeps `.harness/cf-jitter.test.js`'s stub (no `room_tap`) on the old path.
+
+Measured on the owner's plan with the probe reading the panel's TARGET (`--cf-x/--cf-y`) -- the rect
+lies mid-transition in a hidden pane, which first made v1.55.0 look far worse than it was. Wide card
+(1100x265, panel 420x205): v1.55.0 covered Kitchen (~5200 px^2) and Bedroom (~1900); now all 8 rooms
+0, beside the room since nothing fits above or below a room spanning most of a 265px plan. The
+owner's tablet layout (`plan_rotation: 270`, 520px wide): v1.55.0 covered Kitchen ~41000, Bedroom
+~20000, WorkShop ~9600, Hotbox ~1800; now all 8 are 0 with the panel BELOW (above for the bottom
+room). Without `room_tap`, 33 placements over three widths are byte-identical to v1.55.0.
+`.harness/rooms.html`: `panelClearsRoomWide`, `panelClearsRoomTall` (both also assert no selected
+MARKER is covered), `panelLightSelectionUnchanged`.
+
+**The incumbent is a (side, BOX) pair on the room path** (`_cfTier`). Review reproduced the first
+version against the extracted method: kept as a side alone, the incumbent fitted "past the room" on
+one tick and "past the lights" on the next whenever the panel height flapped (a lamp anywhere adding a
+preset swatch -- the exact flap `cf-jitter.test.js` uses), so the panel jumped ~85px back and forth on
+every unrelated toggle; and a fresh selection could jump 120px on its SECOND identical tick (placed at
+a later box for lack of SLOP, then promoted because the incumbent only needs slack >= 0). Now the
+incumbent stays at its own box while it fits there, and anything else -- a better box included -- must
+win a fresh search with SLOP: it can settle once on a real change, never oscillate. `_cfTier` resets
+with `_cfSide` at every site and whenever `_cfKey` changes. The two-box path without rooms keeps the
+old per-side loop, byte-identical. `cf-jitter.test.js` gained the three room cases; forcing the room
+path back onto the side-only loop fails two of them.
+
+**Both room boxes are UNIONS with the marker boxes** -- `[room + soft, room + hard, soft, hard]` -- because
+the outline is traced inside the walls and a sconce ON a wall belongs to the room while its marker pokes
+past the outline; a bare room box let the panel land on it, which v1.55.0 never did. The fits-nowhere
+fallback and the centring stay on the MARKERS, exactly as before rooms: the side covering the least
+room can be the side covering the most lights. `_smoothApplyPositions`, `_repaintCanvasLayers` and the
+canvas ResizeObserver call `_syncRooms()` BEFORE placing, so the panel is never placed against a model
+the outline has already moved past.
+
+**A hidden pane never delivers a `<dialog>`'s `close` event**, so in the harness Done closes the dialog
+but the card stays in wall mode and its statics (wall selection, room pick) leak into the next probe --
+measured identically on v1.55.0. `rooms.html`'s `closeEditor` finishes the exit itself when that
+happens; editor probes also need a desktop-sized `resize_window` (1280x800+), or every floor tap lands
+within 10px of a wall.
+
 **No names on the plan.** The name lives only in the floating panel's grip row (`.cf-room`, absolute,
 `aria-hidden`; the announcer says it instead). From HA areas: `hass.entities[id].area_id`, else the
 device's; the commonest, plus a second when it holds a third or more ("server + Workstation"). Names

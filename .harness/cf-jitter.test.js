@@ -144,5 +144,44 @@ for (const [name, px, py, side] of [['mid-left', 15, 50, 'right'], ['mid-right',
   eq('a canvas resize re-centres rather than holding a stale offset', at(c) !== before, true);
 }
 
+// --- Whole rooms selected: the panel clears the ROOM, from a box chain of
+//     [room+labels, room+markers, markers+labels, markers]. The incumbent has to
+//     be a (side, box) pair, or a flapping panel height sends it back and forth
+//     between "past the room" and "past the lights". Both cases below are the
+//     ones adversarial review reproduced against the first version. ---
+function roomStub(W, H, ph, roomBox) {
+  const c = stub(W, H, 420, ph);
+  c._config.room_tap = true;
+  c._roomPlacementBox = () => ({ box: roomBox, key: '7' });
+  return c;
+}
+{
+  // Room {100,10,600,200}, lights well inside it at y=60px, a lamp elsewhere
+  // flapping the panel between 321 and 353: once settled, ONE position.
+  const c = roomStub(900, 563, 321, { l: 100, t: 10, r: 600, b: 200 });
+  sel(c, [['light.a', 30, 60 / 563 * 100], ['light.b', 50, 60 / 563 * 100]]);
+  const ys = [];
+  for (const ph of FLAP) { c.ph = ph; c._placeFloatingControls(); ys.push(at(c)); }
+  eq('room selection: no oscillation once settled (ticks 2..n identical)', new Set(ys.slice(1)).size, 1);
+  eq('room selection: at most one settle move', new Set(ys).size <= 2, true);
+}
+{
+  // A fresh selection must not jump on its SECOND tick with identical inputs.
+  const c = roomStub(1000, 600, 250, { l: 200, t: 20, r: 700, b: 325 });
+  sel(c, [['light.a', 40, 25], ['light.b', 50, 25]]);
+  c._placeFloatingControls(); const t1 = at(c);
+  c._placeFloatingControls(); const t2 = at(c);
+  c._placeFloatingControls(); const t3 = at(c);
+  eq('room selection: identical ticks do not move the panel', [t1 === t2, t2 === t3], [true, true]);
+}
+{
+  // When the room fits below with room to spare, the panel goes BELOW THE ROOM,
+  // not just below the lights.
+  const c = roomStub(900, 900, 250, { l: 100, t: 10, r: 600, b: 400 });
+  sel(c, [['light.a', 30, 10], ['light.b', 50, 10]]);
+  c._placeFloatingControls();
+  eq("room selection: 'below' clears the room's bottom edge", [c._cfSide, parseInt(c.styles['--cf-y'], 10) >= 400], ['below', true]);
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall floating-placement stability assertions pass against shipped code');
 process.exit(fails ? 1 : 0);

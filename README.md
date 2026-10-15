@@ -788,9 +788,15 @@ room_dividers:
   - {x1: 82.57, y1: 19.23, x2: 82.57, y2: 32.14}   # Hallway | Entrance
 ```
 
-The overlaid controls sit on part of the plan, so a room underneath them cannot be
-tapped until they move &mdash; they follow the selection, so picking another room
-usually clears the way, and you can always [drag them](#overlaid-controls-that-get-out-of-the-way).
+**The controls stay off the room you picked.** The overlaid colour panel sits just
+below the room, or above it, and only goes beside it when the plan is too short for
+either &mdash; never on the floor you just tapped, so the outline that says what is
+selected stays in view. If a room is simply bigger than the space around it, the
+panel still keeps clear of its lights.
+
+The panel covers part of the plan, so a room underneath it cannot be tapped until
+it moves &mdash; it follows the selection, so picking another room usually clears the
+way, and you can always [drag it](#overlaid-controls-that-get-out-of-the-way).
 
 Selecting a whole room any other way, with a lasso or Ctrl+A, gets the outline
 too. Select a stray light on top and the outlines go, because the outline would
