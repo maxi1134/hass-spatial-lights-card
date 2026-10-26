@@ -9,6 +9,7 @@
 **Key concepts:**
 - `setConfig(config)` — Lovelace contract; normalizes config and re-renders if `hass` is set.
 - `set hass(hass)` — Lovelace contract; diffs `prev.states` vs `next.states` against the config's entity set (`_isRelevantHassChange`) and runs `updateLights()` only when something relevant changed. First call goes through `_renderAll()`.
+- **Never enumerate `hass.states` in the card** (`Object.keys/values/entries`, `for…in`; the editor may). Kiosk Assistant's "Filter dashboard updates" treats a card that does as reading every entity and stops filtering the whole view, so a wall tablet then processes every state change in the house. Walk `hass.entities` (the display registry) and look ids up in `hass.states` instead, as `_loadZigbeeGroups` and `findAdaptiveSwitches` do.
 - `_renderAll()` — destructive: writes the whole `shadowRoot.innerHTML`, caches element refs, calls `_attachEventListeners()`. Calls `_cancelActiveInteractions()` first so an in-flight gesture commits its pending value before the DOM is wiped.
 - `updateLights()` — non-destructive: walks each `.light` and toggles classes / sets styles based on current state (color, on/off, selected, unavailable). Drives `_updateControlValues`, `_refreshColorPresets`, `_updateAllGlows`, `_repositionLabels`.
 

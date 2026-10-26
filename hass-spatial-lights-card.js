@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.56.0 (fork-maxi1134)';
+  static BUILD = 'v1.56.1 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4356,10 +4356,17 @@ class SpatialLightColorCard extends HTMLElement {
       // Candidates: mqtt-platform light.* entities. `hass.entities` ships with
       // the display registry which exposes `platform`; this filters out non-
       // Z2M lights (Hue, ZHA, etc.) before the heavier per-entity fetch.
-      const candidates = Object.keys(states).filter(id => {
+      //
+      // Walk the REGISTRY and only look each id up in hass.states -- never
+      // enumerate hass.states. Kiosk Assistant's "Filter dashboard updates"
+      // treats a card that enumerates it as reading every entity and stops
+      // filtering the whole view, so a wall tablet showing this card then
+      // processed every state change in the house (7,690 entities, ~440
+      // updates a minute against the 2 this card's lights needed).
+      const candidates = Object.keys(ents).filter(id => {
         if (!id.startsWith('light.')) return false;
         const reg = ents[id];
-        return reg && reg.platform === 'mqtt';
+        return reg && reg.platform === 'mqtt' && states[id] !== undefined;
       });
 
       const groups = new Map();
@@ -11194,10 +11201,16 @@ class SpatialLightColorCard extends HTMLElement {
       'switch.adaptive_lighting_adapt_color_',
     ];
     const found = [];
-    for (const id of Object.keys(states)) {
+    // Registry first, for the same reason as _loadZigbeeGroups: enumerating
+    // hass.states switches off Kiosk Assistant's update filter. The states
+    // walk is only the fallback for a frontend without `hass.entities`.
+    const ids = hass.entities ? Object.keys(hass.entities) : Object.keys(states);
+    for (const id of ids) {
       if (!id.startsWith('switch.')) continue;
       if (subPrefixes.some(p => id.startsWith(p))) continue;
-      const conf = states[id].attributes && states[id].attributes.configuration;
+      const st = states[id];
+      if (!st) continue;
+      const conf = st.attributes && st.attributes.configuration;
       // Attribute check catches renamed entities; the name-prefix fallback
       // covers AL versions that don't expose `configuration`.
       if ((conf && Array.isArray(conf.lights)) || id.startsWith('switch.adaptive_lighting_')) {
