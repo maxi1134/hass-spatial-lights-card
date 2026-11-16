@@ -21,6 +21,12 @@ const body = src.slice(src.indexOf('{', s) + 1, e + 2);
 const place = new Function('SpatialLightColorCard', 'return function () {' + body + '\n};')(
   { CF_PLACEMENT: { RING: 6, LABEL: 29, GAP: 12, EDGE: 10, SLOP: 8 } },
 );
+// The SHIPPED reset too: since the deselect fade it owns cancelling the
+// deferred clear, which a hand-written stub would silently not do.
+const cs0 = src.indexOf('  _clearAutoPlacement(el) {');
+if (cs0 < 0) throw new Error('_clearAutoPlacement not found in shipped source');
+const clearAuto = new Function('return function (el) {'
+  + src.slice(src.indexOf('{', cs0) + 1, src.indexOf('\n  }', cs0)) + '\n};')();
 
 let fails = 0;
 const eq = (name, got, want) => {
@@ -64,7 +70,11 @@ function stub(W, H, pw, ph) {
     _toScreenPct: (x, y) => ({ x, y }),          // identity: rotation is covered by rot-math
     _planRotation: () => 0,
     _lightScreenRadius: () => 20,
-    _clearAutoPlacement(n) { this._cfAt = null; n.classList.remove('auto-placed'); },
+    _clearAutoPlacement: clearAuto,
+    // The opacity fade a hiding panel waits out before parking. The browser
+    // reads it from computed style; here it is whatever the case sets.
+    fadeMs: 200,
+    _cfFadeMs() { return this.fadeMs; },
     _placeFloatingControls: place,
   };
   return card;
@@ -183,5 +193,72 @@ function roomStub(W, H, ph, roomBox) {
   eq("room selection: 'below' clears the room's bottom edge", [c._cfSide, parseInt(c.styles['--cf-y'], 10) >= 400], ['below', true]);
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nall floating-placement stability assertions pass against shipped code');
-process.exit(fails ? 1 : 0);
+// --- Deselect: a HIDING panel fades out where it is. Clearing the placement
+//     in the same tick threw the box to its CSS anchor while it was still
+//     fully opaque, so it jumped and faded out somewhere else. ---
+async function deselectFade() {
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const cls = (c) => c._els.controlsFloating.classList;
+  // updateLights toggles .visible BEFORE it places, so the cases do the same.
+  const pick = (c, pts) => { sel(c, pts); cls(c).add('visible'); c._placeFloatingControls(); };
+  const drop = (c, keepVisible) => {
+    c._selectedLights.clear();
+    if (!keepVisible) cls(c).remove('visible');
+    c._placeFloatingControls();
+  };
+  {
+    const c = stub(900, 563, 420, 321); c.fadeMs = 60;
+    pick(c, [['a', 15, 12]]); const placed = at(c);
+    drop(c);
+    eq('deselect while hiding: the same tick keeps the place', [at(c), cls(c).contains('auto-placed')], [placed, true]);
+    c._placeFloatingControls();   // an idle tick mid-fade must not restart or skip the wait
+    await wait(30);
+    eq('deselect while hiding: still in place mid-fade', [at(c), cls(c).contains('auto-placed')], [placed, true]);
+    await wait(120);
+    eq('deselect while hiding: parked once the fade is over',
+      [at(c), cls(c).contains('auto-placed'), c._cfAt], ['undefined/undefined', false, null]);
+  }
+  {
+    const c = stub(900, 563, 420, 321); c.fadeMs = 60;
+    pick(c, [['a', 15, 12]]); const first = at(c);
+    drop(c);
+    await wait(20);
+    pick(c, [['b', 85, 88]]); const second = at(c);
+    await wait(120);
+    eq('a reselect mid-fade cancels the pending clear',
+      [cls(c).contains('auto-placed'), at(c), second !== first, !c._cfClearTimer], [true, second, true, true]);
+  }
+  {
+    // The grip can keep focus through a deselect, and an arrow key on it during
+    // the fade hands the box to the user: `dragged`, its own --cf-x/--cf-y. The
+    // pending clear must not strip those.
+    const c = stub(900, 563, 420, 321); c.fadeMs = 60;
+    pick(c, [['a', 15, 12]]);
+    drop(c);
+    const el = c._els.controlsFloating;
+    el.style.setProperty('--cf-x', '33px'); el.style.setProperty('--cf-y', '44px');
+    cls(c).remove('auto-placed'); cls(c).add('dragged');
+    await wait(120);
+    eq('a hand placement during the fade survives the pending clear', [at(c), cls(c).contains('dragged')], ['33px/44px', true]);
+  }
+  {
+    // always_show_controls / default_entity: the panel stays up, nothing to wait for.
+    const c = stub(900, 563, 420, 321); c.fadeMs = 60;
+    pick(c, [['a', 15, 12]]);
+    drop(c, true);
+    eq('a panel that stays visible is handed back at once',
+      [at(c), cls(c).contains('auto-placed'), !c._cfClearTimer], ['undefined/undefined', false, true]);
+  }
+  {
+    // prefers-reduced-motion zeroes the fade: no fade, no wait.
+    const c = stub(900, 563, 420, 321); c.fadeMs = 0;
+    pick(c, [['a', 15, 12]]);
+    drop(c);
+    eq('no fade to wait for clears at once', [cls(c).contains('auto-placed'), !c._cfClearTimer], [false, true]);
+  }
+}
+
+deselectFade().then(() => {
+  console.log(fails ? `\n${fails} FAILED` : '\nall floating-placement stability assertions pass against shipped code');
+  process.exit(fails ? 1 : 0);
+});

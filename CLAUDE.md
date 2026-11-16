@@ -250,7 +250,10 @@ purely an obstacle. `_syncSelectingClass` toggles `.selecting` off `!!_selection
 removing the class hands it back to the base rule's 200ms fade. The rule sits AFTER
 `.controls-floating.visible` because both are two classes and source order is what
 decides at equal specificity -- the same trap the `selection_color` override fell
-into one release earlier.
+into one release earlier. And, since v1.56.2, after `.auto-placed` and `.cf-snap` too:
+it used to sit above them, so whenever the panel was tracking a selection (an
+additive band, or a band starting while the deselect fade still holds `auto-placed`)
+`.auto-placed`'s transition won and the panel faded for 200ms instead of going at once.
 
 **ONLY the floating panel.** `controls_below` is in FLOW, so hiding it would collapse
 the card's height mid-gesture, which is a worse interruption than the one being
@@ -1165,6 +1168,58 @@ reselect the SAME light, and the held offset placed the panel half the height ch
 measured 31px on a 1400x700 plan -- permanently, because `_cfKey` was unchanged and never invalidated
 it. Reselecting could not fix it; only selecting a different light could. All four memos are now
 cleared on both reset paths and on the idle path, which is what `_renderAll` had always done.
+
+**A deselect fades the panel out WHERE IT IS.** `updateLights` drops `.visible` and then places, and
+the idle path used to call `_clearAutoPlacement` right there -- so `auto-placed` and `--cf-x/--cf-y`
+went in the same task, before the 200ms opacity fade had produced a single frame. The box was thrown
+to its CSS anchor at full opacity and faded out THERE. Measured on a 900x563 plan: [10,143] ->
+[240,280], 268px, at opacity 1, in the deselect's own task; the owner's headless recording showed it
+on every deselect (frames 380->381, 849->850, 1238->1239). Now a panel that is HIDING (`.visible`
+gone, or `.selecting`) keeps both until the fade is over: `_cfClearTimer`, set to `_cfFadeMs(el)` --
+the COMPUTED opacity duration + delay, so a theme's `--transition-base` and reduced motion's 0 are
+honoured, and 0 means clear at once -- plus two frames, because the transition starts at the next
+style flush rather than at the call. It parks at opacity 0. `_cfAt` is deliberately kept while it
+waits: it still describes what is on the element.
+
+Cancelled by a selection arriving first (top of the marks path: the panel moves on from where it
+still is, and a half-faded panel slides like any reselection), by `_clearAutoPlacement` (a clear now
+supersedes a clear waiting for the fade) and by `_renderAll`. The callback clears only an element
+that is still `_els.controlsFloating` AND still `auto-placed`: the grip can keep focus through a
+deselect, an arrow key on it during the fade swaps in `dragged` with its own `--cf-x/--cf-y`, and
+stripping those is the `left: 50%` trap above (a `cf-jitter` case fails without the check). A panel
+that stays up (`always_show_controls`, a `default_entity` with
+no position) has no fade to wait for and is handed back at once -- HEAD and the fix give identical
+traces there.
+
+**A panel nobody can see has nowhere to slide FROM.** Fading in from fully hidden, `.auto-placed`'s
+`left` transition started wherever the box had been parked -- `left: 50%` interpolates to px while
+`top: auto` cannot, so one axis snapped and the other slid -- and the first visible frames were
+mid-slide: 19-20px off target on the harness plan, ~46-50px in the recording. The write block reads
+the computed opacity and, below 0.05, holds `.cf-snap` (opacity transition only, AFTER `.auto-placed`
+in source) for one style flush, then drops it; the flush commits the position, so removing the class
+changes no left/top value and nothing starts. Gated on what is ON SCREEN, not on how the box got
+there, so it also covers the two other ways in: a band ending (the panel was placed while
+`.selecting`) and the hand-placed retire -- `_placeFloatingControls` measures between the retire and
+the write, so a `dragged` panel that faded out with its group used to slide in from the anchor too.
+A panel that is still visible, even half-faded, slides exactly as before.
+
+Measure it with `.harness/cf-fade.html` (`?src=_baseline-head.js` loads a HEAD copy written by
+`git show HEAD:hass-spatial-lights-card.js > .harness/_baseline-head.js`; `compare(name)` runs a probe
+against both in iframes). It shims rAF and DRIVES the panel's CSSTransitions -- `currentTime` set from
+real elapsed time since each was first seen -- because a hidden pane never advances the document
+timeline, so the rect lies and a fade never finishes. `scenario`: deselect holds the rect through the
+whole fade and parks at ~268ms at opacity 0 (HEAD: 268px jump at opacity 1); reselect after the fade
+lands 0px off target with only `opacity` animating (HEAD: 19px, `left` sliding); reselect 90ms into
+the fade (opacity 0.31) cancels the clear and slides on from the old spot. `lassoStart` and
+`retireHidden` cover the other two entries. Placement targets for nine selections are identical to
+HEAD. The same driver -- a `setInterval` seeking `shadowRoot.getAnimations()` of EVERY
+`spatial-light-color-card` in the document, since some probes build their own cards -- is what makes
+`lasso.html#panelStepsAsideBoth` / `#panelNeverStuck` and `controls-place.html#previewLeak` meaningful
+in a hidden pane: without it they read a frozen fade or slide and fail on HEAD and the fix alike. Run
+`controls-place.html` probes in ONE tab at a time: `mount()` clears `localStorage`, which is shared
+per origin, so two tabs running at once flip each other's stored-position assertions. `cf-jitter.test.js` extracts
+the shipped `_clearAutoPlacement` as well now and has five deselect cases; two fail on HEAD (the hold
+itself), and the hand-placement one fails without the `auto-placed` check in the callback.
 
 **The editor preview used to write into the dashboard card's slot.** `_floatingPosKey` hashes the
 entity list and title, and the preview is built from the SAME config, so both hashed to one key.

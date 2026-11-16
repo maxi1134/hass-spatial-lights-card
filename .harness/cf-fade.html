@@ -1,0 +1,182 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Floating panel: deselect fade</title>
+<style>body{margin:0;background:#111;color:#ddd;font:12px system-ui}#host{width:900px}</style>
+</head><body><div id="host"></div>
+<script>
+// Measures what the floating panel does across a DESELECT (it must fade out
+// where it is) and across the RESELECT that follows (it must fade in where it
+// is going, not slide in from its parked anchor).
+//
+// ?src=_baseline-head.js loads the HEAD build for comparison; default is the
+// working copy. rAF is shimmed to a 16ms timer because a hidden pane throttles
+// it to ~1Hz; sampling runs on setTimeout for the same reason. A hidden pane
+// also FREEZES CSS transitions, so every sample records the transitions that
+// are running (`anims`) and the inline target (`--cf-x/--cf-y`) as well as
+// the rect -- the rect alone lies mid-transition there.
+window.requestAnimationFrame=(fn)=>setTimeout(()=>fn(performance.now()),16);
+window.cancelAnimationFrame=(h)=>clearTimeout(h);
+
+class HaIcon extends HTMLElement{}customElements.define('ha-icon',HaIcon);
+class HaCard extends HTMLElement{}customElements.define('ha-card',HaCard);
+class HaSwitch extends HTMLElement{get checked(){return !!this._c}set checked(v){this._c=!!v}}
+customElements.define('ha-switch',HaSwitch);
+
+const NAMES=['kitchen','living','hall','bed_left','bed_right','office','porch','garage'];
+const ids=NAMES.map(n=>'light.'+n);
+const states={};
+ids.forEach(i=>states[i]={entity_id:i,state:'on',attributes:{friendly_name:i.split('.')[1],
+ brightness:255,rgb_color:[255,170,80],color_mode:'rgb',supported_color_modes:['rgb','color_temp'],
+ min_color_temp_kelvin:2000,max_color_temp_kelvin:6500,color_temp_kelvin:3000}});
+const hass={states,entities:{},callService:()=>Promise.resolve(),callWS:()=>Promise.resolve([]),
+ connection:{subscribeMessage:()=>Promise.resolve(()=>{})}};
+const tick=(ms)=>new Promise(r=>setTimeout(r,ms));
+const POS={
+  'light.kitchen':{x:15,y:12}, 'light.living':{x:50,y:12}, 'light.hall':{x:85,y:12},
+  'light.bed_left':{x:15,y:50}, 'light.bed_right':{x:85,y:50},
+  'light.office':{x:15,y:88}, 'light.porch':{x:50,y:88}, 'light.garage':{x:85,y:88},
+};
+const CFG=(over)=>Object.assign({type:'custom:spatial-light-color-card',entities:ids,
+  positions:JSON.parse(JSON.stringify(POS)), aspect_ratio:'16:10',
+  background_image:{url:'floorplan.svg'}, controls_below:false, always_show_controls:false},over||{});
+
+let card;
+const panel=()=>card.shadowRoot.querySelector('.controls-floating');
+const canvas=()=>card.shadowRoot.getElementById('canvas');
+window.mount=async function(over){
+  try{localStorage.clear();}catch(_){}
+  const host=document.getElementById('host'); host.innerHTML='';
+  card=document.createElement('spatial-light-color-card');
+  card.setConfig(CFG(over)); card.hass=hass; host.appendChild(card);
+  await tick(700); window.card=card; return true;
+};
+// A hidden pane never advances the document timeline, so every transition on
+// the panel sits at its start forever. Drive them ourselves: each one runs in
+// real time from the moment it was first seen. Harmless in a visible pane,
+// where it agrees with the timeline to within a sample.
+const seenAt=new WeakMap();
+const drive=()=>{
+  const now=performance.now();
+  for(const a of panel().getAnimations()){
+    if(!seenAt.has(a)) seenAt.set(a,now);
+    try{ a.currentTime=now-seenAt.get(a); }catch(_){}
+  }
+};
+const settle=()=>{ for(const a of panel().getAnimations()){ try{a.finish();}catch(_){} } };
+const snap=(t0)=>{
+  drive();
+  const p=panel(), c=canvas(), pb=p.getBoundingClientRect(), cb=c.getBoundingClientRect();
+  const cs=getComputedStyle(p);
+  return {
+    t:Math.round(performance.now()-t0),
+    rect:[Math.round(pb.left-cb.left),Math.round(pb.top-cb.top),Math.round(pb.right-cb.left),Math.round(pb.bottom-cb.top)],
+    op:Math.round(parseFloat(cs.opacity)*100)/100,
+    cls:['visible','auto-placed','selecting','dragged'].filter(k=>p.classList.contains(k)).join(' '),
+    cf:(p.style.getPropertyValue('--cf-x')||'-')+','+(p.style.getPropertyValue('--cf-y')||'-'),
+    anims:p.getAnimations().map(a=>a.transitionProperty||a.animationName).sort().join(','),
+  };
+};
+// Sample before and after `act`, every 16ms, for `ms` milliseconds.
+async function trace(act, ms){
+  const out=[]; const t0=performance.now();
+  out.push(Object.assign(snap(t0),{tag:'before'}));
+  await act();
+  out.push(Object.assign(snap(t0),{tag:'same-task'}));
+  const end=performance.now()+ms;
+  while(performance.now()<end){ await tick(16); out.push(snap(t0)); }
+  return out;
+}
+const sel=async(list)=>{ card._selectedLights=new Set(list); card.updateLights(); };
+const moved=(a,b)=>a.rect.some((v,i)=>v!==b.rect[i]);
+
+// How far the panel's rect is from where its own --cf target says it goes.
+const offTarget=(s)=>{
+  const [x,y]=s.cf.split(',').map(v=>parseFloat(v));
+  if(!isFinite(x)) return null;
+  return Math.round(Math.hypot(s.rect[0]-x, s.rect[1]-y));
+};
+
+window.scenario=async function(over){
+  await window.mount(over);
+  await sel(['light.kitchen']); await tick(700); settle();
+  const before=snap(performance.now());
+  // 1. Deselect: the panel must not move while it fades out.
+  const out=await trace(()=>sel([]), 420);
+  const moves=out.slice(1).filter((s,i)=>moved(out[i],s)).map(s=>({t:s.t,rect:s.rect,op:s.op,cls:s.cls,cf:s.cf}));
+  // While the panel can still be seen (op>0, or a frozen fade the pane never ran), where did it go?
+  const shownMoves=out.slice(1).filter((s,i)=>moved(out[i],s) && (out[i].op>0));
+  // 2. Reselect elsewhere after the fade: it must appear AT its target, not slide in.
+  const back=await trace(()=>sel(['light.garage']), 260);
+  const firstShown=back.find(s=>s.op>0) || back[1];
+  // 3. Quick reselect mid-fade: the pending clear must be cancelled.
+  await tick(500); settle();
+  await sel(['light.kitchen']); await tick(700); settle();
+  const quick=[];
+  const tq=performance.now();
+  await sel([]); quick.push(Object.assign(snap(tq),{tag:'deselect'}));
+  for(let i=0;i<5;i++){ await tick(16); quick.push(snap(tq)); }
+  await sel(['light.garage']); quick.push(Object.assign(snap(tq),{tag:'reselect'}));
+  for(let i=0;i<14;i++){ await tick(16); quick.push(snap(tq)); }
+  await tick(300); quick.push(Object.assign(snap(tq),{tag:'settled'}));
+  return {
+    hidden:document.hidden, build:card.constructor.BUILD,
+    before:before,
+    deselect:{ sameTask:out[1], movesWhileShown:shownMoves.length, moves, last:out[out.length-1] },
+    reselect:{ sameTask:back[1], firstShown, firstShownOffTarget:offTarget(firstShown),
+      leftTopAnimsAtShow:back[1].anims, last:back[back.length-1] },
+    quick,
+    trace:out.map(s=>`${s.t}ms ${s.rect} op=${s.op} [${s.cls}] cf=${s.cf} anims=${s.anims}`),
+    traceBack:back.map(s=>`${s.t}ms ${s.rect} op=${s.op} [${s.cls}] cf=${s.cf} anims=${s.anims}`),
+  };
+};
+const line=(s)=>`${s.t}ms ${s.rect} op=${s.op} [${s.cls}] anims=${s.anims}`;
+
+// A band starting over an existing selection: .selecting materializes, then
+// the selection is cleared. `.selecting` promises "gone by the time the hand
+// has moved" -- opacity 0 at once, not a 200ms fade.
+window.lassoStart=async function(){
+  await window.mount();
+  await sel(['light.kitchen']); await tick(500); settle();
+  const t0=performance.now(), out=[];
+  card._selectionBox={remove(){}}; card._syncSelectingClass(); await sel([]);
+  out.push(snap(t0));
+  for(let i=0;i<3;i++){ await tick(16); out.push(snap(t0)); }
+  await tick(250); out.push(snap(t0));
+  await sel(['light.garage']); out.push(Object.assign(snap(t0),{tag:'band hits garage'}));
+  card._selectionBox=null; card._syncSelectingClass(); out.push(Object.assign(snap(t0),{tag:'band ends'}));
+  for(let i=0;i<3;i++){ await tick(16); out.push(snap(t0)); }
+  return {goneAtOnce: out[0].op===0, endsOnTarget: offTarget(out[out.length-1])===0,
+    trace: out.map(s=>line(s)+(s.tag?' <- '+s.tag:''))};
+};
+
+// A hand-placed position, faded out with its group and retired by a DIFFERENT
+// group: nobody saw the panel at the dropped spot, so it must not slide in from
+// there.
+window.retireHidden=async function(){
+  await window.mount();
+  await sel(['light.kitchen']); await tick(500); settle();
+  card._saveFloatingPos({fx:0.3,fy:0.3}); card.updateLights(); await tick(50); settle();
+  const dropped=snap(performance.now());
+  await sel([]); await tick(400); settle();
+  const t0=performance.now();
+  await sel(['light.garage']); const first=snap(t0);
+  return {dropped:line(dropped), first:line(first), firstOffTarget:offTarget(first),
+    slides:/left|top/.test(first.anims)};
+};
+
+// Run one probe against HEAD and the working copy, side by side.
+window.compare=async function(name, arg){
+  const run=async(src)=>{
+    const f=document.createElement('iframe');
+    f.style.cssText='width:1000px;height:800px;position:absolute;left:-2000px';
+    f.src='cf-fade.html'+(src?'?src='+src:''); document.body.appendChild(f);
+    await new Promise(r=>f.onload=r); await tick(300);
+    const r=await f.contentWindow[name](arg); r.build=f.contentWindow.card.constructor.BUILD;
+    f.remove(); return r;
+  };
+  return {head:await run('_baseline-head.js'), work:await run('')};
+};
+</script>
+<script>
+const SRC=new URLSearchParams(location.search).get('src')||'../hass-spatial-lights-card.js';
+document.write('<script src="'+SRC+'?v='+Date.now()+'"><\/script>');
+</script>
+</body></html>

@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.56.1 (fork-maxi1134)';
+  static BUILD = 'v1.56.2 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4516,6 +4516,8 @@ class SpatialLightColorCard extends HTMLElement {
     this._cfTier = null;
     this._cfKey = null;
     this._cfFreeY = null;
+    // A clear still waiting on the old element's fade has nothing left to clear.
+    if (this._cfClearTimer) { clearTimeout(this._cfClearTimer); this._cfClearTimer = null; }
     // The fit lives in an inline style on a element that has just been
     // replaced, so the memo describes a box that no longer exists.
     this._cfFitKey = null;
@@ -5508,16 +5510,6 @@ class SpatialLightColorCard extends HTMLElement {
          where the box has least room to spare. */
       .controls-floating.tight { padding-top: 8px; padding-bottom: 8px; gap: 7px; }
       .controls-floating.visible { opacity: 1; pointer-events: auto; }
-      /* Out of the way while a selection is being drawn. AFTER .visible, because
-         both are two classes and at equal specificity source order is what
-         decides -- the same trap the selection_color override fell into.
-
-         'transition: none' on the way OUT so the panel is gone by the time the
-         hand has moved; removing the class hands it back to the base rule's
-         fade, so it returns rather than snapping. */
-      .controls-floating.selecting {
-        opacity: 0; pointer-events: none; transition: none;
-      }
       /* Placed by pixel offsets instead of by the default bottom-centre
          anchor. Two classes, one mechanism, different AUTHORITY:
          auto-placed is _placeFloatingControls tracking the selection,
@@ -5537,6 +5529,23 @@ class SpatialLightColorCard extends HTMLElement {
       .controls-floating.auto-placed {
         transition: opacity var(--transition-base),
                     left var(--transition-fast), top var(--transition-fast);
+      }
+      /* Held for one style flush by _placeFloatingControls when the panel is
+         fully faded out: it fades IN where it is going instead of sliding in
+         from where it was parked. AFTER .auto-placed, same specificity. */
+      .controls-floating.cf-snap { transition: opacity var(--transition-base); }
+      /* Out of the way while a selection is being drawn. AFTER .visible, because
+         both are two classes and at equal specificity source order is what
+         decides -- the same trap the selection_color override fell into. And
+         AFTER .auto-placed / .cf-snap for the same reason: placed above them,
+         .auto-placed's transition won whenever the panel was tracking a
+         selection, so it faded for 200ms instead of going at once.
+
+         'transition: none' on the way OUT so the panel is gone by the time the
+         hand has moved; removing the class hands it back to the base rule's
+         fade, so it returns rather than snapping. */
+      .controls-floating.selecting {
+        opacity: 0; pointer-events: none; transition: none;
       }
       .cf-grip {
         flex: 0 0 auto; align-self: center;
@@ -11900,6 +11909,8 @@ class SpatialLightColorCard extends HTMLElement {
    * idle path had not.
    */
   _clearAutoPlacement(el) {
+    // Clearing now supersedes a clear that was waiting for the fade.
+    if (this._cfClearTimer) { clearTimeout(this._cfClearTimer); this._cfClearTimer = null; }
     this._cfAt = null;
     this._cfSide = null;
     this._cfTier = null;
@@ -12108,9 +12119,39 @@ class SpatialLightColorCard extends HTMLElement {
       this._cfTier = null;
       this._cfKey = null;
       this._cfFreeY = null;
-      if (el.classList.contains('auto-placed')) this._clearAutoPlacement(el);
+      // A panel that is HIDING keeps its place until it has finished fading.
+      // `updateLights` drops `.visible` in the same tick that lands here, and
+      // clearing at once threw the box to its CSS anchor while it was still
+      // fully opaque: it jumped (~270px on a 900x563 plan) and faded out over
+      // there instead of where the user was looking. So the anchor waits for
+      // the fade; a selection arriving first cancels the wait below. A panel
+      // that stays up (`always_show_controls`, or a `default_entity` with no
+      // position) has no fade to wait for and is handed back at once, as before.
+      if (el.classList.contains('auto-placed') && !this._cfClearTimer) {
+        const hiding = !el.classList.contains('visible') || el.classList.contains('selecting');
+        const ms = hiding ? this._cfFadeMs(el) : 0;
+        if (ms > 0) {
+          // Two frames past the fade: the transition starts at the next style
+          // flush, not at this call, and the clear must not land on its tail.
+          this._cfClearTimer = setTimeout(() => {
+            this._cfClearTimer = null;
+            if (!this._els || this._els.controlsFloating !== el) return;
+            // Only an AUTOMATIC placement is ours to clear. Every path that
+            // hands the box to the user (a drop, a keyboard nudge on the still
+            // focused grip) swaps `auto-placed` for `dragged` and writes its
+            // own --cf-x/--cf-y, and stripping those leaves `left: 50%` with
+            // `transform: none` -- the box thrown half its width to the right.
+            if (el.classList.contains('auto-placed')) this._clearAutoPlacement(el);
+          }, ms + 34);
+        } else {
+          this._clearAutoPlacement(el);
+        }
+      }
       return;
     }
+    // A selection is back before the fade finished: the panel is still where it
+    // was, so it moves on from THERE, and the anchor it was waiting for is moot.
+    if (this._cfClearTimer) { clearTimeout(this._cfClearTimer); this._cfClearTimer = null; }
 
     const hb = host.getBoundingClientRect();
     const eb = el.getBoundingClientRect();
@@ -12299,10 +12340,50 @@ class SpatialLightColorCard extends HTMLElement {
     // --cf-x/--cf-y behind the back of this guard.
     if (this._cfAt !== at || !el.classList.contains('auto-placed')) {
       this._cfAt = at;
+      // A panel nobody can see has nowhere to slide FROM. Fading in from
+      // fully hidden, the left/top transition started at wherever the box was
+      // parked -- its CSS anchor, or the last selection's spot -- so the first
+      // visible frames were mid-slide, ~20-50px off target. `.cf-snap` keeps
+      // the opacity fade and drops left/top for exactly one style flush. A
+      // panel that is still visible, even half-faded, slides as before.
+      const unseen = typeof getComputedStyle === 'function'
+        && parseFloat(getComputedStyle(el).opacity) < 0.05;
+      if (unseen) el.classList.add('cf-snap');
       el.style.setProperty('--cf-x', `${x}px`);
       el.style.setProperty('--cf-y', `${y}px`);
       el.classList.add('auto-placed');
+      if (unseen) {
+        // The flush commits the new position under `.cf-snap`'s transition
+        // list; removing the class afterwards changes no left/top value, so
+        // nothing starts sliding.
+        void getComputedStyle(el).left;
+        el.classList.remove('cf-snap');
+      }
     }
+  }
+
+  /**
+   * How long the panel's opacity fade runs, in ms. Read from the computed
+   * style rather than assumed: `--transition-base` is a theme token, and
+   * `prefers-reduced-motion` zeroes it, in which case there is no fade to wait
+   * for and the caller clears at once.
+   */
+  _cfFadeMs(el) {
+    if (typeof getComputedStyle !== 'function') return 0;
+    const cs = getComputedStyle(el);
+    const list = (v) => String(v || '').split(',').map(s => s.trim());
+    const props = list(cs.transitionProperty);
+    let i = props.indexOf('opacity');
+    if (i < 0) i = props.indexOf('all');
+    if (i < 0) return 0;
+    const ms = (v) => {
+      const n = parseFloat(v);
+      if (!isFinite(n)) return 0;
+      return /ms$/.test(v) ? n : n * 1000;
+    };
+    const durs = list(cs.transitionDuration);
+    const dels = list(cs.transitionDelay);
+    return Math.max(0, ms(durs[i % durs.length]) + ms(dels[i % dels.length]));
   }
 
   /**
