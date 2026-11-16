@@ -2402,3 +2402,37 @@ updateLights()
 - `SpatialLightColorCard.RGB_COLOR_MODES` — `Set` of color modes that mean "user picked an RGB color" (`hs`, `rgb`, `xy`, `rgbw`, `rgbww`).
 - `SpatialLightColorCard.COLOR_TOLERANCE = 30` — sRGB Euclidean distance for live-color dedup and active-preset matching.
 - `SpatialLightColorCard.TEMP_TOLERANCE = 100` — Kelvin tolerance for temperature dedup and matching.
+
+---
+
+## 11. The README demo (`docs/demo_maxi.gif` / `.mp4`)
+
+**Recorded, not screen-captured, and the card in it is real.** `.harness/demo.html` mounts the
+shipped card on the owner's own config, plan and areas (`rooms-data.js`, `rooms-plan.png` -- which is
+why the whole demo kit stays LOCAL, like `rooms.html`); only hass is faked, an in-page light model that
+answers `light.turn_on/off` ~110 ms later with a fresh frozen object. `ha-icon` draws real MDI paths
+from `demo-icons.json` (with `minimal_ui` the markers ARE the icons, so an empty stub leaves a plan with
+no lights). `demo-record.mjs` drives headless Chrome over raw CDP with `Input.dispatchMouseEvent` --
+TRUSTED mouse events, pointer capture and all -- and keeps `Page.startScreencast` frames with their
+timestamps; `demo-script.mjs` is the storyboard; `demo-encode.py` (imageio-ffmpeg's bundled ffmpeg)
+cuts the MP4 and GIF. Re-record: start the `harness` preview server, then
+`node .harness/demo-record.mjs <takeDir> record` and `python .harness/demo-encode.py <takeDir> <outBase>`.
+The script returns per-step state checks (lasso 17, Kitchen 3 outlined, Bedroom 2, rectangle 8, each
+clear 0) -- read them before looking at a single frame.
+
+Traps, each hit once:
+- **Every tap target is chosen after the panel lands.** On a 1100px stage the panel (420x237) covered
+  40% of the plan and the first take's "clear" tap went straight into its buttons; `free()` now avoids
+  the live panel AND the box a clear parks it in while it fades (the panel drops its auto placement the
+  instant the selection empties, so it jumps there mid-fade -- a card behaviour, not a demo one).
+- **Screencast frames come at CSS size whatever the DPR**, and a still page sends none -- so the
+  recorder writes `endTs` and the encoder holds the last frame until it, or the closing beat vanishes.
+- **The pointer never rests on a floor except to tap it**: the mouse hover tint is selection-magenta
+  and read as "this room is selected". No recolour near magenta either (the kitchen was pink).
+- **The hold ring is white, never the band colour**: with a mouse, or with `room_tap` on and the press
+  outside every room, the card draws nothing during the swap hold, so the ring must read as a pointer
+  annotation (the demo holds in the street on purpose -- a hold on a floor would arm that room).
+- **GIF: error-diffusion dither, a frame-multiple length and `-final_delay`.** Bayer over one palette
+  posterised the panel's hue bar into bands; a 10 ms last frame is clamped to 100 ms by browsers.
+- **README embeds are absolute URLs**: HACS empties relative `src`/`href` in HTML, and a repo-relative
+  `.mp4` link on github.com is a download, so the MP4 goes through jsDelivr (`video/mp4`).

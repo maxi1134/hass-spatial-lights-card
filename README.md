@@ -29,7 +29,8 @@ so the light lands on the floor, it mixes with the light next to it, walls stop
 it, and an open door lets it through.
 
 <p align="center">
-<img width="880" alt="Drag to select a group of lights on the floor plan, then recolor, dim, or switch them together" src="docs/demo_maxi.gif" />
+<img width="880" alt="On a floor plan: a freehand lasso drawn round the lights along the hallway and the far side of the salon turns them blue; a tap on the kitchen floor outlines the room and turns its three lights yellow, and a tap on the bedroom turns its two red; then a press held still and dragged draws a rectangle over half the patio's string lights, which come on green, and two Hotbox lights, which turn green too" src="https://raw.githubusercontent.com/maxi1134/hass-spatial-lights-card/main/docs/demo_maxi.gif" />
+<br><sub>Lasso, tap a room, hold for a rectangle &mdash; on my own plan, with <code>selection_mode: lasso</code>, <code>selection_swap_hold: 450</code> and <code>room_tap: true</code>. Also as an <a href="https://cdn.jsdelivr.net/gh/maxi1134/hass-spatial-lights-card@main/docs/demo_maxi.mp4">MP4</a>.</sub>
 </p>
 
 <p align="center">
@@ -678,8 +679,13 @@ Press on empty canvas, **hold still** that long, then drag: that one drag uses t
 other shape. On lasso you get a rectangle, on rectangle you get a lasso. Let go and
 you are back to whatever you configured.
 
-You get a double buzz when it takes, and the band on screen changes to the shape
-you are about to draw, so you never have to guess whether the hold registered.
+On a phone or tablet you get a double buzz when it takes, and with room taps off
+the band also comes up under your finger and switches to the shape you are about
+to draw, so you never have to guess whether the hold registered. With a mouse there
+is nothing to see until you move &mdash; the band simply comes out as the other
+shape. With [room taps](#tap-a-room-to-select-it) on, the band waits for you to
+move as well; a hold that starts on a room's floor shows that room dashed instead,
+because there the swap and the room hold are the same moment.
 
 **It is off by default**, deliberately. Press, pause, drag is a gesture a hand
 makes without meaning to, and nobody who has not asked for this should discover it
