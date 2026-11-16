@@ -16,7 +16,7 @@ class SpatialLightColorCard extends HTMLElement {
    * console on load, because "is the browser serving a cached copy?" is
    * otherwise unanswerable and wastes a debugging round trip every time.
    */
-  static BUILD = 'v1.56.2 (fork-maxi1134)';
+  static BUILD = 'v1.56.3 (fork-maxi1134)';
   // Accepted values for background_image.rendering (CSS image-rendering).
   static IMAGE_RENDERING_MODES = ['auto', 'smooth', 'high-quality', 'crisp-edges', 'pixelated'];
 
@@ -4741,6 +4741,15 @@ class SpatialLightColorCard extends HTMLElement {
       *, *::before, *::after { box-sizing: border-box; }
       :host {
         margin: 0; padding: 0;
+        /* No UA tap highlight anywhere in the card. A touch on a marker made
+           Chrome/WebView composite a LinkHighlight layer over the marker's
+           BOX -- a sharp dark 35x35 square behind the round selection ring
+           for ~200ms, on every tap and every long-press add. HA itself sets
+           rgba(0,0,0,0.1) on partial-panel-resolver, and this property
+           inherits, so dashboards got it too. Every touch target here draws
+           its own press feedback (the ring, the presets' and power toggle's
+           :active scale), so nothing is lost. */
+        -webkit-tap-highlight-color: transparent;
 
         --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 

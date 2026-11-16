@@ -79,6 +79,26 @@
 
 **Color resolution:** `_resolveEntityColor(id, isOn, attributes)` consults `color_overrides`, then domain-specific defaults (`switch_on_color`/`switch_off_color`, `binary_sensor_*_color`, `scene_color`), then `attributes.rgb_color`, with `'#ffa500'` fallback for unknown.
 
+**No UA tap highlight, card-wide (`:host { -webkit-tap-highlight-color: transparent }`).** Reported
+as a sharp dark square, exactly the marker's 35x35 box, behind the round selection ring for ~200 ms
+on every touch selection (tap or long-press add). It was not the card's CSS. Turning off, one at a
+time, the `::before` transitions, the `.light` opacity/filter transition, `.light.selected { z-index:
+3 }` and the `--light-desat` filters changed nothing (dip -22.6 every time). The compositor layer log
+(`LayerTree`) showed a 35x35 layer with reason **`LinkHighlight`**: Chrome/WebView's tap highlight,
+drawn over the BOX of the tapped `role="button"` element, so a round marker gets a square. HA sets
+`rgba(0,0,0,0.1)` on `partial-panel-resolver` and the property INHERITS, so real dashboards on Android
+showed it (half as dark as Chrome's ~20% default, which is what the demo page had). A declaration on
+`:host` beats the inherited value. Card-wide rather than on `.light` because every touch target here
+already draws its own press feedback (the ring and hold pulse on markers, `:active` scale on presets,
+the power toggle and plan links), and a square flash over a round swatch is the same defect.
+Measured on the owner's config with trusted CDP touch, corner minus same-radius-axis luminance:
+v1.56.2 -22.6 (Chrome default), -13.4 (HA's 0.1), -24 (hold-add); fixed -1.4..-2.7 (the ring's own
+glow), no `LinkHighlight` layer. The settled frame is byte-identical (max pixel diff 0 over 1600x500).
+Local only, like the demo kit: `.harness/flash-probe.mjs <dir> [cycles] [src]` (`PROBE_LAYERS=1`,
+`PROBE_HA=1`, `PROBE_HOLD=1`) records it on `flash-probe.html` (demo.html with `?src=` and `?ha=1`),
+`python .harness/flash-analyze.py <dir>` exits 1 on a square; `.harness/tap-highlight.test.js` checks
+the declaration on what `_styles()` emits.
+
 ---
 
 ## 4. Selection & Interaction State Machine
