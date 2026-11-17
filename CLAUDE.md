@@ -2487,26 +2487,92 @@ shipped card on the owner's own config, plan and areas (`rooms-data.js`, `rooms-
 why the whole demo kit stays LOCAL, like `rooms.html`); only hass is faked, an in-page light model that
 answers `light.turn_on/off` ~110 ms later with a fresh frozen object. `ha-icon` draws real MDI paths
 from `demo-icons.json` (with `minimal_ui` the markers ARE the icons, so an empty stub leaves a plan with
-no lights). `demo-record.mjs` drives headless Chrome over raw CDP with `Input.dispatchMouseEvent` --
-TRUSTED mouse events, pointer capture and all -- and keeps `Page.startScreencast` frames with their
-timestamps; `demo-script.mjs` is the storyboard; `demo-encode.py` (imageio-ffmpeg's bundled ffmpeg)
-cuts the MP4 and GIF. Re-record: start the `harness` preview server, then
+no lights). `demo-record.mjs` drives headless Chrome over raw CDP with TRUSTED input -- a finger
+(`Input.dispatchTouchEvent`, which arrives as `pointerType: 'touch'` with no emulation switched on, so
+no `(pointer: coarse)` flip mid-take; a mouse is still available through `setInput('mouse')`) -- and
+keeps `Page.startScreencast` frames with their timestamps; `demo-script.mjs` is the storyboard;
+`demo-encode.py` (imageio-ffmpeg's bundled ffmpeg) cuts the MP4 and GIF. Re-record: start this repo's `harness`
+preview server (`.claude/launch.json`, python http.server on 8765 -- the recorder's default page is
+`http://localhost:8765/.harness/demo.html`; pass another URL as the 4th argument), then
 `node .harness/demo-record.mjs <takeDir> record` and `python .harness/demo-encode.py <takeDir> <outBase>`.
-The script returns per-step state checks (lasso 17, Kitchen 3 outlined, Bedroom 2, rectangle 8, each
-clear 0) -- read them before looking at a single frame.
+
+Five chapters, simplest first, all by finger: tap a light (the salon's door LEDs, green), tap one and
+long-press three more into a group (workshop, then bathroom, Hotbox pendant, workstation: cyan), lasso
+(blue), tap a room (kitchen yellow, bedroom red), hold-then-drag rectangle (violet). No hue repeats
+and no chapter touches an earlier chapter's lights, so the closing shot shows all six results. The
+script returns per-step state checks (single 1, group 4, lasso 17, Kitchen 3 outlined, Bedroom 2,
+rectangle 8, each clear 0) plus `hover` (every interval the card showed its mouse room tint -- must be
+empty), and `frames.json` carries `lags` (input acks over 60 ms), `longTasks` and `rafGaps` (page
+frames over 60 ms apart); the encoder writes `timeline.json` (every mark's time in the cut). Read them
+before looking at a single frame.
+
+**The encoder retimes, as the storyboard declares in `result.cuts`, keyed to its marks** (whose `wall`
+is the screencast's own clock): `ramp` plays the lasso stroke 4x fast (it is DRAWN at quarter speed --
+the README caption says so -- so the card's own animations in that window, the band's marching dash,
+the drag-start fade and the rings as lights join, run 4x too), and `still` caps every mid-chapter still at 0.8 s. A held frame means
+nothing changed -- the screencast sends no frame for a still page -- so that cut cannot make anything
+jump (a near-still run of tiny changes, like a fading halo, is not capped). The GIF is then ROTATED to
+open 0.4 s into the outro: a GIF that is not playing (GitHub pauses them for visitors with reduced
+motion) shows its first frame, and that should be the finished house, not the loop dip's #111. The MP4
+is not rotated (it has the same ramp and cuts). Take 22 (shipped): 51.0 s, GIF 8.26 MB at 1100 px,
+MP4 1.65 MB.
 
 Traps, each hit once:
-- **Every tap target is chosen after the panel lands.** On a 1100px stage the panel (420x237) covered
-  40% of the plan and the first take's "clear" tap went straight into its buttons; `free()` now avoids
-  the live panel AND the box a clear parks it in while it fades (the panel drops its auto placement the
-  instant the selection empties, so it jumps there mid-fade -- a card behaviour, not a demo one).
+- **Touch, because of the mouse's hover.** With a mouse, leaving a light or a floor crosses some room
+  long enough (~220 ms) for the hover tint to wash it pink -- read as "the room got selected", worst in
+  the single-light chapters. A finger sends the page nothing between contacts, so the recorder moves
+  only the overlay dot (`movePtr`).
+- **The lasso's frame rate depends on the session.** Takes 5-9 drew it at ~55 fps; takes 10-20, on the
+  same machine and page, at ~16-25 fps with a finger or a mouse, page frames 60-100 ms apart and moves
+  acked 60-230 ms late; takes 21-22 at ~50 again with no page frame over 60 ms apart. So it comes and
+  goes. Not the card's JS (~5 ms a move), and no switch tried changed it -- page variant, Chrome flags,
+  process priority, DPR, `--disable-gpu`. Cause never found. What copes with it, kept as insurance: the stroke is drawn at quarter speed and ramped 4x; pressed moves are PIPELINED
+  (two or three in flight -- awaiting each 165 ms ack sent ~6 samples a second, and a 2x ramp alone still drew in
+  40-130 px hops); and `stroke()` sends every CONTROL POINT after draining the pipe, or a corner is cut
+  and a lamp dropped (16 or 15 instead of 17). Its easing has a linear share: a pure cosine at quarter
+  speed stayed inside the 12 px slop for the whole 450 ms swap hold, the card read hold-then-drag, and
+  the "lasso" became an additive rectangle (take 20: 4 lights). The lasso's bottom corners also got
+  room -- the desk lamp (88.2, 94.2) and the buddha (98.5, 93.2) sat within 1-1.5% of the outline --
+  and the stroke is CLAMPED 4 px inside the plan: a Catmull-Rom through the right-hand corners overshot
+  by 2-3% and the finger left the card for a few frames while the clipped band could not follow.
+- **Nothing moves through a hiccup.** In the slow takes (10-18), after most selection changes the page
+  stalled 100-130 ms within ~0.8 s, and separately the screencast dropped ~150-250 ms of frames
+  somewhere in ~1.0-1.7 s after a selection or a hue release while the page kept rendering; a dot moving
+  through either jumped on playback (promoting the overlay with `will-change` and acking frames before
+  writing them did not help). Takes 21-22 show only 133-167 ms drops at each hue PRESS, with the dot
+  resting on the bar. So the script waits STILL until both have passed -- 1.5 s after each hue drag, until 1.7 s
+  after a selection before travelling to the bar -- and the encoder cuts those stills down.
+- **Every press target is chosen after the panel lands.** The panel (420x263) TRACKS the selection:
+  `free()` keeps taps off it (and the clear taps off its parked box too), and every light press goes
+  through `hittableLight(id)` (`elementFromPoint` must return that marker). It also decides the group's
+  order: the single light's panel sits over the workshop, so chapter 1 ends with a clear (the group's
+  panel then snaps in -- the card does not slide a hidden panel), and the group starts at the WORKSHOP,
+  whose panel lands right and stays there for every hold, so it never slides under a held finger.
+- **The single light must not light a room.** The lounge ceiling (2850 lm) washed its whole room green
+  and read as a room result; the door LEDs change one marker among a dozen warm ones (their wide, faint
+  pool does tint the lounge through the doorway a little -- no room reads as selected).
+- **Clears only where they matter**: after chapter 1 (above), before the rectangle (a HELD drag ADDS with
+  `room_tap` on) and before the outro (no selection dimming on the closing shot). A plain lasso and a
+  room tap replace the selection by themselves.
+- **Warm-up before the take**: the panel's first appearance costs the page ~170 ms; `demo.html` selects
+  and clears one light before `DEMO_READY`, as a dashboard that has been used once already has.
+- **Touch showed a card bug the mouse never did**: Chrome's tap highlight drew a dark 35x35 square over
+  each touched marker's box for ~200 ms. Fixed in the card in v1.56.3 (`-webkit-tap-highlight-color:
+  transparent` on `:host`); takes before it show the square.
 - **Screencast frames come at CSS size whatever the DPR**, and a still page sends none -- so the
   recorder writes `endTs` and the encoder holds the last frame until it, or the closing beat vanishes.
-- **The pointer never rests on a floor except to tap it**: the mouse hover tint is selection-magenta
-  and read as "this room is selected". No recolour near magenta either (the kitchen was pink).
-- **The hold ring is white, never the band colour**: with a mouse, or with `room_tap` on and the press
-  outside every room, the card draws nothing during the swap hold, so the ring must read as a pointer
-  annotation (the demo holds in the street on purpose -- a hold on a floor would arm that room).
+- **No recolour near the selection magenta** (the kitchen was pink once, and read as still selected),
+  and each hue PRESS lands on a hue no chapter ends on: pressing the bar sets the colour at once.
+- **The hold ring is an annotation on the finger**: white, never the band colour, r=28 so it clears the
+  card's own selection ring (r~17, which it used to sit exactly on, reading as card UI), and it fades
+  over the last ~12% of its fill and `.held` keeps it at opacity 0 with no transition, so it is gone on
+  the frame the card answers (dropping the animation used to reset the circle to full opacity while the
+  svg faded, and it blinked back for ~150 ms). The card draws nothing
+  during either hold -- a light hold answers only when it lands, and a swap hold in the street (on
+  purpose: a hold on a floor would arm that room) shows nothing until the drag. After a tap or a hold
+  the finger lifts AWAY (`liftAway`, to the first `liftSpot` offset whose dot covers no marker -- the door
+  LEDs' 'down' landed on a UV lamp; the straight offsets are 32 px, because anything under the marker's
+  half-box plus the dot's radius could never pass) so the new ring is not covered; the tap ripple plays only for taps.
 - **GIF: error-diffusion dither, a frame-multiple length and `-final_delay`.** Bayer over one palette
   posterised the panel's hue bar into bands; a 10 ms last frame is clamped to 100 ms by browsers.
 - **README embeds are absolute URLs**: HACS empties relative `src`/`href` in HTML, and a repo-relative
