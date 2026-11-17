@@ -2496,26 +2496,41 @@ preview server (`.claude/launch.json`, python http.server on 8765 -- the recorde
 `http://localhost:8765/.harness/demo.html`; pass another URL as the 4th argument), then
 `node .harness/demo-record.mjs <takeDir> record` and `python .harness/demo-encode.py <takeDir> <outBase>`.
 
-Five chapters, simplest first, all by finger: tap a light (the salon's door LEDs, green), tap one and
-long-press three more into a group (workshop, then bathroom, Hotbox pendant, workstation: cyan), lasso
-(blue), tap a room (kitchen yellow, bedroom red), hold-then-drag rectangle (violet). No hue repeats
-and no chapter touches an earlier chapter's lights, so the closing shot shows all six results. The
-script returns per-step state checks (single 1, group 4, lasso 17, Kitchen 3 outlined, Bedroom 2,
-rectangle 8, each clear 0) plus `hover` (every interval the card showed its mouse room tint -- must be
+Six chapters, simplest first, all by finger: tap a light (the salon's door LEDs, green), tap one and
+long-press three more into a group (workshop, then kitchen ceiling, Hotbox pendant, workstation: cyan), lasso
+(blue), tap a room (kitchen yellow, bedroom red), hold-then-drag rectangle (violet), and a lasso round
+the WHOLE building (it skips the empty street) followed by the owner's Random Colors script button
+(`script_buttons[1]`), so every colour bulb gets a random hue and the light field shows the pools
+mixing where they overlap -- that random mix is the closing shot. `demo.html`'s hass model follows the owner's
+`scripts.yaml` (`set_one_light_to_a_random_color`, read off the HA share): only colour-capable lights
+(hs/rgb/xy) are touched, a light already in a colour mode moves to (current + 25 + random 0..310) % 360
+-- never within 25 deg of where it was -- saturation 100, off lights come on, brightness kept. (The
+real script also fades over 1 s per light; the model lands every colour in one update.) The model also
+gives the owner's two bathroom bulbs their real capability, ZHA brightness-only, so neither the group
+nor the shuffle can colour them -- the group took the kitchen ceiling instead of the bathroom, and
+the shuffle colours 47 of the 49 it receives. (The card paints an 'on' light with no colour in its
+`#ffa500` fallback, so the bathroom glows orange all take long -- that orange is not the shuffle's.)
+WHICH random draw: any draw is an outcome the button can produce, so `runScript` picks one
+deterministically by score -- of seeds 1..2000, the best over light pairs within 240 CSS px: -3 per pair
+under 25 deg apart, +1 per pair 60-150 deg apart (those mix into a vivid third colour). Take 25: seed
+1804, 22 of 270 pairs still under 25 deg (a typical seed has ~38); `?seed=` forces one. The script
+returns per-step state checks (single 1, group 4, lasso 17, Kitchen 3 outlined, Bedroom 2, rectangle
+8, all 49 across 11 rooms -- the 11 UV plugs are group-exempt -- the script call with 49 lights, 47
+on in RGB, the chosen draw, each clear 0) plus `hover` (every interval the card showed its mouse room tint -- must be
 empty), and `frames.json` carries `lags` (input acks over 60 ms), `longTasks` and `rafGaps` (page
 frames over 60 ms apart); the encoder writes `timeline.json` (every mark's time in the cut). Read them
 before looking at a single frame.
 
 **The encoder retimes, as the storyboard declares in `result.cuts`, keyed to its marks** (whose `wall`
-is the screencast's own clock): `ramp` plays the lasso stroke 4x fast (it is DRAWN at quarter speed --
-the README caption says so -- so the card's own animations in that window, the band's marching dash,
-the drag-start fade and the rings as lights join, run 4x too), and `still` caps every mid-chapter still at 0.8 s. A held frame means
+is the screencast's own clock): `ramp` plays both lasso strokes 4x fast (they are DRAWN at quarter
+speed -- the README caption says so -- so the card's own animations in those windows, the band's
+marching dash, the drag-start fade and the rings as lights join, run 4x too), and `still` caps every mid-chapter still at 0.8 s. A held frame means
 nothing changed -- the screencast sends no frame for a still page -- so that cut cannot make anything
 jump (a near-still run of tiny changes, like a fading halo, is not capped). The GIF is then ROTATED to
 open 0.4 s into the outro: a GIF that is not playing (GitHub pauses them for visitors with reduced
 motion) shows its first frame, and that should be the finished house, not the loop dip's #111. The MP4
-is not rotated (it has the same ramp and cuts). Take 22 (shipped): 51.0 s, GIF 8.26 MB at 1100 px,
-MP4 1.65 MB.
+is not rotated (it has the same ramp and cuts). Take 25 (shipped): 61.6 s, GIF 10.5 MB at 1100 px,
+MP4 2.30 MB; the loop dip is 0.25 s each way.
 
 Traps, each hit once:
 - **Touch, because of the mouse's hover.** With a mouse, leaving a light or a floor crosses some room
@@ -2552,8 +2567,8 @@ Traps, each hit once:
   and read as a room result; the door LEDs change one marker among a dozen warm ones (their wide, faint
   pool does tint the lounge through the doorway a little -- no room reads as selected).
 - **Clears only where they matter**: after chapter 1 (above), before the rectangle (a HELD drag ADDS with
-  `room_tap` on) and before the outro (no selection dimming on the closing shot). A plain lasso and a
-  room tap replace the selection by themselves.
+  `room_tap` on) and after chapter 6 (no rings, no panel on the closing shot). A plain lasso and a room
+  tap replace the selection by themselves -- chapter 6's whole-building lasso included.
 - **Warm-up before the take**: the panel's first appearance costs the page ~170 ms; `demo.html` selects
   and clears one light before `DEMO_READY`, as a dashboard that has been used once already has.
 - **Touch showed a card bug the mouse never did**: Chrome's tap highlight drew a dark 35x35 square over
@@ -2573,7 +2588,18 @@ Traps, each hit once:
   the finger lifts AWAY (`liftAway`, to the first `liftSpot` offset whose dot covers no marker -- the door
   LEDs' 'down' landed on a UV lamp; the straight offsets are 32 px, because anything under the marker's
   half-box plus the dot's radius could never pass) so the new ring is not covered; the tap ripple plays only for taps.
-- **GIF: error-diffusion dither, a frame-multiple length and `-final_delay`.** Bayer over one palette
-  posterised the panel's hue bar into bands; a 10 ms last frame is clamped to 100 ms by browsers.
+- **GIF: error-diffusion dither, except where the storyboard says (`result.cuts.bayer`), a
+  frame-multiple length and `-final_delay`.** Error diffusion (sierra2_4a) re-dithers the whole changed
+  rectangle every frame, so ffmpeg's transdiff can mark nothing unchanged as transparent; chapter 6's
+  lasso, whose marching outline spans the whole plan, cost ~6.5 MB for its 4 s that way and the take
+  16.6 MB. An ordered (Bayer) dither is fixed per pixel, so only real changes are re-sent -- but over the
+  whole take it looked worse (take 24, all Bayer at scale 1, 8.9 MB): the red bedroom became a red disc
+  with a contour, the hue bar showed 16-28 px plateaus, and flat floors and the page got a 4x4
+  crosshatch. So Bayer only inside that stroke, Sierra everywhere else, one shared palette. The window's
+  edges are SNAPPED (`snap: true`) to the heaviest frame change within 0.8 s after each mark -- the band
+  appearing after `stroke6`, the release committing after `all-up` -- because a grain switch on a still
+  frame shows (ending at `stroke6-end`, 0.2 s before the lift, it blinked) while on a frame that changes
+  anyway it does not; it also lets the frozen frames before the release re-send nothing. 10.5 MB. The
+  default `bayer_scale` (2) bands worse still. A 10 ms last frame is clamped to 100 ms by browsers.
 - **README embeds are absolute URLs**: HACS empties relative `src`/`href` in HTML, and a repo-relative
   `.mp4` link on github.com is a download, so the MP4 goes through jsDelivr (`video/mp4`).
